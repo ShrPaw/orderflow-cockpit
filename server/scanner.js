@@ -1,4 +1,6 @@
 // Scanner — discovers and ranks symbols by volatility/attention
+// PHASE 3: Proper hydration from Hyperliquid + Binance universes
+
 const EventEmitter = require('events');
 
 class Scanner extends EventEmitter {
@@ -7,20 +9,38 @@ class Scanner extends EventEmitter {
     this.candleEngine = candleEngine;
     this.symbolMap = symbolMap;
     this.stats = new Map(); // symbol -> stats
-    this.pinnedFundamentals = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'SUI', 'DOGE'];
+    this.pinnedFundamentals = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'SUI', 'DOGE', 'HYPE'];
     this.volatilityWatchlist = [
       'LAB', 'PLAY', 'CHIP', 'FHE', 'SKYAI', 'NAORIS', 'BIO', 'TAG',
       'XNY', 'ZEREBRO', 'AIXBT', 'KNC', 'U', 'BSB', '1000LUNC'
     ];
     this.updateInterval = null;
+
+    // Hydration tracking
+    this.hydrated = { hyperliquid: false, binance: false };
+    this.startedAt = null;
   }
 
   start() {
+    this.startedAt = Date.now();
     this.updateInterval = setInterval(() => this._update(), 5000);
+    console.log('[Scanner] Started — waiting for universe hydration...');
   }
 
   stop() {
     if (this.updateInterval) clearInterval(this.updateInterval);
+  }
+
+  setHydrated(source) {
+    this.hydrated[source] = true;
+    const hlCount = this.symbolMap.hlCoins.size;
+    const bnCount = this.symbolMap.binanceFuturesSymbols.size;
+    const overlap = this.symbolMap.overlap.length;
+    console.log(`[Scanner] Hydrated: ${source} | HL=${hlCount} | Binance=${bnCount} | Overlap=${overlap}`);
+
+    if (this.hydrated.hyperliquid && this.hydrated.binance) {
+      console.log(`[Scanner] Full hydration complete — ${overlap} symbols mapped`);
+    }
   }
 
   processTrade(trade) {
@@ -46,7 +66,7 @@ class Scanner extends EventEmitter {
         absorptionCount: 0,
         rejectionCount: 0,
         largeTradeCount: 0,
-        tradeFrequency: 0, // trades per second
+        tradeFrequency: 0,
         volatilityExpansion: 0,
         attentionScore: 0,
         status: 'NEW',
@@ -78,7 +98,6 @@ class Scanner extends EventEmitter {
     const now = Date.now();
     s.windowTrades.push(now);
     s.windowVolume.push(trade.qty);
-    // Keep last 60 seconds
     while (s.windowTrades.length > 0 && s.windowTrades[0] < now - 60000) {
       s.windowTrades.shift();
       s.windowVolume.shift();
@@ -88,21 +107,17 @@ class Scanner extends EventEmitter {
   _update() {
     const now = Date.now();
     for (const [sym, s] of this.stats) {
-      // Price change %
       if (s.priceStart > 0) {
         s.priceChange = ((s.price - s.priceStart) / s.priceStart) * 100;
       }
 
-      // Trade frequency (trades/sec over last 60s)
       s.tradeFrequency = s.windowTrades.length / 60;
 
-      // Volatility expansion (range / midpoint over last 60s)
       if (s.windowTrades.length > 10) {
         const mid = (s.high24h + s.low24h) / 2;
         s.volatilityExpansion = mid > 0 ? ((s.high24h - s.low24h) / mid) * 100 : 0;
       }
 
-      // Attention score (composite)
       s.attentionScore = (
         s.tradeFrequency * 10 +
         s.volatilityExpansion * 5 +
@@ -110,10 +125,8 @@ class Scanner extends EventEmitter {
         Math.abs(s.delta) / Math.max(1, s.volume) * 50
       );
 
-      // Status classification
       s.status = this._classify(s);
 
-      // Stale check
       if (now - s.lastSeen > 120000) {
         s.status = 'STALE';
       }
@@ -170,29 +183,36 @@ class Scanner extends EventEmitter {
       case 'top_attention':
         symbols.sort((a, b) => b.attentionScore - a.attentionScore);
         break;
-      default: // full
+      default:
         symbols.sort((a, b) => b.attentionScore - a.attentionScore);
     }
 
-    return symbols.slice(0, 100).map(s => ({
-      symbol: s.symbol,
-      source: s.source,
-      price: s.price,
-      priceChange: s.priceChange,
-      volume: s.volume,
-      delta: s.delta,
-      tradeFrequency: s.tradeFrequency,
-      volatilityExpansion: s.volatilityExpansion,
-      bubbleCount: s.bubbleCount,
-      absorptionCount: s.absorptionCount,
-      rejectionCount: s.rejectionCount,
-      attentionScore: s.attentionScore,
-      status: s.status,
-      binanceSymbol: this.symbolMap.toBinance(s.symbol),
-      availableOnBinance: this.symbolMap.binanceFuturesSymbols.has(this.symbolMap.toBinance(s.symbol)),
-      isPinned: this.pinnedFundamentals.includes(s.symbol),
-      isWatchlist: this.volatilityWatchlist.includes(s.symbol)
-    }));
+    return {
+      symbols: symbols.slice(0, 100).map(s => ({
+        symbol: s.symbol,
+        source: s.source,
+        price: s.price,
+        priceChange: s.priceChange,
+        volume: s.volume,
+        delta: s.delta,
+        tradeFrequency: s.tradeFrequency,
+        volatilityExpansion: s.volatilityExpansion,
+        bubbleCount: s.bubbleCount,
+        absorptionCount: s.absorptionCount,
+        rejectionCount: s.rejectionCount,
+        attentionScore: s.attentionScore,
+        status: s.status,
+        binanceSymbol: this.symbolMap.toBinance(s.symbol),
+        availableOnBinance: this.symbolMap.binanceFuturesSymbols.has(this.symbolMap.toBinance(s.symbol)),
+        isPinned: this.pinnedFundamentals.includes(s.symbol),
+        isWatchlist: this.volatilityWatchlist.includes(s.symbol)
+      })),
+      hydrated: this.hydrated,
+      symbolCount: this.stats.size,
+      hlUniverseSize: this.symbolMap.hlCoins.size,
+      binanceUniverseSize: this.symbolMap.binanceFuturesSymbols.size,
+      overlapSize: this.symbolMap.overlap.length
+    };
   }
 }
 
