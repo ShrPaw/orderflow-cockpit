@@ -1,4 +1,5 @@
-// Binance USD-M Futures + Spot fallback WebSocket
+// Binance USD-M Futures — reference/execution venue
+// NO Spot fallback. Spot is debug-only, disabled by default.
 const WebSocket = require('ws');
 const https = require('https');
 
@@ -6,21 +7,23 @@ class BinanceSource {
   constructor(emit) {
     this.emit = emit;
     this.wsFutures = null;
-    this.wsSpot = null;
     this.connected = { futures: false, spot: false };
     this.reconnectTimers = {};
     this.futuresSymbols = new Set();
     this.spotSymbols = new Set();
+
+    // Debug spot — OFF by default, never auto-connects
+    this.spotDebugEnabled = false;
+    this.spotDebugActive = false;
   }
 
   connectFutures() {
     if (this.wsFutures) return;
-    console.log('[Binance-Futures] Connecting...');
-    // Combined stream for aggTrades
+    console.log('[Binance-Futures] Connecting to USD-M aggTrade stream...');
     this.wsFutures = new WebSocket('wss://fstream.binance.com/ws/!aggTrade@arr');
 
     this.wsFutures.on('open', () => {
-      console.log('[Binance-Futures] Connected');
+      console.log('[Binance-Futures] Connected — aggTrade stream active');
       this.connected.futures = true;
       this.emit('source_status', { source: 'binance_futures', status: 'connected' });
     });
@@ -35,7 +38,7 @@ class BinanceSource {
             rawSymbol: msg.s,
             price: parseFloat(msg.p),
             qty: parseFloat(msg.q),
-            side: msg.m ? 'sell' : 'buy', // m=true means buyer is maker = sell aggressor
+            side: msg.m ? 'sell' : 'buy',
             time: msg.T,
             tradeId: msg.a
           };
@@ -57,13 +60,19 @@ class BinanceSource {
     });
   }
 
-  connectSpot() {
+  // Spot is DEBUG ONLY — never auto-connects, never auto-fallbacks
+  connectSpotDebug() {
+    if (!this.spotDebugEnabled) {
+      console.log('[Binance-Spot] DEBUG MODE — not enabled. Set spotDebugEnabled=true to use.');
+      return;
+    }
     if (this.wsSpot) return;
-    console.log('[Binance-Spot] Connecting (debug fallback)...');
+    console.log('[Binance-Spot] DEBUG connecting...');
+    this.spotDebugActive = true;
     this.wsSpot = new WebSocket('wss://stream.binance.com:9443/ws/!aggTrade@arr');
 
     this.wsSpot.on('open', () => {
-      console.log('[Binance-Spot] Connected');
+      console.log('[Binance-Spot] DEBUG connected');
       this.connected.spot = true;
       this.emit('source_status', { source: 'binance_spot', status: 'connected' });
     });
@@ -81,7 +90,7 @@ class BinanceSource {
             side: msg.m ? 'sell' : 'buy',
             time: msg.T,
             tradeId: msg.a,
-            isSpotFallback: true
+            isSpotDebug: true
           };
           this.emit('trade', trade);
         }
@@ -89,20 +98,21 @@ class BinanceSource {
     });
 
     this.wsSpot.on('close', () => {
-      console.log('[Binance-Spot] Disconnected');
+      console.log('[Binance-Spot] DEBUG disconnected');
       this.connected.spot = false;
+      this.spotDebugActive = false;
       this.wsSpot = null;
       this.emit('source_status', { source: 'binance_spot', status: 'disconnected' });
-      this._scheduleReconnect('spot');
+      // Only reconnect if debug mode still on
+      if (this.spotDebugEnabled) this._scheduleReconnect('spot');
     });
 
     this.wsSpot.on('error', (err) => {
-      console.error('[Binance-Spot] Error:', err.message);
+      console.error('[Binance-Spot] DEBUG Error:', err.message);
     });
   }
 
   subscribeSymbol(symbol) {
-    // For individual symbol streams if needed
     const stream = `${symbol.toLowerCase()}usdt@aggTrade`;
     if (this.connected.futures && this.wsFutures) {
       this.wsFutures.send(JSON.stringify({
@@ -127,7 +137,7 @@ class BinanceSource {
                 .map(s => s.symbol)
             );
             this.emit('binance_futures_symbols', [...this.futuresSymbols]);
-            console.log(`[Binance-Futures] Found ${this.futuresSymbols.size} perps`);
+            console.log(`[Binance-Futures] Found ${this.futuresSymbols.size} perpetual contracts`);
             resolve(this.futuresSymbols);
           } catch (e) { resolve(new Set()); }
         });
@@ -135,13 +145,32 @@ class BinanceSource {
     });
   }
 
+  getStatus() {
+    return {
+      restConnected: this.futuresSymbols.size > 0,
+      executionReferenceOnly: true,
+      futuresWsConnected: this.connected.futures,
+      aggTradeReceiving: this.connected.futures,
+      forceOrderReceiving: false,
+      bookTickerReceiving: false,
+      markPriceReceiving: false,
+      spotDebug: {
+        enabled: this.spotDebugEnabled,
+        active: this.spotDebugActive
+      }
+    };
+  }
+
   _scheduleReconnect(type) {
+    // NEVER reconnect spot unless debug mode is explicitly on
+    if (type === 'spot' && !this.spotDebugEnabled) return;
+
     const key = `reconnect_${type}`;
     if (this.reconnectTimers[key]) return;
     this.reconnectTimers[key] = setTimeout(() => {
       delete this.reconnectTimers[key];
       if (type === 'futures') this.connectFutures();
-      else this.connectSpot();
+      else if (type === 'spot') this.connectSpotDebug();
     }, 3000);
   }
 
