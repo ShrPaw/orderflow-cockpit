@@ -1,5 +1,6 @@
 // Orderflow Cockpit — Frontend Application
-// Chart renderer + bubbles + zones + drawing tools + range profile + scanner
+// Professional perp-only orderflow cockpit
+// Phase 0-3: Truth model, no spot fallback, auto-load, scanner hydration
 
 (function() {
 'use strict';
@@ -13,6 +14,7 @@ const state = {
   source: 'hyperliquid',
   sourceStatus: {},
   isSpotFallback: false,
+  symbolLoaded: false,
 
   // Chart data
   candles: [],
@@ -22,10 +24,10 @@ const state = {
 
   // View transform
   view: {
-    offsetX: 0,      // pixel offset from right
-    scaleX: 8,       // pixels per candle
+    offsetX: 0,
+    scaleX: 8,
     pricePerPixel: 0.05,
-    scrollY: 0,      // vertical scroll
+    scrollY: 0,
   },
 
   // Mouse
@@ -34,11 +36,11 @@ const state = {
   hoveredBubble: null,
 
   // Drawing
-  drawings: [],       // saved drawings
-  drawingState: null, // in-progress drawing
+  drawings: [],
+  drawingState: null,
 
   // Selected range
-  selectedRange: null, // { start, end, priceLow, priceHigh, profile }
+  selectedRange: null,
 
   // Scanner
   scannerData: [],
@@ -95,6 +97,7 @@ function connectWS() {
   state.ws.onopen = () => {
     state.wsReady = true;
     console.log('[WS] Connected');
+    // If we have a symbol, re-subscribe
     if (state.symbol) {
       state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: state.symbol }));
     }
@@ -120,7 +123,7 @@ function handleMessage(msg) {
   switch (msg.type) {
     case 'source_status':
       state.sourceStatus = msg.data;
-      state.isSpotFallback = msg.data.isSpotFallback || false;
+      state.isSpotFallback = false; // Never true in perp-only mode
       updateSourceUI();
       break;
 
@@ -135,7 +138,6 @@ function handleMessage(msg) {
         b.candleTime = msg.data.candleTime;
         state.bubbles.push(b);
       }
-      // Keep last 500 bubbles
       if (state.bubbles.length > 500) state.bubbles = state.bubbles.slice(-500);
       break;
 
@@ -146,7 +148,6 @@ function handleMessage(msg) {
         priceMap: c.priceMap || {}
       }));
       state.currentCandle = msg.data.current || null;
-      // Extract bubbles from candles
       state.bubbles = [];
       for (const c of state.candles) {
         if (c.bubbles) {
@@ -156,6 +157,8 @@ function handleMessage(msg) {
           }
         }
       }
+      state.symbolLoaded = true;
+      updateRightPanel();
       if (state.followLive) fitAll();
       break;
 
@@ -175,11 +178,30 @@ function handleMessage(msg) {
       updateSymbolDropdown(msg.data);
       break;
 
-    case 'scanner':
-      state.scannerData = msg.data;
-      updateScannerUI();
+    case 'symbol_selected':
+      // Backend confirms symbol selection
+      if (msg.data.symbol) {
+        state.symbol = msg.data.symbol;
+        state.symbolLoaded = true;
+        document.getElementById('symbol-input').value = msg.data.symbol;
+        document.getElementById('fp-symbol').textContent = msg.data.symbol;
+        updateRightPanel();
+        updateSourceUI();
+      }
       break;
   }
+}
+
+function handleCandle(candle) {
+  // Add or update candle in state
+  const existing = state.candles.find(c => c.openTime === candle.openTime);
+  if (existing) {
+    Object.assign(existing, candle);
+  } else {
+    state.candles.push(candle);
+  }
+  // Keep max 500 candles
+  if (state.candles.length > 500) state.candles = state.candles.slice(-500);
 }
 
 // ============ CHART RENDERING ============
@@ -207,15 +229,26 @@ function render() {
   const w = state.width;
   const h = state.height;
 
-  // Clear
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, w, h);
+
+  // PHASE 0: Truth — show loading state only when truly no symbol
+  if (!state.symbol) {
+    ctx.fillStyle = COL.gridText;
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Connecting to Hyperliquid...', w / 2, h / 2);
+    requestAnimationFrame(render);
+    return;
+  }
 
   if (!state.candles.length && !state.currentCandle) {
     ctx.fillStyle = COL.gridText;
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Select a symbol to begin', w / 2, h / 2);
+    ctx.fillText(`Loading ${state.symbol} from Hyperliquid...`, w / 2, h / 2);
+    ctx.font = '11px sans-serif';
+    ctx.fillText('Waiting for trade data', w / 2, h / 2 + 20);
     requestAnimationFrame(render);
     return;
   }
@@ -229,13 +262,11 @@ function render() {
   const gap = Math.max(1, candleW * 0.15);
   const bodyW = candleW - gap;
 
-  // Price scale
   const priceCenter = scrollY + h / 2;
   const priceToY = (price) => priceCenter - (price / pricePerPixel);
   const yToPrice = (y) => (priceCenter - y) * pricePerPixel;
 
-  // Visible range
-  const rightEdge = w - 60; // price scale width
+  const rightEdge = w - 60;
   const visibleCount = Math.ceil(w / candleW) + 2;
   const startIdx = Math.max(0, allCandles.length - visibleCount - Math.floor(offsetX / candleW));
   const endIdx = Math.min(allCandles.length, startIdx + visibleCount + 4);
@@ -243,7 +274,6 @@ function render() {
 
   if (!visible.length) { requestAnimationFrame(render); return; }
 
-  // Auto-fit price if follow live
   if (state.followLive) {
     let minP = Infinity, maxP = -Infinity;
     for (const c of visible) {
@@ -255,41 +285,24 @@ function render() {
     state.view.scrollY = ((minP + maxP) / 2) / state.view.pricePerPixel - h / 2;
   }
 
-  // Grid
   drawGrid(ctx, w, h, priceToY, yToPrice, rightEdge);
-
-  // Zones
   drawZones(ctx, w, h, priceToY, rightEdge);
-
-  // Volume bars
   drawVolumeBars(ctx, visible, startIdx, allCandles, candleW, gap, priceToY, h, rightEdge);
-
-  // Candles
   drawCandles(ctx, visible, startIdx, candleW, gap, bodyW, priceToY, rightEdge);
-
-  // Bubbles
   drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge);
 
-  // Selected range overlay
   if (state.selectedRange) {
     drawSelectedRange(ctx, priceToY, yToPrice, rightEdge);
   }
 
-  // Drawings
   drawDrawings(ctx, priceToY, rightEdge, startIdx, candleW, allCandles);
 
-  // Active drawing
   if (state.drawingState) {
     drawActiveDrawing(ctx, priceToY, rightEdge, startIdx, candleW, allCandles);
   }
 
-  // Price scale
   drawPriceScale(ctx, w, h, yToPrice, rightEdge);
-
-  // Crosshair
   drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, startIdx, candleW, allCandles);
-
-  // Time labels
   drawTimeLabels(ctx, visible, startIdx, candleW, h, rightEdge);
 
   requestAnimationFrame(render);
@@ -299,7 +312,6 @@ function drawGrid(ctx, w, h, priceToY, yToPrice, rightEdge) {
   ctx.strokeStyle = COL.grid;
   ctx.lineWidth = 0.5;
 
-  // Horizontal grid lines
   const priceStep = estimatePriceStep(state.view.pricePerPixel, h);
   const topPrice = yToPrice(0);
   const botPrice = yToPrice(h);
@@ -311,15 +323,9 @@ function drawGrid(ctx, w, h, priceToY, yToPrice, rightEdge) {
     if (y < 0 || y > h) continue;
     ctx.moveTo(0, y);
     ctx.lineTo(rightEdge, y);
-
-    ctx.fillStyle = COL.gridText;
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'left';
-    // Label on right
   }
   ctx.stroke();
 
-  // Vertical grid lines (time)
   ctx.beginPath();
   const candleCount = Math.floor(rightEdge / state.view.scaleX);
   for (let i = 0; i < candleCount; i += 5) {
@@ -340,7 +346,6 @@ function drawCandles(ctx, visible, startIdx, candleW, gap, bodyW, priceToY, righ
     const isUp = c.close >= c.open;
     const color = isUp ? COL.candleUp : COL.candleDown;
 
-    // Wick
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -348,7 +353,6 @@ function drawCandles(ctx, visible, startIdx, candleW, gap, bodyW, priceToY, righ
     ctx.lineTo(x, priceToY(c.low));
     ctx.stroke();
 
-    // Body
     const bodyTop = priceToY(Math.max(c.open, c.close));
     const bodyBot = priceToY(Math.min(c.open, c.close));
     const bodyH = Math.max(1, bodyBot - bodyTop);
@@ -377,15 +381,13 @@ function drawVolumeBars(ctx, visible, startIdx, allCandles, candleW, gap, priceT
 }
 
 function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
-  // Group bubbles by candle time
   const candleMap = new Map();
   for (const c of visible) {
     candleMap.set(c.openTime, c);
   }
 
-  // Cluster bubbles by price proximity
   const clusters = [];
-  const clusterThreshold = 3; // pixels
+  const clusterThreshold = 3;
 
   for (const bubble of state.bubbles) {
     const cIdx = visible.findIndex(c => c.openTime === bubble.candleTime);
@@ -394,7 +396,6 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
     const x = rightEdge - (visible.length - 1 - cIdx) * candleW - candleW / 2;
     const y = priceToY(bubble.price);
 
-    // Find existing cluster
     let merged = false;
     for (const cluster of clusters) {
       if (Math.abs(cluster.x - x) < candleW && Math.abs(cluster.y - y) < clusterThreshold * 2) {
@@ -417,8 +418,7 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
     const side = mainBubble.side;
     const state_ = mainBubble.state || 'accepted';
 
-    // Color by state
-    let color, fillAlpha = 0.6, strokeAlpha = 1;
+    let color, fillAlpha = 0.6;
     switch (state_) {
       case 'accepted':
         color = side === 'buy' ? COL.bubbleAccepted : COL.bubbleRejected;
@@ -440,25 +440,20 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
         color = side === 'buy' ? COL.bubbleAccepted : COL.bubbleRejected;
     }
 
-    // Size
     const radius = Math.min(12, Math.max(3, Math.sqrt(cluster.totalNotional / 1000)));
 
-    // Draw
     if (state_ === 'rejected') {
-      // Hollow ring
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.stroke();
-      // Warning outline
       ctx.strokeStyle = 'rgba(239,68,68,0.3)';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
       ctx.stroke();
     } else if (state_ === 'absorbed') {
-      // Halo
       ctx.fillStyle = `rgba(245,158,11,${fillAlpha})`;
       ctx.beginPath();
       ctx.arc(x, y, radius + 3, 0, Math.PI * 2);
@@ -475,7 +470,6 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
       ctx.fill();
       ctx.globalAlpha = 1;
     } else {
-      // Accepted — filled with glow
       ctx.fillStyle = color;
       ctx.globalAlpha = fillAlpha;
       ctx.beginPath();
@@ -484,7 +478,6 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
       ctx.globalAlpha = 1;
     }
 
-    // Count label
     if (count > 1) {
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 8px monospace';
@@ -493,7 +486,6 @@ function drawBubbles(ctx, visible, startIdx, candleW, priceToY, rightEdge) {
       ctx.fillText(`+${count}`, x, y);
     }
 
-    // Hover detection
     const dx = state.mouse.x - x;
     const dy = state.mouse.y - y;
     if (dx * dx + dy * dy < (radius + 4) * (radius + 4)) {
@@ -522,7 +514,6 @@ function drawZones(ctx, w, h, priceToY, rightEdge) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Compact label right side
     ctx.fillStyle = 'rgba(245,158,11,0.7)';
     ctx.font = '8px monospace';
     ctx.textAlign = 'right';
@@ -537,7 +528,6 @@ function drawSelectedRange(ctx, priceToY, yToPrice, rightEdge) {
   const allCandles = [...state.candles];
   if (state.currentCandle) allCandles.push(state.currentCandle);
 
-  // Find candle indices
   let startIdx = allCandles.findIndex(c => c.openTime >= sr.start);
   let endIdx = allCandles.findIndex(c => c.openTime > sr.end);
   if (startIdx < 0) startIdx = 0;
@@ -549,14 +539,12 @@ function drawSelectedRange(ctx, priceToY, yToPrice, rightEdge) {
   const y1 = priceToY(sr.priceHigh);
   const y2 = priceToY(sr.priceLow);
 
-  // Selection box
   ctx.fillStyle = COL.selection;
   ctx.fillRect(Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1);
   ctx.strokeStyle = COL.selectionBorder;
   ctx.lineWidth = 1.5;
   ctx.strokeRect(Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1);
 
-  // Profile overlay
   if (sr.profile) {
     drawProfileOverlay(ctx, sr.profile, Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1, priceToY, yToPrice);
   }
@@ -567,26 +555,22 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
 
   const maxVol = Math.max(...profile.levels.map(l => l.total), 1);
   const maxDelta = Math.max(...profile.levels.map(l => Math.abs(l.delta)), 1);
-  const profileW = boxW * 0.4; // Profile takes 40% of box width
+  const profileW = boxW * 0.4;
 
-  // Volume profile bars
   for (const level of profile.levels) {
     const y = priceToY(level.price);
     const barW = (level.total / maxVol) * profileW;
     const binH = Math.max(1, boxH / profile.levels.length);
 
-    // Volume bar
     ctx.fillStyle = 'rgba(59,130,246,0.25)';
     ctx.fillRect(boxX, y - binH / 2, barW, binH);
 
-    // Delta overlay
     const deltaW = (Math.abs(level.delta) / maxDelta) * profileW * 0.3;
     ctx.fillStyle = level.delta > 0 ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)';
     const dX = level.delta > 0 ? boxX + barW : boxX + barW - deltaW;
     ctx.fillRect(dX, y - binH / 2, deltaW, binH);
   }
 
-  // POC line
   if (profile.poc) {
     const pocY = priceToY(profile.poc);
     ctx.strokeStyle = COL.poc;
@@ -603,7 +587,6 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
     ctx.fillText(`POC ${profile.poc.toFixed(2)}`, boxX + 4, pocY - 4);
   }
 
-  // VAH/VAL
   if (profile.vah) {
     const vahY = priceToY(profile.vah);
     ctx.strokeStyle = COL.vah;
@@ -633,7 +616,6 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
     ctx.fillText(`VAL ${profile.val.toFixed(2)}`, boxX + 4, valY + 10);
   }
 
-  // Delta POC
   if (profile.deltaPoc) {
     const dpY = priceToY(profile.deltaPoc);
     ctx.strokeStyle = COL.deltaPoc;
@@ -646,11 +628,10 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
     ctx.setLineDash([]);
     ctx.fillStyle = COL.deltaPoc;
     ctx.font = '8px monospace';
-    ctx.fillText(`ΔPOC ${profile.deltaPoc.toFixed(2)}`, boxX + boxW - 4, dpY - 3);
     ctx.textAlign = 'left';
+    ctx.fillText(`ΔPOC ${profile.deltaPoc.toFixed(2)}`, boxX + boxW - 4, dpY - 3);
   }
 
-  // HVN/LVN highlights
   if (profile.hvns) {
     for (const hvn of profile.hvns) {
       const y = priceToY(hvn);
@@ -666,7 +647,6 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
     }
   }
 
-  // Absorption/rejection markers
   for (const al of (profile.absorptionLevels || [])) {
     const y = priceToY(al.price);
     ctx.fillStyle = 'rgba(6,182,212,0.5)';
@@ -680,11 +660,9 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY, yToP
 }
 
 function drawPriceScale(ctx, w, h, yToPrice, rightEdge) {
-  // Background
   ctx.fillStyle = '#111827';
   ctx.fillRect(rightEdge, 0, w - rightEdge, h);
 
-  // Price labels
   ctx.fillStyle = COL.gridText;
   ctx.font = '9px monospace';
   ctx.textAlign = 'left';
@@ -700,7 +678,6 @@ function drawPriceScale(ctx, w, h, yToPrice, rightEdge) {
     ctx.fillText(formatPrice(p), rightEdge + 4, y + 3);
   }
 
-  // Current price
   if (state.currentCandle) {
     const cy = (state.view.scrollY + h / 2) - (state.currentCandle.close / state.view.pricePerPixel);
     const isUp = state.currentCandle.close >= state.currentCandle.open;
@@ -720,13 +697,11 @@ function drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, startIdx, candl
   ctx.lineWidth = 0.5;
   ctx.setLineDash([2, 2]);
 
-  // Horizontal
   ctx.beginPath();
   ctx.moveTo(0, state.mouse.y);
   ctx.lineTo(rightEdge, state.mouse.y);
   ctx.stroke();
 
-  // Vertical
   ctx.beginPath();
   ctx.moveTo(state.mouse.x, 0);
   ctx.lineTo(state.mouse.x, h);
@@ -734,7 +709,6 @@ function drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, startIdx, candl
 
   ctx.setLineDash([]);
 
-  // Price label
   const price = yToPrice(state.mouse.y);
   const label = document.getElementById('crosshair-label');
   label.classList.remove('hidden');
@@ -742,7 +716,6 @@ function drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, startIdx, candl
   label.style.top = (state.mouse.y - 10) + 'px';
   label.textContent = formatPrice(price);
 
-  // Hover tooltip
   updateTooltip(allCandles, candleW, rightEdge, startIdx);
 }
 
@@ -853,7 +826,6 @@ function fitAll() {
 function updateTooltip(allCandles, candleW, rightEdge, startIdx) {
   const tooltip = document.getElementById('hover-tooltip');
 
-  // Find hovered candle
   const visibleCount = Math.floor(state.width / candleW) + 2;
   const si = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / candleW));
   const idx = Math.floor((rightEdge - state.mouse.x) / candleW);
@@ -880,7 +852,6 @@ function updateTooltip(allCandles, candleW, rightEdge, startIdx) {
     tooltip.classList.add('hidden');
   }
 
-  // Bubble hover
   if (state.hoveredBubble) {
     const b = state.hoveredBubble;
     tooltip.classList.remove('hidden');
@@ -907,11 +878,8 @@ function initInput() {
     const rect = canvas.getBoundingClientRect();
     state.mouse.x = e.clientX - rect.left;
     state.mouse.y = e.clientY - rect.top;
-
-    // Update price/time
     state.mouse.price = (state.view.scrollY + state.height / 2 - state.mouse.y) * state.view.pricePerPixel;
 
-    // Pan if dragging
     if (state.mouse.isDown && state.mouse.button === 0 && state.activeTool === 'cursor') {
       state.view.offsetX += e.movementX / state.view.scaleX;
       state.view.scrollY -= e.movementY;
@@ -919,7 +887,6 @@ function initInput() {
       document.getElementById('btn-follow-live').classList.remove('active');
     }
 
-    // Drawing state update
     if (state.drawingState && state.mouse.isDown) {
       updateDrawingState(state.mouse.x, state.mouse.price);
     }
@@ -928,30 +895,22 @@ function initInput() {
   canvas.addEventListener('mousedown', (e) => {
     state.mouse.isDown = true;
     state.mouse.button = e.button;
-
-    if (e.button === 0) {
-      handleToolClick(e);
-    }
+    if (e.button === 0) handleToolClick(e);
   });
 
   canvas.addEventListener('mouseup', (e) => {
-    if (state.drawingState && state.mouse.isDown) {
-      finalizeDrawing();
-    }
+    if (state.drawingState && state.mouse.isDown) finalizeDrawing();
     state.mouse.isDown = false;
   });
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
-      // Vertical zoom
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
       state.view.pricePerPixel *= factor;
     } else if (e.shiftKey) {
-      // Horizontal pan
       state.view.offsetX -= e.deltaY / state.view.scaleX;
     } else {
-      // Horizontal zoom
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
       state.view.scaleX = Math.max(2, Math.min(50, state.view.scaleX * factor));
     }
@@ -959,7 +918,6 @@ function initInput() {
     document.getElementById('btn-follow-live').classList.remove('active');
   }, { passive: false });
 
-  // Keyboard
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
 
@@ -992,7 +950,6 @@ function handleToolClick(e) {
 
   switch (state.activeTool) {
     case 'cursor':
-      // Selection handled in mousemove
       break;
     case 'hline':
       state.drawings.push({ type: 'hline', price, color: COL.drawing });
@@ -1009,7 +966,7 @@ function handleToolClick(e) {
       }
       break;
     case 'text':
-      const text = prompt('Enter label (e.g., absorption, rejection, seller defense):');
+      const text = prompt('Enter label:');
       if (text) {
         state.drawings.push({ type: 'text', x, price, text, color: COL.drawing });
       }
@@ -1038,18 +995,12 @@ function finalizeDrawing() {
   if (!d) return;
 
   if (d.type === 'range') {
-    // Compute selected range profile
     const allCandles = [...state.candles];
     if (state.currentCandle) allCandles.push(state.currentCandle);
-
-    // Find time range from x positions
-    const visibleCount = Math.floor(state.width / state.view.scaleX) + 2;
-    const si = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / state.view.scaleX));
 
     const priceHigh = Math.max(d.price1, d.price2);
     const priceLow = Math.min(d.price1, d.price2);
 
-    // Find candles in the selected price range and approximate time range
     const matchingCandles = allCandles.filter(c => {
       const mid = (c.high + c.low) / 2;
       return mid >= priceLow && mid <= priceHigh;
@@ -1060,22 +1011,14 @@ function finalizeDrawing() {
       const end = matchingCandles[matchingCandles.length - 1].openTime;
 
       state.selectedRange = {
-        start,
-        end,
-        priceLow,
-        priceHigh,
-        profile: null
+        start, end, priceLow, priceHigh, profile: null
       };
 
-      // Request profile from server
       if (state.wsReady && state.symbol) {
         state.ws.send(JSON.stringify({
           type: 'get_profile',
           symbol: state.symbol,
-          start,
-          end,
-          priceLow,
-          priceHigh
+          start, end, priceLow, priceHigh
         }));
       }
     }
@@ -1087,10 +1030,7 @@ function finalizeDrawing() {
 }
 
 function deleteSelectedDrawing() {
-  // Delete last drawing
-  if (state.drawings.length > 0) {
-    state.drawings.pop();
-  }
+  if (state.drawings.length > 0) state.drawings.pop();
 }
 
 // ============ UI UPDATES ============
@@ -1109,45 +1049,78 @@ function updateSourceUI() {
   const execRef = document.getElementById('exec-ref');
   const warning = document.getElementById('fallback-warning');
 
-  if (ss.hyperliquid === 'connected') {
+  // PHASE 0: Truth model — don't say "connected" if no symbol is subscribed
+  const hl = ss.hyperliquid || {};
+  const hlConnected = hl.connected || false;
+
+  if (hlConnected && state.symbolLoaded) {
     pill.textContent = 'HL';
     pill.classList.add('active');
-    quality.textContent = 'Quality: Good';
-  } else if (ss.binance_futures === 'connected') {
-    pill.textContent = 'Binance-F';
+    // Quality depends on actual data flow
+    const tradeAge = hl.lastTradeTs ? Date.now() - hl.lastTradeTs : Infinity;
+    if (tradeAge < 30000) {
+      quality.textContent = 'Quality: Good';
+    } else if (tradeAge < 120000) {
+      quality.textContent = 'Quality: Stale';
+    } else {
+      quality.textContent = 'Quality: Waiting';
+    }
+  } else if (hlConnected && !state.symbolLoaded) {
+    pill.textContent = 'HL';
     pill.classList.add('active');
-    quality.textContent = 'Quality: OK';
-  } else if (ss.binance_spot === 'connected') {
-    pill.textContent = 'Spot';
-    pill.classList.remove('active');
-    quality.textContent = 'Quality: Fallback';
+    quality.textContent = 'Quality: No Symbol';
   } else {
     pill.textContent = '—';
     pill.classList.remove('active');
     quality.textContent = 'Quality: Disconnected';
   }
 
-  if (state.isSpotFallback) {
-    warning.classList.remove('hidden');
-  } else {
-    warning.classList.add('hidden');
-  }
+  // No spot fallback warning in perp-only mode
+  warning.classList.add('hidden');
 
   // Exec ref
   if (state.symbol) {
     const mapped = symbolToBinance(state.symbol);
-    execRef.textContent = mapped ? `Exec: ${mapped}` : 'Exec: —';
+    execRef.textContent = `Exec: ${mapped}`;
+    execRef.classList.remove('dim');
+  } else {
+    execRef.textContent = 'Exec: —';
+    execRef.classList.add('dim');
   }
 
   // Source content panel
+  const bn = ss.binanceUsdm || {};
   const sc = document.getElementById('source-content');
   sc.innerHTML = `
-    <div class="row"><span class="label">Read:</span><span class="val">${ss.hyperliquid === 'connected' ? 'Hyperliquid' : ss.binance_futures === 'connected' ? 'Binance Futures' : 'Spot (fallback)'}</span></div>
-    <div class="row"><span class="label">HL:</span><span class="val ${ss.hyperliquid === 'connected' ? 'green' : 'red'}">${ss.hyperliquid || '—'}</span></div>
-    <div class="row"><span class="label">B.Futures:</span><span class="val ${ss.binance_futures === 'connected' ? 'green' : 'red'}">${ss.binance_futures || '—'}</span></div>
-    <div class="row"><span class="label">B.Spot:</span><span class="val ${ss.binance_spot === 'connected' ? 'green' : 'red'}">${ss.binance_spot || '—'}</span></div>
-    <div class="row"><span class="label">Spot FB:</span><span class="val ${state.isSpotFallback ? 'red' : 'green'}">${state.isSpotFallback ? 'YES' : 'NO'}</span></div>
+    <div class="row"><span class="label">Read:</span><span class="val">Hyperliquid</span></div>
+    <div class="row"><span class="label">HL WS:</span><span class="val ${hlConnected ? 'green' : 'red'}">${hlConnected ? 'connected' : 'disconnected'}</span></div>
+    <div class="row"><span class="label">HL trades:</span><span class="val">${hl.tradeCount || 0}</span></div>
+    <div class="row"><span class="label">HL book:</span><span class="val ${hl.bookSubscribed ? 'green' : ''}">${hl.bookSubscribed ? 'active' : 'off'}</span></div>
+    <div class="row"><span class="label">B.Futures:</span><span class="val ${bn.futuresWsConnected ? 'green' : 'red'}">${bn.futuresWsConnected ? 'connected' : 'disconnected'}</span></div>
+    <div class="row"><span class="label">Exec ref:</span><span class="val">${bn.executionReferenceOnly ? 'reference only' : '—'}</span></div>
+    <div class="row"><span class="label">Spot:</span><span class="val" style="color:#475569">debug only (off)</span></div>
   `;
+}
+
+function updateRightPanel() {
+  const auction = document.getElementById('auction-content');
+  if (state.symbol && state.symbolLoaded) {
+    const hl = state.sourceStatus.hyperliquid || {};
+    auction.innerHTML = `
+      <div class="row"><span class="label">Symbol:</span><span class="val">${state.symbol}</span></div>
+      <div class="row"><span class="label">Source:</span><span class="val green">Hyperliquid</span></div>
+      <div class="row"><span class="label">Trades:</span><span class="val">${hl.tradeCount || 0}</span></div>
+      <div class="row"><span class="label">Book:</span><span class="val ${hl.bookSubscribed ? 'green' : ''}">${hl.bookSubscribed ? 'active' : 'pending'}</span></div>
+      <div class="row"><span class="label">Candles:</span><span class="val">${state.candles.length}</span></div>
+      <div class="row"><span class="label">Bubbles:</span><span class="val">${state.bubbles.length}</span></div>
+      <div class="row"><span class="label">Zones:</span><span class="val">${state.zones.length}</span></div>
+      <div class="row"><span class="label">Exec Ref:</span><span class="val">${symbolToBinance(state.symbol)}</span></div>
+    `;
+  } else if (state.symbol) {
+    auction.innerHTML = `<div style="color:#f59e0b">Loading ${state.symbol}...</div>`;
+  } else {
+    auction.innerHTML = '<div style="color:#475569">No symbol selected</div>';
+  }
 }
 
 function updateRangePanel() {
@@ -1193,12 +1166,18 @@ function updateRangePanel() {
 
 function updateScannerUI() {
   const body = document.getElementById('scanner-body');
-  if (!state.scannerData.length) {
-    body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#475569">No data yet...</td></tr>';
+  const data = state.scannerData;
+
+  if (!data || !data.symbols || !data.symbols.length) {
+    const hydrated = data?.hydrated || {};
+    const msg = hydrated.hyperliquid && hydrated.binance
+      ? 'Scanner hydrated — waiting for trade data'
+      : `Hydrating... HL=${hydrated.hyperliquid ? '✓' : '...'} Binance=${hydrated.binance ? '✓' : '...'}`;
+    body.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#475569">${msg}</td></tr>`;
     return;
   }
 
-  body.innerHTML = state.scannerData.map(s => `
+  body.innerHTML = data.symbols.map(s => `
     <tr class="${s.symbol === state.symbol ? 'selected' : ''}" onclick="window.__selectSymbol('${s.symbol}')">
       <td>
         <strong>${s.symbol}</strong>
@@ -1226,7 +1205,6 @@ function symbolToBinance(symbol) {
 }
 
 function updateSymbolDropdown(coins) {
-  // Store for symbol search
   window.__hlCoins = coins || [];
 }
 
@@ -1245,7 +1223,6 @@ function initButtons() {
     document.getElementById('btn-follow-live').classList.add('active');
   });
 
-  // Tool buttons
   document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       if (btn.dataset.tool === 'delete') {
@@ -1256,7 +1233,6 @@ function initButtons() {
     });
   });
 
-  // Interval selector
   document.getElementById('interval-select').addEventListener('change', (e) => {
     state.interval = e.target.value;
     if (state.wsReady) {
@@ -1288,13 +1264,11 @@ function initButtons() {
     setTimeout(() => symDropdown.classList.add('hidden'), 200);
   });
 
-  // Scanner mode
   document.getElementById('scanner-mode').addEventListener('change', (e) => {
     state.scannerMode = e.target.value;
     fetchScannerData();
   });
 
-  // Bottom tabs
   document.querySelectorAll('.bottom-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.bottom-tab').forEach(t => t.classList.remove('active'));
@@ -1304,7 +1278,7 @@ function initButtons() {
     });
   });
 
-  // Source selector
+  // Source selector (for future use)
   document.getElementById('source-select').addEventListener('change', (e) => {
     state.source = e.target.value;
   });
@@ -1331,25 +1305,59 @@ function showSymbolDropdown(filter) {
 
 // ============ SYMBOL SELECTION ============
 function selectSymbol(symbol) {
-  state.symbol = symbol;
+  const sym = symbol.toUpperCase().trim();
+  if (!sym) return;
+
+  state.symbol = sym;
   state.candles = [];
   state.currentCandle = null;
   state.bubbles = [];
   state.zones = [];
   state.selectedRange = null;
   state.drawings = [];
+  state.symbolLoaded = false;
 
-  document.getElementById('symbol-input').value = symbol;
-  document.getElementById('fp-symbol').textContent = symbol;
+  document.getElementById('symbol-input').value = sym;
+  document.getElementById('fp-symbol').textContent = sym;
 
   updateRangePanel();
+  updateRightPanel();
   updateSourceUI();
 
+  // PHASE 2: Use REST API for symbol selection (reliable)
+  fetch('/api/select-symbol', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: state.source,
+      symbol: sym,
+      interval: state.interval
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      console.log(`[SELECT] ${sym} subscribed — trades=${data.subscribedTrades}, book=${data.subscribedBook}`);
+      if (data.lastError) {
+        console.warn(`[SELECT] Warning: ${data.lastError}`);
+      }
+    } else {
+      console.error(`[SELECT] Failed: ${data.error}`);
+    }
+  })
+  .catch(err => {
+    console.error('[SELECT] Request failed:', err);
+    // Fallback to WS
+    if (state.wsReady) {
+      state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+    }
+  });
+
+  // Also notify via WS for immediate snapshot
   if (state.wsReady) {
-    state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol }));
+    state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
   }
 
-  // Fetch scanner data
   fetchScannerData();
 }
 
@@ -1394,10 +1402,8 @@ function updateFootprint() {
       const pocPrice = data.candle ? ((data.candle.high + data.candle.low) / 2) : 0;
 
       el.innerHTML = levels.map(l => {
-        const buyPct = (l.buy / l.total * 100).toFixed(0);
-        const sellPct = (l.sell / l.total * 100).toFixed(0);
-        const isPoc = Math.abs(l.price - pocPrice) < data.candle?.high * 0.001;
         const delta = l.buy - l.sell;
+        const isPoc = Math.abs(l.price - pocPrice) < data.candle?.high * 0.001;
 
         return `
           <div class="fp-row ${isPoc ? 'poc' : ''}">
@@ -1420,17 +1426,23 @@ function init() {
   connectWS();
   startScannerPolling();
 
-  // Footprint refresh
   setInterval(updateFootprint, 3000);
 
-  // Start render loop
-  requestAnimationFrame(render);
+  // Poll status periodically to keep truth model updated
+  setInterval(() => {
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(status => {
+        state.sourceStatus = status;
+        updateSourceUI();
+        updateRightPanel();
+      })
+      .catch(() => {});
+  }, 5000);
 
-  // Select default symbol
-  selectSymbol('BTC');
+  requestAnimationFrame(render);
 }
 
-// Start when DOM ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
 } else {
