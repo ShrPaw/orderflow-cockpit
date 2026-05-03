@@ -112,12 +112,13 @@
         <div id="scanner-controls">
           <select id="scanner-mode">
             <option value="top_attention">Top Attention</option>
-            <option value="pinned">Pinned Fundamentals</option>
             <option value="volatility_watchlist">Volatility Watchlist</option>
-            <option value="top_movers">Top Movers</option>
+            <option value="pinned">Pinned Fundamentals</option>
+            <option value="full_hyperliquid">Full Hyperliquid</option>
+            <option value="hl_binance_overlap">HL/Binance Overlap</option>
+            <option value="top_bubbles">Top Bubble Activity</option>
+            <option value="top_absorption">Top Absorption/Rejection</option>
             <option value="top_volatility">Top Volatility</option>
-            <option value="top_bubbles">Top Bubbles</option>
-            <option value="top_absorption">Top Absorption</option>
           </select>
         </div>
         <div id="scanner-table-wrap">
@@ -133,9 +134,9 @@
                 <th>Freq</th>
                 <th>VolExp</th>
                 <th>Bubbles</th>
-                <th>Absorb</th>
-                <th>Source</th>
+                <th>Abs/Rej</th>
                 <th>Exec Ref</th>
+                <th>Zones</th>
               </tr>
             </thead>
             <tbody id="scanner-body"></tbody>
