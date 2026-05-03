@@ -1,5 +1,5 @@
 // Candle engine — aggregates raw trades into custom interval OHLCV + orderflow candles
-// Supports: 10s, 20s, 40s, 1m, 3m, 5m
+// Phase 4: Robust 40s aggregation + interval switching with trade buffering
 
 class CandleEngine {
   constructor(intervalMs = 40000) {
@@ -7,11 +7,20 @@ class CandleEngine {
     this.candles = new Map(); // symbol -> candle[]
     this.current = new Map(); // symbol -> current candle
     this.listeners = [];
-    this.maxCandles = 2000; // per symbol
+    this.maxCandles = 2000;
+
+    // Phase 4: Trade buffer for interval switching
+    this.tradeBuffer = new Map(); // symbol -> trade[] (last N trades)
+    this.maxBufferSize = 10000; // per symbol
   }
 
   setInterval(ms) {
+    if (ms === this.intervalMs) return;
     this.intervalMs = ms;
+    // Clear current candles so they rebuild from buffer
+    this.current.clear();
+    // Rebuild from buffered trades
+    this._rebuildFromBuffer();
   }
 
   onCandle(listener) {
@@ -20,16 +29,20 @@ class CandleEngine {
 
   processTrade(trade) {
     const { symbol, price, qty, side, time, source } = trade;
-    const bucket = Math.floor(time / this.intervalMs) * this.intervalMs;
 
+    // Buffer trade for interval switching
+    if (!this.tradeBuffer.has(symbol)) {
+      this.tradeBuffer.set(symbol, []);
+    }
+    const buf = this.tradeBuffer.get(symbol);
+    buf.push({ price, qty, side, time, source });
+    if (buf.length > this.maxBufferSize) buf.shift();
+
+    const bucket = Math.floor(time / this.intervalMs) * this.intervalMs;
     let candle = this.current.get(symbol);
 
     if (!candle || candle.openTime !== bucket) {
-      // Close previous candle if exists
-      if (candle) {
-        this._closeCandle(symbol, candle);
-      }
-      // Start new candle
+      if (candle) this._closeCandle(symbol, candle);
       candle = {
         symbol,
         openTime: bucket,
@@ -48,16 +61,13 @@ class CandleEngine {
         bubbleCount: 0,
         absorptionCount: 0,
         rejectionCount: 0,
-        // Price-level detail for footprint
-        priceMap: new Map(), // price_bin -> { buy, sell, total, delta, maxPrint, trades }
-        // Bubbles (large/aggressive trades)
+        priceMap: new Map(),
         bubbles: [],
         source
       };
       this.current.set(symbol, candle);
     }
 
-    // Update candle
     candle.high = Math.max(candle.high, price);
     candle.low = Math.min(candle.low, price);
     candle.close = price;
@@ -74,13 +84,10 @@ class CandleEngine {
 
     candle.maxTradeSize = Math.max(candle.maxTradeSize, qty);
 
-    // Large trade detection (>$10k notional)
     const notional = price * qty;
-    if (notional > 10000) {
-      candle.largeTradeCount++;
-    }
+    if (notional > 10000) candle.largeTradeCount++;
 
-    // Bubble detection (aggressive burst)
+    // Bubble detection
     if (notional > 5000 || qty > 100) {
       candle.bubbleCount++;
       candle.bubbles.push({
@@ -89,7 +96,7 @@ class CandleEngine {
         side,
         notional,
         time,
-        state: 'pending', // accepted/rejected/absorbed/exhausted
+        state: 'pending',
         source
       });
     }
@@ -112,7 +119,7 @@ class CandleEngine {
     level.trades++;
     level.maxPrint = Math.max(level.maxPrint, qty);
 
-    // Absorption detection (large passive fill against aggressive)
+    // Absorption detection
     if (notional > 20000 && level.trades > 3) {
       const imbalance = Math.abs(level.delta) / level.total;
       if (imbalance < 0.3) {
@@ -121,8 +128,7 @@ class CandleEngine {
       }
     }
 
-    // Rejection detection (aggression that fails to move price)
-    // Simplified: large trade that doesn't move price significantly
+    // Rejection detection
     if (notional > 15000) {
       const range = candle.high - candle.low;
       const midPrice = (candle.high + candle.low) / 2;
@@ -133,8 +139,20 @@ class CandleEngine {
     }
   }
 
+  _rebuildFromBuffer() {
+    // Rebuild all candles from buffered trades
+    for (const [symbol, trades] of this.tradeBuffer) {
+      // Clear existing candles for this symbol
+      this.candles.set(symbol, []);
+
+      // Replay trades
+      for (const t of trades) {
+        this.processTrade({ symbol, ...t });
+      }
+    }
+  }
+
   _closeCandle(symbol, candle) {
-    // Convert priceMap to plain object for serialization
     const priceLevels = {};
     for (const [bin, level] of candle.priceMap) {
       priceLevels[bin] = level;
@@ -146,20 +164,13 @@ class CandleEngine {
       priceMapSize: candle.priceMap.size
     };
 
-    // Store
-    if (!this.candles.has(symbol)) {
-      this.candles.set(symbol, []);
-    }
+    if (!this.candles.has(symbol)) this.candles.set(symbol, []);
     const arr = this.candles.get(symbol);
     arr.push(closed);
-    if (arr.length > this.maxCandles) {
-      arr.shift();
-    }
+    if (arr.length > this.maxCandles) arr.shift();
 
-    // Classify bubble states
     this._classifyBubbles(closed);
 
-    // Notify listeners
     for (const fn of this.listeners) {
       fn(closed);
     }
@@ -174,13 +185,10 @@ class CandleEngine {
       const distFromMid = Math.abs(bubble.price - mid) / mid;
 
       if (rangeRatio < 0.002) {
-        // Tight range — absorption
         bubble.state = 'absorbed';
       } else if (distFromMid > 0.7 && bubble.notional > 30000) {
-        // Large trade at extreme — rejected
         bubble.state = 'rejected';
       } else if (bubble.notional > 50000) {
-        // Very large — exhausted
         bubble.state = 'exhausted';
       } else {
         bubble.state = 'accepted';
@@ -189,15 +197,13 @@ class CandleEngine {
   }
 
   _priceBin(price, symbol) {
-    // Dynamic bin size based on price level
     let binSize;
-    if (price > 10000) binSize = 10;       // BTC: $10 bins
-    else if (price > 1000) binSize = 5;     // ETH: $5 bins
-    else if (price > 100) binSize = 1;      // SOL: $1 bins
-    else if (price > 10) binSize = 0.1;     // Mid-range
-    else if (price > 1) binSize = 0.01;     // Small caps
-    else binSize = 0.001;                    // Micro caps
-
+    if (price > 10000) binSize = 10;
+    else if (price > 1000) binSize = 5;
+    else if (price > 100) binSize = 1;
+    else if (price > 10) binSize = 0.1;
+    else if (price > 1) binSize = 0.01;
+    else binSize = 0.001;
     return Math.round(price / binSize) * binSize;
   }
 
