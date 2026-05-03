@@ -1,4 +1,6 @@
 // Hyperliquid WebSocket — PRIMARY live read source
+// Subscribes to trades for ALL perp coins (per-coin subscription required by HL API)
+
 const WebSocket = require('ws');
 const https = require('https');
 
@@ -9,18 +11,16 @@ class HyperliquidSource {
     this.connected = false;
     this.reconnectTimer = null;
     this.coins = []; // available perps
-
-    // Per-symbol tracking
-    this.subscribedTrades = true; // global trade stream
+    this.subscribedTradeCoins = new Set(); // coins with trade subscription
     this.subscribedBooks = new Set(); // coins with l2Book active
-    this.activeSymbol = null; // currently focused symbol
+    this.activeSymbol = null;
 
     // Stats
     this.tradeCount = 0;
     this.bookUpdateCount = 0;
     this.lastTradeTs = 0;
     this.lastBookTs = 0;
-    this.tradesBySymbol = new Map(); // symbol -> count
+    this.tradesBySymbol = new Map();
   }
 
   connect() {
@@ -29,16 +29,16 @@ class HyperliquidSource {
     this.ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
 
     this.ws.on('open', () => {
-      console.log('[HL] Connected — global trade stream active');
+      console.log('[HL] Connected');
       this.connected = true;
-      // Subscribe to ALL trades (global stream)
-      this.ws.send(JSON.stringify({
-        method: 'subscribe',
-        subscription: { type: 'trades' }
-      }));
       this.emit('source_status', { source: 'hyperliquid', status: 'connected' });
 
-      // Re-subscribe to any active book
+      // Subscribe to ALL coins (if we have the universe)
+      if (this.coins.length > 0) {
+        this._subscribeAllTrades();
+      }
+
+      // Re-subscribe to active book
       if (this.activeSymbol) {
         this._subscribeBook(this.activeSymbol);
       }
@@ -55,6 +55,7 @@ class HyperliquidSource {
       console.log('[HL] Disconnected');
       this.connected = false;
       this.ws = null;
+      this.subscribedTradeCoins.clear();
       this.subscribedBooks.clear();
       this.emit('source_status', { source: 'hyperliquid', status: 'disconnected' });
       this._scheduleReconnect();
@@ -65,15 +66,47 @@ class HyperliquidSource {
     });
   }
 
+  /**
+   * Subscribe to trades for all coins in the universe
+   */
+  _subscribeAllTrades() {
+    if (!this.connected || !this.ws) return;
+    let count = 0;
+    for (const coin of this.coins) {
+      if (!this.subscribedTradeCoins.has(coin)) {
+        this.ws.send(JSON.stringify({
+          method: 'subscribe',
+          subscription: { type: 'trades', coin }
+        }));
+        this.subscribedTradeCoins.add(coin);
+        count++;
+      }
+    }
+    if (count > 0) {
+      console.log(`[HL] Subscribed to trades for ${count} coins (total: ${this.subscribedTradeCoins.size})`);
+    }
+  }
+
   subscribeSymbol(coin) {
     this.activeSymbol = coin;
     if (!this.connected) return;
+
+    // Ensure trade subscription for this coin
+    if (!this.subscribedTradeCoins.has(coin)) {
+      this.ws.send(JSON.stringify({
+        method: 'subscribe',
+        subscription: { type: 'trades', coin }
+      }));
+      this.subscribedTradeCoins.add(coin);
+    }
+
+    // Subscribe to l2Book
     this._subscribeBook(coin);
   }
 
   _subscribeBook(coin) {
     if (!this.connected || !this.ws) return;
-    // Unsubscribe previous book if different
+    // Unsubscribe previous books
     for (const prev of this.subscribedBooks) {
       if (prev !== coin) {
         try {
@@ -85,7 +118,6 @@ class HyperliquidSource {
         this.subscribedBooks.delete(prev);
       }
     }
-    // Subscribe to new book
     if (!this.subscribedBooks.has(coin)) {
       this.ws.send(JSON.stringify({
         method: 'subscribe',
@@ -126,11 +158,8 @@ class HyperliquidSource {
         time: Date.now()
       });
     }
-    // Meta info for coin list
-    if (msg.channel === 'meta' && msg.data) {
-      this.coins = msg.data.universe ? msg.data.universe.map(u => u.name) : [];
-      this.emit('hl_coins', this.coins);
-    }
+    // Subscription responses — ignore
+    if (msg.channel === 'subscriptionResponse') return;
   }
 
   fetchMeta() {
@@ -146,9 +175,30 @@ class HyperliquidSource {
         try {
           const info = JSON.parse(data);
           if (info.universe) {
-            this.coins = info.universe.map(u => u.name);
+            const newCoins = info.universe.map(u => u.name);
+            const added = newCoins.filter(c => !this.coins.includes(c));
+            this.coins = newCoins;
             this.emit('hl_coins', this.coins);
             console.log(`[HL] Found ${this.coins.length} perpetual contracts`);
+
+            // Subscribe to trades for any new coins
+            if (this.connected && added.length > 0) {
+              for (const coin of added) {
+                if (!this.subscribedTradeCoins.has(coin)) {
+                  this.ws.send(JSON.stringify({
+                    method: 'subscribe',
+                    subscription: { type: 'trades', coin }
+                  }));
+                  this.subscribedTradeCoins.add(coin);
+                }
+              }
+              console.log(`[HL] Subscribed to ${added.length} new coins`);
+            }
+
+            // If we just got the universe and are already connected, subscribe all
+            if (this.connected && this.subscribedTradeCoins.size === 0) {
+              this._subscribeAllTrades();
+            }
           }
         } catch (e) {}
       });
@@ -160,14 +210,15 @@ class HyperliquidSource {
   getStatus() {
     return {
       connected: this.connected,
-      tradesSubscribed: this.connected && this.subscribedTrades,
+      tradesSubscribed: this.connected && this.subscribedTradeCoins.size > 0,
       bookSubscribed: this.connected && this.subscribedBooks.has(this.activeSymbol),
       activeSymbol: this.activeSymbol,
       lastTradeTs: this.lastTradeTs,
       lastBookTs: this.lastBookTs,
       tradeCount: this.tradeCount,
       bookUpdateCount: this.bookUpdateCount,
-      tradeCountForSymbol: this.tradesBySymbol.get(this.activeSymbol) || 0
+      tradeCountForSymbol: this.tradesBySymbol.get(this.activeSymbol) || 0,
+      subscribedCoins: this.subscribedTradeCoins.size
     };
   }
 
