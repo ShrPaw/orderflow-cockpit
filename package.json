@@ -1,0 +1,13 @@
+{
+  "name": "orderflow-cockpit",
+  "version": "2.0.0",
+  "description": "Professional orderflow cockpit — 40s candles, volume/delta profile, bubble visualization",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
