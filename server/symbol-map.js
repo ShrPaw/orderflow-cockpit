@@ -24,6 +24,7 @@ class SymbolMap {
     this.binanceFuturesSymbols = new Set();
     this.hlCoins = new Set();
     this.overlap = [];
+    this.specialMappings = SPECIAL_MAPPINGS; // expose for scanner
   }
 
   setBinanceSymbols(symbols) {
