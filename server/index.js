@@ -126,6 +126,7 @@ function detectZones(symbol, candles) {
 
   const zones = [];
   const recent = candles.slice(-20);
+  const avgVol = recent.reduce((s, r) => s + r.volume, 0) / recent.length;
 
   // Absorption zones (tight range + high volume)
   for (let i = 2; i < recent.length - 2; i++) {
@@ -135,7 +136,6 @@ function detectZones(symbol, candles) {
     if (mid === 0) continue;
 
     if (range / mid < 0.003 && c.volume > 0) {
-      const avgVol = recent.reduce((s, r) => s + r.volume, 0) / recent.length;
       if (c.volume > avgVol * 1.5) {
         const side = c.delta > 0 ? 'BUY' : 'SELL';
         zones.push({
@@ -175,6 +175,78 @@ function detectZones(symbol, candles) {
           strength: lowerWick / range,
           candleTime: c.openTime
         });
+      }
+    }
+  }
+
+  // Acceptance zones (consecutive same-side delta candles)
+  let buyStreak = 0, sellStreak = 0;
+  let buyRange = { high: -Infinity, low: Infinity };
+  let sellRange = { high: -Infinity, low: Infinity };
+  for (const c of recent) {
+    if (c.delta > 0) {
+      buyStreak++;
+      buyRange.high = Math.max(buyRange.high, c.high);
+      buyRange.low = Math.min(buyRange.low, c.low);
+      sellStreak = 0;
+      if (buyStreak >= 3) {
+        zones.push({
+          type: 'BUY_ACCEPTANCE_ZONE',
+          priceLow: buyRange.low,
+          priceHigh: buyRange.high,
+          strength: buyStreak,
+          candleTime: c.openTime
+        });
+      }
+    } else if (c.delta < 0) {
+      sellStreak++;
+      sellRange.high = Math.max(sellRange.high, c.high);
+      sellRange.low = Math.min(sellRange.low, c.low);
+      buyStreak = 0;
+      if (sellStreak >= 3) {
+        zones.push({
+          type: 'SELL_ACCEPTANCE_ZONE',
+          priceLow: sellRange.low,
+          priceHigh: sellRange.high,
+          strength: sellStreak,
+          candleTime: c.openTime
+        });
+      }
+    } else {
+      buyStreak = 0; sellStreak = 0;
+      buyRange = { high: -Infinity, low: Infinity };
+      sellRange = { high: -Infinity, low: Infinity };
+    }
+  }
+
+  // Defense zones (high volume at price level held against aggression)
+  if (recent.length >= 5) {
+    const last5 = recent.slice(-5);
+    const last5Avg = last5.reduce((s, c) => s + c.volume, 0) / 5;
+    for (let i = 1; i < last5.length - 1; i++) {
+      const c = last5[i];
+      if (c.volume > last5Avg * 2) {
+        const range = c.high - c.low;
+        const mid = (c.high + c.low) / 2;
+        if (mid > 0 && range / mid < 0.005) {
+          if (c.delta > 0) {
+            zones.push({
+              type: 'BUYER_DEFENSE_ZONE',
+              priceLow: c.low,
+              priceHigh: c.high,
+              strength: c.volume / last5Avg,
+              candleTime: c.openTime
+            });
+          } else {
+            zones.push({
+              type: 'SELLER_DEFENSE_ZONE',
+              priceLow: c.low,
+              priceHigh: c.high,
+              strength: c.volume / last5Avg,
+              candleTime: c.openTime
+            });
+          }
+        }
       }
     }
   }
@@ -233,6 +305,22 @@ const server = http.createServer((req, res) => {
   if (pathname === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(buildStatus()));
+    return;
+  }
+
+  // PHASE 3: GET /api/scanner — full scanner response
+  if (pathname === '/api/scanner') {
+    const mode = url.searchParams.get('mode') || 'top_attention';
+    const result = scanner.getScannerResponse(mode);
+    // Update zone counts for each row
+    if (result.ok && result.rows) {
+      for (const row of result.rows) {
+        const zones = activeZones.get(row.hlSymbol);
+        row.zoneCount = zones ? zones.length : 0;
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
     return;
   }
 
