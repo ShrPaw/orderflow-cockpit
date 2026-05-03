@@ -1,5 +1,8 @@
 // Orderflow Cockpit — Main Server
-// HTTP API + WebSocket server for real-time data to frontend
+// Professional perp-only orderflow cockpit
+// Hyperliquid = PRIMARY live read source
+// Binance USD-M = manual execution/reference venue
+// Binance Spot = debug only, disabled by default
 
 const http = require('http');
 const fs = require('fs');
@@ -20,14 +23,11 @@ const symbolMap = new SymbolMap();
 const candleEngine = new CandleEngine(40000); // 40s default
 const scanner = new Scanner(candleEngine, symbolMap);
 
-// Active source tracking
-let activeReadSource = 'hyperliquid'; // primary
-let sourceStatus = {
-  hyperliquid: 'disconnected',
-  binance_futures: 'disconnected',
-  binance_spot: 'disconnected'
-};
-let isSpotFallback = false;
+// Active symbol tracking (PHASE 0 — truth model)
+let activeSymbol = null;
+let activeInterval = '40s';
+let activeSource = 'hyperliquid';
+let lastError = null;
 
 // --- Emit function (broadcasts to all connected UI clients) ---
 const uiClients = new Set();
@@ -49,12 +49,13 @@ const hlSource = new HyperliquidSource((type, data) => {
     scanner.processTrade(data);
   }
   if (type === 'source_status') {
-    sourceStatus[data.source] = data.status;
-    emit('source_status', sourceStatus);
+    emit('source_status', buildStatus());
   }
   if (type === 'hl_coins') {
     symbolMap.setHLCoins(data);
     emit('hl_coins', data);
+    // After HL coins arrive, mark scanner as hydrated
+    scanner.setHydrated('hyperliquid');
   }
   if (type === 'book') {
     emit('book', data);
@@ -64,30 +65,50 @@ const hlSource = new HyperliquidSource((type, data) => {
 const binanceSource = new BinanceSource((type, data) => {
   if (type === 'trade') {
     data.symbol = symbolMap.normalize(data.symbol, data.source);
-    // Only use Binance trades if HL is not primary or as supplement
-    if (activeReadSource !== 'hyperliquid' || isSpotFallback) {
-      candleEngine.processTrade(data);
-      scanner.processTrade(data);
-    }
+    // Binance trades are for reference/scanner only — HL is primary read
+    candleEngine.processTrade(data);
+    scanner.processTrade(data);
   }
   if (type === 'source_status') {
-    sourceStatus[data.source] = data.status;
-    // Auto-fallback logic
-    if (data.source === 'binance_futures' && data.status === 'disconnected' && sourceStatus.binance_spot === 'connected') {
-      isSpotFallback = true;
-    }
-    emit('source_status', { ...sourceStatus, isSpotFallback });
+    emit('source_status', buildStatus());
   }
   if (type === 'binance_futures_symbols') {
     symbolMap.setBinanceSymbols(data);
     emit('binance_symbols', [...data]);
+    scanner.setHydrated('binance');
   }
 });
+
+// --- Status truth model (PHASE 0) ---
+function buildStatus() {
+  const hlStatus = hlSource.getStatus();
+  const bnStatus = binanceSource.getStatus();
+  const candleCount = activeSymbol ? candleEngine.getCandles(activeSymbol, 2000).length : 0;
+  const currentCandle = activeSymbol ? candleEngine.getCurrentCandle(activeSymbol) : null;
+  const zones = activeSymbol ? (activeZones.get(activeSymbol) || []) : [];
+
+  return {
+    selectedSource: activeSource,
+    selectedSymbol: activeSymbol,
+    selectedInterval: activeInterval,
+    hyperliquid: hlStatus,
+    binanceUsdm: bnStatus,
+    spotDebug: {
+      enabled: binanceSource.spotDebugEnabled,
+      active: binanceSource.spotDebugActive
+    },
+    candles: candleCount,
+    currentCandle: !!currentCandle,
+    bubbles: currentCandle ? currentCandle.bubbleCount : 0,
+    zones: zones.length,
+    scannerRows: scanner.stats.size,
+    lastError: lastError
+  };
+}
 
 // --- Candle engine events ---
 candleEngine.onCandle((candle) => {
   emit('candle', candle);
-  // Also emit bubble events for the UI
   if (candle.bubbles && candle.bubbles.length > 0) {
     emit('bubbles', {
       symbol: candle.symbol,
@@ -98,7 +119,7 @@ candleEngine.onCandle((candle) => {
 });
 
 // --- Zone detection ---
-const activeZones = new Map(); // symbol -> zones[]
+const activeZones = new Map();
 
 function detectZones(symbol, candles) {
   if (candles.length < 5) return;
@@ -106,7 +127,7 @@ function detectZones(symbol, candles) {
   const zones = [];
   const recent = candles.slice(-20);
 
-  // Find absorption zones (tight range + high volume)
+  // Absorption zones (tight range + high volume)
   for (let i = 2; i < recent.length - 2; i++) {
     const c = recent[i];
     const range = c.high - c.low;
@@ -128,7 +149,7 @@ function detectZones(symbol, candles) {
     }
   }
 
-  // Find rejection zones (wick-heavy candles)
+  // Rejection zones (wick-heavy candles)
   for (const c of recent) {
     const body = Math.abs(c.close - c.open);
     const range = c.high - c.low;
@@ -162,7 +183,6 @@ function detectZones(symbol, candles) {
   emit('zones', { symbol, zones });
 }
 
-// Periodically update zones
 setInterval(() => {
   for (const [symbol, candles] of candleEngine.candles) {
     detectZones(symbol, candles.slice(-50));
@@ -185,13 +205,41 @@ const server = http.createServer((req, res) => {
 
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   // --- API Routes ---
+
+  // PHASE 2: POST /api/select-symbol — subscribe to a symbol
+  if (pathname === '/api/select-symbol' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { source, symbol, interval } = JSON.parse(body);
+        const result = selectSymbol(symbol, source || 'hyperliquid', interval || '40s');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // PHASE 2: GET /api/status — full truth model
+  if (pathname === '/api/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(buildStatus()));
+    return;
+  }
+
+  // Existing endpoints
   if (pathname === '/sources/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ...sourceStatus, activeReadSource, isSpotFallback }));
+    res.end(JSON.stringify(buildStatus()));
     return;
   }
 
@@ -209,8 +257,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/orderflow/candles') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
-    const interval = url.searchParams.get('interval') || '40s';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     const count = parseInt(url.searchParams.get('count') || '500');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(candleEngine.getCandles(symbol, count)));
@@ -218,7 +265,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/orderflow/bubbles') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     const candles = candleEngine.getCandles(symbol, 100);
     const bubbles = candles.flatMap(c => (c.bubbles || []).map(b => ({ ...b, candleTime: c.openTime })));
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -227,14 +274,14 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/orderflow/zones') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(activeZones.get(symbol) || []));
     return;
   }
 
   if (pathname === '/orderflow/profile/selected') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     const start = parseInt(url.searchParams.get('start'));
     const end = parseInt(url.searchParams.get('end'));
     const priceLow = parseFloat(url.searchParams.get('price_low'));
@@ -251,7 +298,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/orderflow/profile/visible') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     const from = parseInt(url.searchParams.get('from'));
     const to = parseInt(url.searchParams.get('to'));
 
@@ -265,7 +312,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/orderflow/footprint') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
+    const symbol = url.searchParams.get('symbol') || activeSymbol || 'BTC';
     const candle = candleEngine.getCurrentCandle(symbol);
     const priceMap = candle ? candle.priceMap || {} : {};
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -274,32 +321,6 @@ const server = http.createServer((req, res) => {
       low: candle.low, close: candle.close, volume: candle.volume,
       delta: candle.delta
     } : null, levels: priceMap }));
-    return;
-  }
-
-  if (pathname === '/orderflow/book') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Use WebSocket for real-time book data' }));
-    return;
-  }
-
-  if (pathname === '/orderflow/asset-context') {
-    const symbol = url.searchParams.get('symbol') || 'BTC';
-    const snapshot = candleEngine.getSnapshot(symbol);
-    const zones = activeZones.get(symbol) || [];
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      symbol,
-      readSource: activeReadSource,
-      executionReference: symbolMap.existsOnBoth(symbol) ? 'binance_usdm' : 'unavailable',
-      binanceSymbol: symbolMap.toBinance(symbol),
-      availableOnBinance: symbolMap.binanceFuturesSymbols.has(symbolMap.toBinance(symbol)),
-      isSpotFallback,
-      candleCount: snapshot.historical.length,
-      hasCurrentCandle: !!snapshot.current,
-      zones: zones.length,
-      dataQuality: isSpotFallback ? 'spot_fallback' : sourceStatus.hyperliquid === 'connected' ? 'good' : 'degraded'
-    }));
     return;
   }
 
@@ -321,6 +342,61 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// --- Symbol selection logic (PHASE 2) ---
+function selectSymbol(symbol, source, interval) {
+  const sym = symbol.toUpperCase().trim();
+  if (!sym) return { ok: false, error: 'empty symbol' };
+
+  activeSymbol = sym;
+  activeSource = source || 'hyperliquid';
+  activeInterval = interval || '40s';
+  lastError = null;
+
+  // Set candle interval
+  const intervals = { '10s': 10000, '20s': 20000, '40s': 40000, '1m': 60000, '3m': 180000, '5m': 300000 };
+  if (intervals[activeInterval]) {
+    candleEngine.setInterval(intervals[activeInterval]);
+  }
+
+  // Subscribe on Hyperliquid
+  hlSource.subscribeSymbol(sym);
+
+  // Subscribe on Binance for reference
+  const bnSymbol = symbolMap.toBinance(sym);
+  binanceSource.subscribeSymbol(bnSymbol.replace('USDT', ''));
+
+  // Check HL status
+  const hlStatus = hlSource.getStatus();
+  const subscribedTrades = hlStatus.connected && hlStatus.tradesSubscribed;
+  const subscribedBook = hlStatus.connected;
+
+  // Check if symbol exists on HL
+  const existsOnHL = hlSource.coins.includes(sym);
+  if (!existsOnHL && hlSource.coins.length > 0) {
+    lastError = `Symbol ${sym} not found on Hyperliquid (${hlSource.coins.length} perps available)`;
+  }
+
+  const result = {
+    ok: true,
+    source: activeSource,
+    symbol: sym,
+    interval: activeInterval,
+    subscribedTrades,
+    subscribedBook,
+    binanceSymbol: bnSymbol,
+    availableOnBinance: symbolMap.binanceFuturesSymbols.has(bnSymbol),
+    existsOnHL,
+    lastError
+  };
+
+  // Broadcast to all UI clients
+  emit('symbol_selected', result);
+  emit('source_status', buildStatus());
+
+  console.log(`[SELECT] ${sym} | source=${activeSource} | interval=${activeInterval} | HL=${existsOnHL} | Binance=${bnSymbol}`);
+  return result;
+}
+
 // --- WebSocket Server (for UI clients) ---
 const wss = new WebSocket.Server({ server });
 
@@ -329,9 +405,21 @@ wss.on('connection', (ws) => {
   console.log(`[UI] Client connected (${uiClients.size} total)`);
 
   // Send current state
-  ws.send(JSON.stringify({ type: 'source_status', data: { ...sourceStatus, isSpotFallback } }));
+  ws.send(JSON.stringify({ type: 'source_status', data: buildStatus() }));
   ws.send(JSON.stringify({ type: 'hl_coins', data: symbolMap.hlCoins ? [...symbolMap.hlCoins] : [] }));
   ws.send(JSON.stringify({ type: 'binance_symbols', data: symbolMap.binanceFuturesSymbols ? [...symbolMap.binanceFuturesSymbols] : [] }));
+
+  // If there's an active symbol, send its data immediately
+  if (activeSymbol) {
+    const snapshot = candleEngine.getSnapshot(activeSymbol);
+    ws.send(JSON.stringify({ type: 'snapshot', data: { symbol: activeSymbol, ...snapshot } }));
+    ws.send(JSON.stringify({ type: 'zones', data: { symbol: activeSymbol, zones: activeZones.get(activeSymbol) || [] } }));
+    ws.send(JSON.stringify({ type: 'symbol_selected', data: {
+      source: activeSource, symbol: activeSymbol, interval: activeInterval,
+      binanceSymbol: symbolMap.toBinance(activeSymbol),
+      availableOnBinance: symbolMap.binanceFuturesSymbols.has(symbolMap.toBinance(activeSymbol))
+    }}));
+  }
 
   ws.on('message', (raw) => {
     try {
@@ -348,25 +436,25 @@ wss.on('connection', (ws) => {
 
 function handleClientMessage(ws, msg) {
   switch (msg.type) {
-    case 'subscribe_symbol':
-      // Client wants to focus on a symbol
-      hlSource.subscribeSymbol(msg.symbol);
-      // Send existing candles
+    case 'subscribe_symbol': {
+      const result = selectSymbol(msg.symbol, msg.source || activeSource, msg.interval || activeInterval);
+      // Send snapshot to this specific client
       const snapshot = candleEngine.getSnapshot(msg.symbol);
       ws.send(JSON.stringify({ type: 'snapshot', data: { symbol: msg.symbol, ...snapshot } }));
-      // Send zones
       ws.send(JSON.stringify({ type: 'zones', data: { symbol: msg.symbol, zones: activeZones.get(msg.symbol) || [] } }));
       break;
+    }
 
-    case 'set_interval':
+    case 'set_interval': {
       const intervals = { '10s': 10000, '20s': 20000, '40s': 40000, '1m': 60000, '3m': 180000, '5m': 300000 };
       if (intervals[msg.interval]) {
         candleEngine.setInterval(intervals[msg.interval]);
+        activeInterval = msg.interval;
       }
       break;
+    }
 
-    case 'get_profile':
-      // Compute profile for a selected range
+    case 'get_profile': {
       const allCandles = candleEngine.getCandles(msg.symbol, 2000);
       const filtered = allCandles.filter(c => c.openTime >= msg.start && c.openTime <= msg.end);
       const profile = ProfileEngine.compute(filtered, {
@@ -376,8 +464,9 @@ function handleClientMessage(ws, msg) {
       profile.interpretation = ProfileEngine.interpret(profile);
       ws.send(JSON.stringify({ type: 'profile', data: { symbol: msg.symbol, profile } }));
       break;
+    }
 
-    case 'get_footprint':
+    case 'get_footprint': {
       const fp = candleEngine.getCurrentCandle(msg.symbol);
       ws.send(JSON.stringify({ type: 'footprint', data: {
         symbol: msg.symbol,
@@ -390,29 +479,43 @@ function handleClientMessage(ws, msg) {
         levels: fp ? fp.priceMap || {} : {}
       }}));
       break;
+    }
   }
 }
 
 // --- Start ---
 server.listen(PORT, () => {
-  console.log(`\n=== Orderflow Cockpit ===`);
-  console.log(`Server: http://localhost:${PORT}`);
-  console.log(`WebSocket: ws://localhost:${PORT}`);
-  console.log(`Read source: Hyperliquid (primary), Binance (fallback)`);
-  console.log(`Candle interval: 40s default`);
-  console.log(`========================\n`);
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`  ORDERFLOW COCKPIT — Professional Perp-Only`);
+  console.log(`${'='.repeat(50)}`);
+  console.log(`  Server:    http://localhost:${PORT}`);
+  console.log(`  WebSocket: ws://localhost:${PORT}`);
+  console.log(`  Read src:  Hyperliquid (PRIMARY)`);
+  console.log(`  Exec ref:  Binance USD-M (reference only)`);
+  console.log(`  Spot:      DEBUG ONLY (disabled)`);
+  console.log(`  Candles:   40s default`);
+  console.log(`${'='.repeat(50)}\n`);
 
-  // Connect data sources
+  // Connect Hyperliquid (PRIMARY)
   hlSource.connect();
   hlSource.fetchMeta();
 
-  // Connect Binance for symbol universe + fallback
+  // Connect Binance USD-M for universe + reference
   binanceSource.fetchFuturesSymbols().then(() => {
     binanceSource.connectFutures();
   });
 
   // Start scanner
   scanner.start();
+
+  // PHASE 2: Auto-load BTC after sources connect
+  // Give sources 2 seconds to connect, then auto-load BTC
+  setTimeout(() => {
+    if (!activeSymbol) {
+      console.log('[AUTO] Loading default symbol: BTC');
+      selectSymbol('BTC', 'hyperliquid', '40s');
+    }
+  }, 2000);
 });
 
 // Graceful shutdown
