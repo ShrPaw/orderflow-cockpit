@@ -1288,7 +1288,31 @@ function setActiveTool(tool) {
   document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === tool);
   });
-  state.canvas.style.cursor = tool === 'cursor' ? 'grab' : 'crosshair';
+
+  // Phase 6: Tool-specific cursor
+  const cursorMap = {
+    cursor: 'grab',
+    hline: 'crosshair',
+    trendline: 'crosshair',
+    rect: 'crosshair',
+    range: 'crosshair',
+    text: 'text',
+    delete: 'not-allowed'
+  };
+  state.canvas.style.cursor = cursorMap[tool] || 'crosshair';
+
+  // Phase 6: Status bar
+  const toolNames = {
+    cursor: 'Cursor',
+    hline: 'Horizontal Line — click to place',
+    trendline: 'Trend Line — drag to draw',
+    rect: 'Rectangle — drag to draw',
+    range: 'Range Profile — drag to select',
+    text: 'Text Label — click to place',
+    delete: 'Delete — click a drawing to remove'
+  };
+  const bar = document.getElementById('tool-status-bar');
+  if (bar) bar.textContent = 'Active Tool: ' + (toolNames[tool] || tool);
 }
 
 // Phase 12: Source/quality panel — truthful
