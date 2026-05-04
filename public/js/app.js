@@ -276,6 +276,7 @@ function handleCandle(candle) {
     state.candles.push(candle);
   }
   if (state.candles.length > 500) state.candles = state.candles.slice(-500);
+  state._priceScaleDirty = true;
 }
 
 // ============ CHART RENDERING ============
@@ -347,8 +348,8 @@ function render() {
 
   if (!visible.length) { requestAnimationFrame(render); return; }
 
-  // Phase 5: Only auto-fit if follow live AND user hasn't modified view
-  if (state.followLive && !state.view.userModified) {
+  // Phase 2: Only auto-fit price when data changes (dirty flag), not every frame
+  if (state.followLive && !state.view.userModified && state._priceScaleDirty) {
     let minP = Infinity, maxP = -Infinity;
     for (const c of visible) {
       if (c.low < minP) minP = c.low;
@@ -357,6 +358,21 @@ function render() {
     const range = maxP - minP || 1;
     state.view.pricePerPixel = range / (h * 0.85);
     state.view.scrollY = ((minP + maxP) / 2) / state.view.pricePerPixel - h / 2;
+    state._priceScaleDirty = false;
+  }
+
+  // Phase 2: Auto scale mode — adjust price to fit visible candles
+  if (state.autoScale && state.followLive && !state.view.userModified) {
+    let minP = Infinity, maxP = -Infinity;
+    for (const c of visible) {
+      if (c.low < minP) minP = c.low;
+      if (c.high > maxP) maxP = c.high;
+    }
+    const range = maxP - minP || 1;
+    const targetPPP = range / (h * 0.85);
+    // Smooth transition
+    state.view.pricePerPixel += (targetPPP - state.view.pricePerPixel) * 0.15;
+    state.view.scrollY += (((minP + maxP) / 2) / state.view.pricePerPixel - h / 2 - state.view.scrollY) * 0.15;
   }
 
   // Reset label deconfliction
@@ -1382,6 +1398,29 @@ function initButtons() {
   });
 
   // Phase 1: Reset UI State button
+  // Phase 2: Zoom buttons
+  document.getElementById('btn-zoom-in').addEventListener('click', () => {
+    state.view.scaleX = Math.min(80, state.view.scaleX * 1.3);
+    state.view.userModified = true;
+    state.followLive = false;
+    state._priceScaleDirty = true;
+    document.getElementById('btn-follow-live').classList.remove('active');
+  });
+  document.getElementById('btn-zoom-out').addEventListener('click', () => {
+    state.view.scaleX = Math.max(2, state.view.scaleX / 1.3);
+    state.view.userModified = true;
+    state.followLive = false;
+    state._priceScaleDirty = true;
+    document.getElementById('btn-follow-live').classList.remove('active');
+  });
+
+  // Phase 2: Auto scale toggle
+  document.getElementById('btn-auto-scale').addEventListener('click', () => {
+    state.autoScale = !state.autoScale;
+    document.getElementById('btn-auto-scale').classList.toggle('active', state.autoScale);
+    if (state.autoScale) state._priceScaleDirty = true;
+  });
+
   document.getElementById('btn-reset-ui').addEventListener('click', () => {
     try {
       state.activeTool = 'cursor';
