@@ -102,6 +102,20 @@
         <div class="panel-title">Source / Quality</div>
         <div id="source-content">—</div>
       </div>
+      <div class="panel-section" id="panel-bubble-legend">
+        <div class="panel-title" style="cursor:pointer" onclick="this.parentElement.querySelector('.legend-body').classList.toggle('hidden')">Bubble Legend ▾</div>
+        <div class="legend-body">
+          <div style="font-size:9px;color:#94a3b8;margin-bottom:4px">Aggression prints on candles</div>
+          <div class="legend-row"><span class="legend-dot" style="background:#22c55e;width:10px;height:10px;border-radius:50%;display:inline-block"></span> <span>Accepted buy aggression</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#ef4444;width:10px;height:10px;border-radius:50%;display:inline-block"></span> <span>Accepted sell aggression</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:transparent;border:2px solid #22c55e;width:10px;height:10px;border-radius:50%;display:inline-block"></span> <span>Rejected buy (liquidity held)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:transparent;border:2px solid #ef4444;width:10px;height:10px;border-radius:50%;display:inline-block"></span> <span>Rejected sell (liquidity held)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#f59e0b;width:10px;height:10px;border-radius:50%;display:inline-block;box-shadow:0 0 6px #f59e0b"></span> <span>Absorbed (reversal zone)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#6b7280;width:10px;height:10px;border-radius:50%;display:inline-block;border:1px dashed #6b7280"></span> <span>Exhausted (momentum fading)</span></div>
+          <div style="border-top:1px solid #1e293b;margin:4px 0"></div>
+          <div class="legend-row"><span style="font-weight:bold;color:#fff">B×N</span> <span>= N bubbles clustered at same price</span></div>
+        </div>
+      </div>
     </div>
   </div>
 

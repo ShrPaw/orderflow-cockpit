@@ -599,13 +599,13 @@ function drawBubbles(ctx, visible, candleW, priceToY, rightEdge, scaleX) {
         ctx.globalAlpha = 1;
     }
 
-    // Cluster count label
+    // Cluster count label — Phase 4: "B×N" format
     if (count > 1) {
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 8px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(`+${count}`, x, y);
+      ctx.fillText(`B×${count}`, x, y);
     }
 
     // Hover detection
@@ -988,7 +988,7 @@ function updateTooltip(allCandles, candleW, rightEdge) {
     tooltip.classList.add('hidden');
   }
 
-  // Bubble hover
+  // Bubble hover — Phase 4: detailed cluster tooltip
   if (state.hoveredBubble) {
     const b = state.hoveredBubble;
     tooltip.classList.remove('hidden');
@@ -996,12 +996,42 @@ function updateTooltip(allCandles, candleW, rightEdge) {
     tooltip.style.top = (b.y - 20) + 'px';
     const bub = b.mainBubble;
     const cl = b.cluster;
+    const bubs = cl.bubbles;
+
+    // Cluster analysis
+    const prices = bubs.map(bb => bb.price);
+    const priceRange = prices.length > 1 ? `${fmtPrice(Math.min(...prices))} — ${fmtPrice(Math.max(...prices))}` : fmtPrice(prices[0]);
+    const buyCount = bubs.filter(bb => bb.side === 'buy').length;
+    const sellCount = bubs.filter(bb => bb.side === 'sell').length;
+    const stateCounts = {};
+    for (const bb of bubs) { const s = bb.state || 'accepted'; stateCounts[s] = (stateCounts[s] || 0) + 1; }
+    const stateBreakdown = Object.entries(stateCounts).map(([s, n]) => `${n} ${s}`).join(' / ');
+
+    const isCluster = bubs.length > 1;
+    const title = isCluster ? `Bubble Cluster — ${bubs.length} bubbles` : `Bubble — ${bub.side.toUpperCase()} ${cl.state}`;
+
+    let color = bub.side === 'buy' ? '#22c55e' : '#ef4444';
+    if (cl.state === 'absorbed') color = '#f59e0b';
+    if (cl.state === 'exhausted') color = '#6b7280';
+
+    let interpText = '';
+    if (cl.state === 'accepted' && buyCount > sellCount) interpText = 'Buy aggression accepted — upward pressure';
+    else if (cl.state === 'accepted' && sellCount > buyCount) interpText = 'Sell aggression accepted — downward pressure';
+    else if (cl.state === 'rejected') interpText = 'Aggression rejected — liquidity held';
+    else if (cl.state === 'absorbed') interpText = 'Volume absorbed — potential reversal zone';
+    else if (cl.state === 'exhausted') interpText = 'Aggression exhausted — momentum fading';
+
     tooltip.innerHTML = `
-      <div style="color:${bub.side==='buy'?'#22c55e':'#ef4444'};font-weight:bold">${bub.side.toUpperCase()} ${cl.state.toUpperCase()}</div>
-      <div>Price: ${fmtPrice(bub.price)}</div>
-      <div>Size: ${fmtNum(bub.qty)} | $${fmtNum(bub.notional)}</div>
-      <div>Cluster: ${cl.bubbles.length} prints | $${fmtNum(cl.totalNotional)}</div>
-      <div>State: ${cl.state}</div>
+      <div style="color:${color};font-weight:bold;margin-bottom:4px">${title}</div>
+      <div style="color:#94a3b8">Price: ${fmtPrice(bub.price)}</div>
+      ${isCluster ? `<div style="color:#94a3b8">Range: ${priceRange}</div>` : ''}
+      <div style="margin-top:3px">Size: ${fmtNum(bub.qty)} | $${fmtNum(bub.notional)}</div>
+      ${isCluster ? `<div>Cluster total: $${fmtNum(cl.totalNotional)}</div>` : ''}
+      <div style="border-top:1px solid #1e293b;margin:4px 0;padding-top:3px">
+        <div>Side: <span style="color:${buyCount>0?'#22c55e':''}">${buyCount} buy</span> / <span style="color:${sellCount>0?'#ef4444':''}">${sellCount} sell</span></div>
+        <div>State: ${stateBreakdown}</div>
+      </div>
+      <div style="color:#94a3b8;font-style:italic;margin-top:3px">${interpText}</div>
     `;
     state.hoveredBubble = null;
   }

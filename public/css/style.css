@@ -226,6 +226,9 @@ button:hover { opacity: 0.85; }
 .fp-row .bar.buy { background: var(--green); opacity: 0.6; }
 .fp-row .bar.sell { background: var(--red); opacity: 0.6; }
 
+/* Bubble Legend */
+.legend-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 10px; color: var(--text-secondary); }
+
 /* Profile overlay label */
 .profile-label {
   position: absolute; background: var(--bg-tertiary); border: 1px solid var(--yellow);
