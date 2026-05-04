@@ -41,6 +41,7 @@
       <button id="btn-label-density" class="toggle" title="Label Density: compact">◉ Labels</button>
       <button id="btn-reset-ui" class="toggle" title="Reset UI State — clears tool, hover, transform">⟲ Reset UI</button>
       <button id="btn-reconnect" class="toggle" title="Reconnect / Reload Market Data">↻ Reconnect</button>
+      <button id="btn-diagnostics" class="toggle" title="Toggle Diagnostics Panel">⚙ Diag</button>
       <div id="fallback-warning" class="warning hidden">⚠ SPOT FALLBACK</div>
     </div>
   </div>
@@ -174,6 +175,15 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- DIAGNOSTICS PANEL -->
+  <div id="diagnostics-panel" class="hidden">
+    <div class="diag-header">
+      <span style="color:var(--yellow);font-weight:700;font-size:11px">COCKPIT DIAGNOSTICS</span>
+      <button id="btn-close-diag" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:14px">✕</button>
+    </div>
+    <div id="diag-content" class="diag-body"></div>
   </div>
 
   <script src="js/app.js"></script>

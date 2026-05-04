@@ -1437,6 +1437,69 @@ function updateRangePanel() {
   `;
 }
 
+// Phase 7: Diagnostics panel
+function updateDiagnostics() {
+  const el = document.getElementById('diag-content');
+  if (!el || document.getElementById('diagnostics-panel').classList.contains('hidden')) return;
+
+  const hl = state.sourceStatus.hyperliquid || {};
+  const bn = state.sourceStatus.binanceUsdm || {};
+  const allCandles = [...state.candles];
+  if (state.currentCandle) allCandles.push(state.currentCandle);
+
+  // Visible candle count
+  const candleW = state.view.scaleX;
+  const visibleCount = Math.ceil(state.width / candleW) + 2;
+  const visibleStart = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / candleW));
+  const visibleEnd = Math.min(allCandles.length, visibleStart + visibleCount);
+
+  // Viewport time range
+  let vpStart = '—', vpEnd = '—';
+  if (allCandles.length > 0) {
+    const vs = allCandles[Math.max(0, visibleStart)];
+    const ve = allCandles[Math.min(allCandles.length - 1, visibleEnd - 1)];
+    if (vs) vpStart = new Date(vs.openTime).toLocaleTimeString();
+    if (ve) vpEnd = new Date(ve.openTime).toLocaleTimeString();
+  }
+
+  const wsState = state.ws ? ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][state.ws.readyState] || 'unknown' : 'none';
+
+  el.innerHTML = `
+    <div class="diag-section">Connection</div>
+    <div class="diag-row"><span class="dlabel">Selected source</span><span class="dval">${state.source}</span></div>
+    <div class="diag-row"><span class="dlabel">Selected symbol</span><span class="dval">${state.symbol || '—'}</span></div>
+    <div class="diag-row"><span class="dlabel">Interval</span><span class="dval">${state.interval}</span></div>
+    <div class="diag-row"><span class="dlabel">HL WS</span><span class="dval ${hl.connected?'green':'red'}">${hl.connected?'connected':'disconnected'}</span></div>
+    <div class="diag-row"><span class="dlabel">Client WS</span><span class="dval ${wsState==='OPEN'?'green':'red'}">${wsState}</span></div>
+    <div class="diag-row"><span class="dlabel">Trades subscribed</span><span class="dval ${hl.tradesSubscribed?'green':'red'}">${hl.tradesSubscribed?'yes':'no'}</span></div>
+    <div class="diag-row"><span class="dlabel">Book subscribed</span><span class="dval ${hl.bookSubscribed?'green':''}">${hl.bookSubscribed?'yes':'no'}</span></div>
+
+    <div class="diag-section">Data</div>
+    <div class="diag-row"><span class="dlabel">Last trade</span><span class="dval">${hl.lastTradeTs ? new Date(hl.lastTradeTs).toLocaleTimeString() : '—'}</span></div>
+    <div class="diag-row"><span class="dlabel">Last book</span><span class="dval">${hl.lastBookTs ? new Date(hl.lastBookTs).toLocaleTimeString() : '—'}</span></div>
+    <div class="diag-row"><span class="dlabel">Trade count (HL)</span><span class="dval">${hl.tradeCount||0}</span></div>
+    <div class="diag-row"><span class="dlabel">Candle count</span><span class="dval">${state.candles.length}</span></div>
+    <div class="diag-row"><span class="dlabel">Bubble count</span><span class="dval">${state.bubbles.length}</span></div>
+    <div class="diag-row"><span class="dlabel">Visible candles</span><span class="dval">${visibleEnd - visibleStart}</span></div>
+    <div class="diag-row"><span class="dlabel">Viewport range</span><span class="dval">${vpStart} — ${vpEnd}</span></div>
+    <div class="diag-row"><span class="dlabel">History loaded</span><span class="dval ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' (' + state.historySource + ')' : 'no'}</span></div>
+
+    <div class="diag-section">View State</div>
+    <div class="diag-row"><span class="dlabel">Active tool</span><span class="dval">${state.activeTool}</span></div>
+    <div class="diag-row"><span class="dlabel">Follow live</span><span class="dval ${state.followLive?'green':'yellow'}">${state.followLive?'ON':'OFF'}</span></div>
+    <div class="diag-row"><span class="dlabel">Auto scale</span><span class="dval ${state.autoScale?'green':''}">${state.autoScale?'ON':'OFF'}</span></div>
+    <div class="diag-row"><span class="dlabel">Label density</span><span class="dval">${state.labelDensity}</span></div>
+    <div class="diag-row"><span class="dlabel">scaleX</span><span class="dval">${state.view.scaleX.toFixed(1)}</span></div>
+    <div class="diag-row"><span class="dlabel">pricePerPixel</span><span class="dval">${state.view.pricePerPixel.toFixed(4)}</span></div>
+    <div class="diag-row"><span class="dlabel">userModified</span><span class="dval">${state.view.userModified?'yes':'no'}</span></div>
+
+    <div class="diag-section">Errors</div>
+    <div class="diag-row"><span class="dlabel">Last frontend error</span><span class="dval red">${state._lastFrontendError || 'none'}</span></div>
+    <div class="diag-row"><span class="dlabel">Last backend error</span><span class="dval red">${state.sourceStatus.lastError || 'none'}</span></div>
+    <div class="diag-row"><span class="dlabel">BN futures WS</span><span class="dval ${bn.futuresWsConnected?'green':'red'}">${bn.futuresWsConnected?'connected':'disconnected'}</span></div>
+  `;
+}
+
 // Phase 3: Scanner UI
 function updateScannerUI() {
   const body = document.getElementById('scanner-body');
@@ -1528,6 +1591,18 @@ function initButtons() {
     const btn = document.getElementById('btn-label-density');
     btn.title = 'Label Density: ' + state.labelDensity;
     btn.textContent = state.labelDensity === 'minimal' ? '◻ Labels' : state.labelDensity === 'detailed' ? '◉◉ Labels' : '◉ Labels';
+  });
+
+  // Phase 7: Diagnostics panel toggle
+  document.getElementById('btn-diagnostics').addEventListener('click', () => {
+    const panel = document.getElementById('diagnostics-panel');
+    panel.classList.toggle('hidden');
+    document.getElementById('btn-diagnostics').classList.toggle('active', !panel.classList.contains('hidden'));
+    if (!panel.classList.contains('hidden')) updateDiagnostics();
+  });
+  document.getElementById('btn-close-diag').addEventListener('click', () => {
+    document.getElementById('diagnostics-panel').classList.add('hidden');
+    document.getElementById('btn-diagnostics').classList.remove('active');
   });
 
   document.getElementById('btn-reset-ui').addEventListener('click', () => {
@@ -1746,6 +1821,7 @@ function startStatusPolling() {
         state.sourceStatus = status;
         updateSourceUI();
         updateRightPanel();
+        updateDiagnostics();
       })
       .catch(() => {});
   }, 5000);

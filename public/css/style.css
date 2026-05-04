@@ -235,6 +235,26 @@ button:hover { opacity: 0.85; }
 /* Bubble Legend */
 .legend-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 10px; color: var(--text-secondary); }
 
+/* Diagnostics Panel */
+#diagnostics-panel {
+  position: fixed; top: 36px; left: 50%; transform: translateX(-50%);
+  width: 480px; max-height: calc(100vh - 60px); overflow-y: auto;
+  background: var(--bg-secondary); border: 1px solid var(--border-light);
+  border-radius: 8px; z-index: 500; box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+}
+.diag-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.diag-body { padding: 8px 12px; font-size: 10px; }
+.diag-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.5); }
+.diag-row .dlabel { color: var(--text-secondary); }
+.diag-row .dval { color: var(--text-primary); font-weight: 600; }
+.diag-row .dval.green { color: var(--green); }
+.diag-row .dval.red { color: var(--red); }
+.diag-row .dval.yellow { color: var(--yellow); }
+.diag-section { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 700; color: var(--yellow); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+
 /* Profile overlay label */
 .profile-label {
   position: absolute; background: var(--bg-tertiary); border: 1px solid var(--yellow);
