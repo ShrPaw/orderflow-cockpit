@@ -1,16 +1,17 @@
-// Orderflow Cockpit — Deepchart Scalper Rebuild
-// Canvas chart with right-padding viewport, bubble circles, range profile
+// Orderflow Cockpit — Surgical Scalper Rebuild
+// Deepchart/dxFeed-style viewport with proper world-coordinate camera
 
 (function() {
 'use strict';
 
 // ============ CONSTANTS ============
-const RIGHT_PADDING_CANDLES = 12;
-const MIN_SCALE_X = 3;
-const MAX_SCALE_X = 80;
-const BUBBLE_MIN_R = 3;
-const BUBBLE_MAX_R = 18;
-const CLUSTER_BAND_PX = 14;
+const MIN_CANDLES_VISIBLE = 3;      // Can zoom in to see just 3 candles
+const MAX_CANDLES_VISIBLE = 400;    // Can zoom out to see 400 candles
+const RIGHT_BREATHING_ROOM = 6;    // Candles of empty space after the latest candle
+const BUBBLE_MIN_R = 4;
+const BUBBLE_MAX_R = 22;
+const CLUSTER_BAND_PX = 16;
+const PAN_BOUNDARY_EXTRA = 20;      // Extra candles allowed past the data boundary
 
 // ============ TOAST ============
 function showToast(msg, type) {
@@ -26,7 +27,6 @@ function showToast(msg, type) {
   setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 5000);
 }
 
-// Global error boundary
 window.onerror = function(msg) { try { showToast('Error: ' + (msg || 'unknown'), 'error'); } catch(_) {} return true; };
 window.addEventListener('unhandledrejection', function(e) { try { showToast('Async error: ' + (e.reason?.message || e.reason || 'unknown'), 'error'); } catch(_) {} });
 
@@ -46,18 +46,31 @@ const state = {
   bubbles: [],
   zones: [],
 
-  // Viewport
+  // ===== VIEWPORT — WORLD COORDINATE CAMERA =====
+  // The chart uses two coordinate systems:
+  //   World: candle index (x-axis), price (y-axis)
+  //   Screen: pixel positions on canvas
+  //
+  // The camera defines what portion of the world is visible.
   view: {
-    candleWidth: 8,       // pixels per candle
-    pricePerPixel: 0.05,
-    scrollX: 0,           // horizontal scroll (candle units from right)
-    scrollY: 0,           // vertical scroll (pixels)
+    // Horizontal: candle index viewport
+    centerIndex: 0,        // World candle index at center of viewport
+    candlesVisible: 40,    // How many candles fit on screen (zoom level)
+    
+    // Vertical: price viewport
+    priceCenter: 0,        // Price at vertical center
+    pricePerPixel: 0.05,   // Price units per pixel (zoom level)
+    
+    // State flags
+    autoScalePrice: true,
+    followLive: true,
     userModified: false,
   },
 
-  mouse: { x: 0, y: 0, price: 0, isDown: false, button: 0, dragStartX: 0, dragStartScrollX: 0 },
+  mouse: { x: 0, y: 0, price: 0, isDown: false, button: 0, dragStartX: 0, dragStartY: 0, dragStartCenterIndex: 0, dragStartPriceCenter: 0 },
   hoveredCandle: null,
   hoveredBubble: null,
+  hoveredBubblePos: null,
 
   drawings: [],
   drawingState: null,
@@ -74,16 +87,14 @@ const state = {
   height: 0,
   dpr: 1,
 
-  autoScale: true,
   historyLoaded: false,
   historyCount: 0,
   historySource: '',
-  labelDensity: 'compact',
   _lastFrontendError: null,
   _priceScaleDirty: true,
   _loadingSymbol: false,
+  _lastRenderTime: 0,
 
-  // Price scale right-side width
   priceScaleWidth: 60,
 };
 
@@ -107,6 +118,8 @@ function fmtPrice(p) { if (p == null || isNaN(p)) return '—'; if (Math.abs(p) 
 function fmtNum(n) { if (n == null || isNaN(n)) return '—'; if (Math.abs(n) >= 1e9) return (n/1e9).toFixed(1)+'B'; if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1)+'M'; if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1)+'K'; return n.toFixed(0); }
 function symbolToBinance(s) { const sp = {PEPE:'1000PEPEUSDT',LUNC:'1000LUNCUSDT',SHIB:'1000SHIBUSDT',BONK:'1000BONKUSDT',FLOKI:'1000FLOKIUSDT',XEC:'1000XECUSDT',CAT:'1000CATSUSDT',RATS:'1000RATSUSDT'}; return sp[s] || `${s}USDT`; }
 function estimatePriceStep(ppp, h) { const totalRange = h * ppp; const steps = [0.0001,0.0002,0.0005,0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000,2000,5000]; const target = totalRange / 8; for (const s of steps) { if (s >= target) return s; } return steps[steps.length - 1]; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 // ============ HISTORICAL CANDLES ============
 function fetchHistoricalCandles(symbol) {
@@ -118,7 +131,7 @@ function fetchHistoricalCandles(symbol) {
         const existingTimes = new Set(state.candles.map(c => c.openTime));
         const newCandles = data.candles.filter(c => !existingTimes.has(c.openTime));
         state.candles = [...newCandles, ...state.candles];
-        if (state.candles.length > 500) state.candles = state.candles.slice(-500);
+        if (state.candles.length > 800) state.candles = state.candles.slice(-800);
         state.historyLoaded = true;
         state.historyCount = data.count;
         state.historySource = data.interval + ' historical';
@@ -155,7 +168,7 @@ function handleMessage(msg) {
     case 'bubbles':
       if (msg.data.symbol === state.symbol) {
         for (const b of msg.data.bubbles) { b.candleTime = msg.data.candleTime; state.bubbles.push(b); }
-        if (state.bubbles.length > 3000) state.bubbles = state.bubbles.slice(-3000);
+        if (state.bubbles.length > 5000) state.bubbles = state.bubbles.slice(-5000);
       }
       break;
     case 'snapshot':
@@ -188,38 +201,17 @@ function handleCandle(candle) {
   const existing = state.candles.find(c => c.openTime === candle.openTime);
   if (existing) Object.assign(existing, candle);
   else state.candles.push(candle);
-  if (state.candles.length > 500) state.candles = state.candles.slice(-500);
+  if (state.candles.length > 800) state.candles = state.candles.slice(-800);
   state.currentCandle = null;
   state._priceScaleDirty = true;
   if (candle.bubbles && candle.bubbles.length > 0) {
     for (const b of candle.bubbles) { b.candleTime = candle.openTime; state.bubbles.push(b); }
-    if (state.bubbles.length > 3000) state.bubbles = state.bubbles.slice(-3000);
+    if (state.bubbles.length > 5000) state.bubbles = state.bubbles.slice(-5000);
   }
-}
-
-// ============ VIEWPORT SYSTEM ============
-// All candle indices are from the RIGHT. Index 0 = newest candle.
-// The chart draws candles right-to-left, with RIGHT_PADDING_CANDLES of empty space after the newest.
-
-function getVisibleRange() {
-  const cw = state.view.candleWidth;
-  const rightEdge = state.width - state.priceScaleWidth;
-  const visibleCandleCount = Math.ceil(rightEdge / cw) + 2;
-  const paddingOffset = state.view.scrollX; // how many candles scrolled from live
-
-  const allCandles = getAllCandles();
-  const totalCandles = allCandles.length;
-
-  // Rightmost visible candle index (from right, 0=newest)
-  const rightmostFromRight = paddingOffset + RIGHT_PADDING_CANDLES;
-  // Leftmost visible candle index from right
-  const leftmostFromRight = rightmostFromRight + visibleCandleCount;
-
-  // Convert to array indices
-  const endIdx = Math.max(0, totalCandles - 1 - Math.floor(rightmostFromRight));
-  const startIdx = Math.max(0, totalCandles - 1 - Math.ceil(leftmostFromRight));
-
-  return { startIdx, endIdx, visibleCandleCount, allCandles, rightEdge };
+  // If following live, keep the latest candle centered-right
+  if (state.followLive && !state.view.userModified) {
+    snapToLive();
+  }
 }
 
 function getAllCandles() {
@@ -228,11 +220,94 @@ function getAllCandles() {
   return all;
 }
 
-function candleX(index, totalCandles, rightEdge, candleWidth, scrollX) {
-  // X position: newest candle is at (rightEdge - RIGHT_PADDING_CANDLES * candleWidth - scrollX * candleWidth)
-  const newestX = rightEdge - RIGHT_PADDING_CANDLES * candleWidth - scrollX * candleWidth;
-  const offset = (totalCandles - 1 - index) * candleWidth;
-  return newestX - offset;
+// ============ VIEWPORT — WORLD COORDINATE SYSTEM ============
+// World X = candle index (0 = first candle, N-1 = latest candle)
+// World Y = price
+// Screen X = pixel column on canvas (0 = left edge of chart area)
+// Screen Y = pixel row on canvas (0 = top edge)
+
+function worldToScreenX(worldIndex) {
+  const chartW = state.width - state.priceScaleWidth;
+  const pixelsPerCandle = chartW / state.view.candlesVisible;
+  const centerScreenX = chartW / 2;
+  return centerScreenX + (worldIndex - state.view.centerIndex) * pixelsPerCandle;
+}
+
+function screenToWorldX(screenX) {
+  const chartW = state.width - state.priceScaleWidth;
+  const pixelsPerCandle = chartW / state.view.candlesVisible;
+  const centerScreenX = chartW / 2;
+  return state.view.centerIndex + (screenX - centerScreenX) / pixelsPerCandle;
+}
+
+function priceToScreenY(price) {
+  const chartH = state.height;
+  const centerScreenY = chartH / 2;
+  return centerScreenY - (price - state.view.priceCenter) / state.view.pricePerPixel;
+}
+
+function screenToPriceY(screenY) {
+  const chartH = state.height;
+  const centerScreenY = chartH / 2;
+  return state.view.priceCenter + (centerScreenY - screenY) * state.view.pricePerPixel;
+}
+
+function getCandlePixelWidth() {
+  const chartW = state.width - state.priceScaleWidth;
+  return chartW / state.view.candlesVisible;
+}
+
+// ============ VIEWPORT CONTROLS ============
+
+function snapToLive() {
+  const all = getAllCandles();
+  if (all.length === 0) return;
+  // Center the view so the latest candle is at ~75% from left (with breathing room)
+  const chartW = state.width - state.priceScaleWidth;
+  const pixelsPerCandle = chartW / state.view.candlesVisible;
+  // The latest candle index is all.length - 1
+  // We want it to appear at position: chartW * (1 - RIGHT_BREATHING_ROOM / candlesVisible)
+  const targetScreenX = chartW * (1 - RIGHT_BREATHING_ROOM / state.view.candlesVisible);
+  const latestIndex = all.length - 1;
+  // centerIndex such that worldToScreenX(latestIndex) = targetScreenX
+  // targetScreenX = chartW/2 + (latestIndex - centerIndex) * pixelsPerCandle
+  // centerIndex = latestIndex - (targetScreenX - chartW/2) / pixelsPerCandle
+  state.view.centerIndex = latestIndex - (targetScreenX - chartW / 2) / pixelsPerCandle;
+}
+
+function fitAll() {
+  const all = getAllCandles();
+  if (all.length === 0) return;
+  // Set candlesVisible so all candles fit
+  state.view.candlesVisible = Math.max(MIN_CANDLES_VISIBLE, all.length + RIGHT_BREATHING_ROOM);
+  // Center on the middle of all candles
+  state.view.centerIndex = (all.length - 1) / 2;
+  state.view.userModified = false;
+  state.followLive = true;
+  state._priceScaleDirty = true;
+  document.getElementById('btn-follow-live').classList.add('active');
+}
+
+function zoomAtScreenX(screenX, factor) {
+  // factor > 1 = zoom out, factor < 1 = zoom in
+  const worldX = screenToWorldX(screenX);
+  const oldCandlesVisible = state.view.candlesVisible;
+  const newCandlesVisible = clamp(oldCandlesVisible * factor, MIN_CANDLES_VISIBLE, MAX_CANDLES_VISIBLE);
+  
+  if (newCandlesVisible === oldCandlesVisible) return;
+  
+  state.view.candlesVisible = newCandlesVisible;
+  
+  // Adjust centerIndex so the world point under the cursor stays at the same screen position
+  const chartW = state.width - state.priceScaleWidth;
+  const pixelsPerCandle = chartW / newCandlesVisible;
+  const centerScreenX = chartW / 2;
+  // worldX = centerIndex + (screenX - centerScreenX) / pixelsPerCandle
+  // centerIndex = worldX - (screenX - centerScreenX) / pixelsPerCandle
+  state.view.centerIndex = worldX - (screenX - centerScreenX) / pixelsPerCandle;
+  
+  state.view.userModified = true;
+  state._priceScaleDirty = true;
 }
 
 // ============ CHART RENDERING ============
@@ -259,6 +334,7 @@ function render() {
   const ctx = state.ctx;
   const w = state.width;
   const h = state.height;
+  const chartW = w - state.priceScaleWidth;
 
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, w, h);
@@ -283,82 +359,111 @@ function render() {
     return;
   }
 
-  const { startIdx, endIdx, rightEdge } = getVisibleRange();
-  const cw = state.view.candleWidth;
-  const gap = Math.max(1, cw * 0.15);
-  const bodyW = cw - gap;
+  const totalCandles = allCandles.length;
+  const cpw = getCandlePixelWidth();
 
-  // Price scale
-  const priceCenter = state.view.scrollY + h / 2;
-  const priceToY = (price) => priceCenter - (price / state.view.pricePerPixel);
-  const yToPrice = (y) => (priceCenter - y) * state.view.pricePerPixel;
+  // Determine visible index range
+  const leftWorldX = screenToWorldX(0);
+  const rightWorldX = screenToWorldX(chartW);
+  const startIdx = Math.max(0, Math.floor(leftWorldX) - 1);
+  const endIdx = Math.min(totalCandles - 1, Math.ceil(rightWorldX) + 1);
 
-  // Visible candles
-  const visible = allCandles.slice(startIdx, endIdx + 1);
-  if (!visible.length) { requestAnimationFrame(render); return; }
-
-  // Auto scale
-  if (state.autoScale && state.followLive && !state.view.userModified && state._priceScaleDirty) {
+  // Auto-scale price to fit visible candles
+  if (state.view.autoScalePrice && state.followLive && !state.view.userModified && state._priceScaleDirty) {
     let minP = Infinity, maxP = -Infinity;
-    for (const c of visible) { if (c.low < minP) minP = c.low; if (c.high > maxP) maxP = c.high; }
-    // Include bubble extremes
-    const visibleTimes = new Set(visible.map(c => c.openTime));
-    for (const b of state.bubbles) { if (visibleTimes.has(b.candleTime)) { if (b.price < minP) minP = b.price; if (b.price > maxP) maxP = b.price; } }
-    const range = maxP - minP || 1;
-    const targetPPP = range / (h * 0.8);
-    state.view.pricePerPixel += (targetPPP - state.view.pricePerPixel) * 0.15;
-    state.view.scrollY += (((minP + maxP) / 2) / state.view.pricePerPixel - h / 2 - state.view.scrollY) * 0.15;
+    for (let i = startIdx; i <= endIdx && i < totalCandles; i++) {
+      const c = allCandles[i];
+      if (c.low < minP) minP = c.low;
+      if (c.high > maxP) maxP = c.high;
+    }
+    // Include bubble prices
+    const visibleTimes = new Set();
+    for (let i = startIdx; i <= endIdx && i < totalCandles; i++) visibleTimes.add(allCandles[i].openTime);
+    for (const b of state.bubbles) {
+      if (visibleTimes.has(b.candleTime)) {
+        if (b.price < minP) minP = b.price;
+        if (b.price > maxP) maxP = b.price;
+      }
+    }
+    if (minP < maxP) {
+      const range = maxP - minP;
+      const targetPPP = range / (h * 0.8);
+      state.view.pricePerPixel = lerp(state.view.pricePerPixel, targetPPP, 0.15);
+      state.view.priceCenter = lerp(state.view.priceCenter, (minP + maxP) / 2, 0.15);
+    }
     state._priceScaleDirty = false;
   }
 
   // Draw layers
-  drawGrid(ctx, w, h, rightEdge, priceToY, yToPrice);
-  drawZones(ctx, h, rightEdge, priceToY, allCandles.length, cw);
-  drawVolumeBars(ctx, visible, startIdx, allCandles.length, cw, gap, priceToY, h, rightEdge);
-  drawCandles(ctx, visible, startIdx, allCandles.length, cw, gap, bodyW, priceToY, rightEdge);
-  drawBubbles(ctx, allCandles, startIdx, endIdx, cw, priceToY, rightEdge);
+  drawGrid(ctx, chartW, h, cpw);
+  drawZones(ctx, h, chartW);
+  drawVolumeBars(ctx, allCandles, startIdx, endIdx, cpw, h, chartW);
+  drawCandles(ctx, allCandles, startIdx, endIdx, cpw, chartW);
+  drawBubbles(ctx, allCandles, startIdx, endIdx, cpw, chartW);
 
-  if (state.selectedRange) drawSelectedRange(ctx, priceToY, rightEdge, allCandles, cw);
-  drawDrawings(ctx, priceToY, rightEdge, allCandles, cw);
-  if (state.drawingState) drawActiveDrawing(ctx, priceToY, rightEdge);
+  if (state.selectedRange) drawSelectedRange(ctx, allCandles, cpw, chartW);
+  drawDrawings(ctx, allCandles, cpw, chartW);
+  if (state.drawingState) drawActiveDrawing(ctx);
 
-  drawPriceScale(ctx, w, h, yToPrice, rightEdge);
-  drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, cw, allCandles);
-  drawTimeLabels(ctx, visible, startIdx, allCandles.length, cw, h, rightEdge);
+  drawPriceScale(ctx, w, h, chartW);
+  drawCrosshair(ctx, w, h, chartW, allCandles, cpw);
+  drawTimeLabels(ctx, allCandles, startIdx, endIdx, cpw, h, chartW);
+
+  // Status bar info
+  const statusBar = document.getElementById('tool-status-bar');
+  if (statusBar) {
+    const visCount = Math.min(endIdx - startIdx + 1, totalCandles);
+    statusBar.textContent = `Tool: ${state.activeTool === 'cursor' ? 'Cursor' : state.activeTool} | Visible: ${visCount} candles | Zoom: ${Math.round(state.view.candlesVisible)}`;
+  }
 
   requestAnimationFrame(render);
 }
 
-function drawGrid(ctx, w, h, rightEdge, priceToY, yToPrice) {
-  ctx.strokeStyle = COL.grid; ctx.lineWidth = 0.5;
+function drawGrid(ctx, chartW, h, cpw) {
+  ctx.strokeStyle = COL.grid;
+  ctx.lineWidth = 0.5;
+
+  // Horizontal price grid
   const priceStep = estimatePriceStep(state.view.pricePerPixel, h);
-  const topPrice = yToPrice(0); const botPrice = yToPrice(h);
-  const startPrice = Math.floor(Math.min(topPrice, botPrice) / priceStep) * priceStep;
+  const topPrice = screenToPriceY(0);
+  const botPrice = screenToPriceY(h);
+  const minPrice = Math.min(topPrice, botPrice);
+  const maxPrice = Math.max(topPrice, botPrice);
+  const startPrice = Math.floor(minPrice / priceStep) * priceStep;
 
   ctx.beginPath();
-  for (let p = startPrice; p <= Math.max(topPrice, botPrice); p += priceStep) {
-    const y = priceToY(p); if (y < 0 || y > h) continue;
-    ctx.moveTo(0, y); ctx.lineTo(rightEdge, y);
+  for (let p = startPrice; p <= maxPrice; p += priceStep) {
+    const y = priceToScreenY(p);
+    if (y < 0 || y > h) continue;
+    ctx.moveTo(0, y);
+    ctx.lineTo(chartW, y);
   }
   ctx.stroke();
 
-  // Vertical grid
-  const candleCount = Math.floor(rightEdge / state.view.candleWidth);
+  // Vertical time grid — every N candles based on zoom
+  const gridStep = cpw < 4 ? 50 : cpw < 8 ? 20 : cpw < 20 ? 10 : cpw < 40 ? 5 : 1;
+  const leftIdx = Math.floor(screenToWorldX(0));
+  const rightIdx = Math.ceil(screenToWorldX(chartW));
+  const startGridIdx = Math.floor(leftIdx / gridStep) * gridStep;
+
   ctx.beginPath();
-  for (let i = 0; i < candleCount; i += 5) {
-    const x = rightEdge - RIGHT_PADDING_CANDLES * state.view.candleWidth - i * state.view.candleWidth - state.view.scrollX * state.view.candleWidth;
-    if (x < 0 || x > rightEdge) continue;
-    ctx.moveTo(x, 0); ctx.lineTo(x, h);
+  for (let i = startGridIdx; i <= rightIdx; i += gridStep) {
+    const x = worldToScreenX(i);
+    if (x < 0 || x > chartW) continue;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
   }
   ctx.stroke();
 }
 
-function drawCandles(ctx, visible, startIdx, total, cw, gap, bodyW, priceToY, rightEdge) {
-  for (let i = 0; i < visible.length; i++) {
-    const c = visible[i];
-    const idx = startIdx + i;
-    const x = candleX(idx, total, rightEdge, cw, state.view.scrollX);
-    if (x < -cw || x > rightEdge + cw) continue;
+function drawCandles(ctx, allCandles, startIdx, endIdx, cpw, chartW) {
+  const gap = Math.max(1, cpw * 0.12);
+  const bodyW = Math.max(1, cpw - gap);
+
+  for (let i = startIdx; i <= endIdx && i < allCandles.length; i++) {
+    const c = allCandles[i];
+    const x = worldToScreenX(i);
+    if (x < -cpw || x > chartW + cpw) continue;
 
     const isUp = c.close >= c.open;
     const isHist = c._historical || c._sourceInterval;
@@ -366,12 +471,16 @@ function drawCandles(ctx, visible, startIdx, total, cw, gap, bodyW, priceToY, ri
     if (isHist) color = COL.candleHistorical;
 
     // Wick
-    ctx.strokeStyle = color; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, priceToY(c.high)); ctx.lineTo(x, priceToY(c.low)); ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, cpw > 15 ? 2 : 1);
+    ctx.beginPath();
+    ctx.moveTo(x, priceToScreenY(c.high));
+    ctx.lineTo(x, priceToScreenY(c.low));
+    ctx.stroke();
 
     // Body
-    const bodyTop = priceToY(Math.max(c.open, c.close));
-    const bodyBot = priceToY(Math.min(c.open, c.close));
+    const bodyTop = priceToScreenY(Math.max(c.open, c.close));
+    const bodyBot = priceToScreenY(Math.min(c.open, c.close));
     const bodyH = Math.max(1, bodyBot - bodyTop);
 
     if (isHist) {
@@ -384,49 +493,53 @@ function drawCandles(ctx, visible, startIdx, total, cw, gap, bodyW, priceToY, ri
   }
 }
 
-function drawVolumeBars(ctx, visible, startIdx, total, cw, gap, priceToY, h, rightEdge) {
-  if (!visible.length) return;
-  const maxVol = Math.max(...visible.map(c => c.volume || 0), 1);
+function drawVolumeBars(ctx, allCandles, startIdx, endIdx, cpw, h, chartW) {
+  if (startIdx >= allCandles.length) return;
+  let maxVol = 1;
+  for (let i = startIdx; i <= endIdx && i < allCandles.length; i++) {
+    const v = allCandles[i].volume || 0;
+    if (v > maxVol) maxVol = v;
+  }
   const barMaxH = h * 0.1;
+  const gap = Math.max(1, cpw * 0.12);
+  const barW = Math.max(1, cpw - gap);
 
-  for (let i = 0; i < visible.length; i++) {
-    const c = visible[i];
-    const idx = startIdx + i;
-    const x = candleX(idx, total, rightEdge, cw, state.view.scrollX);
-    if (x < -cw || x > rightEdge + cw) continue;
+  for (let i = startIdx; i <= endIdx && i < allCandles.length; i++) {
+    const c = allCandles[i];
+    const x = worldToScreenX(i);
+    if (x < -cpw || x > chartW + cpw) continue;
 
     const barH = ((c.volume || 0) / maxVol) * barMaxH;
     const isUp = c.close >= c.open;
     const isHist = c._historical || c._sourceInterval;
     ctx.fillStyle = isHist ? 'rgba(55,65,81,0.2)' : (isUp ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)');
-    ctx.fillRect(x - (cw - gap)/2, h - barH, cw - gap, barH);
+    ctx.fillRect(x - barW/2, h - barH, barW, barH);
   }
 }
 
-// ============ BUBBLE RENDERING — DEEPCHART STYLE ============
-function drawBubbles(ctx, allCandles, startIdx, endIdx, cw, priceToY, rightEdge) {
+// ============ BUBBLE RENDERING — CLEAN CIRCLES, DEEPCHART STYLE ============
+function drawBubbles(ctx, allCandles, startIdx, endIdx, cpw, chartW) {
   const total = allCandles.length;
   const visibleTimes = new Set();
   for (let i = startIdx; i <= endIdx && i < total; i++) visibleTimes.add(allCandles[i].openTime);
 
-  // Collect visible bubbles
   const visBubbles = state.bubbles.filter(b => visibleTimes.has(b.candleTime) && b.state !== 'INVALIDATED');
   if (!visBubbles.length) return;
 
-  // Build clusters
+  // Build clusters — group nearby bubbles of same side+state
   const clusters = [];
-  const bandPx = Math.max(CLUSTER_BAND_PX, cw * 0.8);
+  const bandPx = Math.max(CLUSTER_BAND_PX, cpw * 0.6);
 
   for (const bubble of visBubbles) {
     const cIdx = allCandles.findIndex(c => c.openTime === bubble.candleTime);
     if (cIdx < 0) continue;
-    const x = candleX(cIdx, total, rightEdge, cw, state.view.scrollX);
-    const y = priceToY(bubble.price);
+    const x = worldToScreenX(cIdx);
+    const y = priceToScreenY(bubble.price);
+    if (x < -50 || x > chartW + 50 || y < -50 || y > state.height + 50) continue;
 
-    // Find matching cluster (same side, same state, nearby price+time)
     let merged = false;
     for (const cl of clusters) {
-      if (Math.abs(cl.x - x) < cw * 0.7 && Math.abs(cl.y - y) < bandPx && cl.side === bubble.side && cl.state === bubble.state) {
+      if (Math.abs(cl.x - x) < cpw * 0.6 && Math.abs(cl.y - y) < bandPx && cl.side === bubble.side && cl.state === bubble.state) {
         cl.bubbles.push(bubble);
         cl.totalNotional += bubble.notional || 0;
         cl.totalVolume += bubble.volume || 0;
@@ -435,66 +548,66 @@ function drawBubbles(ctx, allCandles, startIdx, endIdx, cw, priceToY, rightEdge)
         break;
       }
     }
-    if (!merged) clusters.push({ x, y, bubbles: [bubble], totalNotional: bubble.notional || 0, totalVolume: bubble.volume || 0, side: bubble.side, state: bubble.state });
+    if (!merged) clusters.push({
+      x, y, bubbles: [bubble],
+      totalNotional: bubble.notional || 0,
+      totalVolume: bubble.volume || 0,
+      side: bubble.side, state: bubble.state
+    });
   }
 
-  // Draw clusters
+  // Draw clusters as clean circles
+  state.hoveredBubble = null;
+  state.hoveredBubblePos = null;
+
   for (const cl of clusters) {
     const { x, y, bubbles: bubs, side, state: st } = cl;
     const count = bubs.length;
-    const radius = Math.min(BUBBLE_MAX_R, Math.max(BUBBLE_MIN_R, Math.sqrt(cl.totalNotional / 1000)));
+    // Radius scales with notional, clamped to readable range
+    const rawR = Math.sqrt(cl.totalNotional / 800);
+    const radius = clamp(rawR, BUBBLE_MIN_R, BUBBLE_MAX_R);
 
-    // Determine color based on state + side
+    // Color based on state + side
     let mainColor, isHollow = false;
     switch (st) {
-      case 'PENDING':
-        mainColor = COL.bubblePending; break;
-      case 'ACCEPTED':
-        mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell; break;
-      case 'REJECTED':
-        // Rejection flips color — buy rejection turns red, sell rejection turns green
-        mainColor = side === 'buy' ? COL.bubbleRejectedBuy : COL.bubbleRejectedSell;
-        isHollow = true;
-        break;
-      case 'ABSORBED':
-        mainColor = COL.bubbleAbsorbed; break;
-      case 'EXHAUSTED':
-        mainColor = COL.bubbleExhausted; break;
-      default:
-        mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell;
+      case 'PENDING': mainColor = COL.bubblePending; break;
+      case 'ACCEPTED': mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell; break;
+      case 'REJECTED': mainColor = side === 'buy' ? COL.bubbleRejectedBuy : COL.bubbleRejectedSell; isHollow = true; break;
+      case 'ABSORBED': mainColor = COL.bubbleAbsorbed; break;
+      case 'EXHAUSTED': mainColor = COL.bubbleExhausted; break;
+      default: mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell;
     }
 
-    // --- State-specific rendering ---
+    // === State-specific clean circle rendering ===
     switch (st) {
       case 'PENDING': {
-        // Bright outline with pulse
-        const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
+        const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 300);
+        ctx.globalAlpha = pulse;
         ctx.strokeStyle = mainColor;
         ctx.lineWidth = 2;
-        ctx.globalAlpha = pulse;
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
-        ctx.globalAlpha = 0.15;
+        ctx.globalAlpha = 0.12;
         ctx.fillStyle = mainColor;
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
         break;
       }
       case 'ACCEPTED': {
-        // Filled circle with glow
-        const grad = ctx.createRadialGradient(x, y, radius * 0.2, x, y, radius * 1.5);
-        grad.addColorStop(0, mainColor + 'cc');
-        grad.addColorStop(0.5, mainColor + '44');
+        // Outer glow
+        const grad = ctx.createRadialGradient(x, y, radius * 0.1, x, y, radius * 1.6);
+        grad.addColorStop(0, mainColor + '88');
+        grad.addColorStop(0.6, mainColor + '22');
         grad.addColorStop(1, mainColor + '00');
         ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(x, y, radius * 1.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, radius * 1.6, 0, Math.PI * 2); ctx.fill();
 
-        // Main filled
-        ctx.fillStyle = mainColor + 'bb';
+        // Main filled circle
+        ctx.fillStyle = mainColor + 'aa';
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
 
         // Bright core
         ctx.fillStyle = mainColor;
-        ctx.beginPath(); ctx.arc(x, y, radius * 0.4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.35, 0, Math.PI * 2); ctx.fill();
 
         // Border
         ctx.strokeStyle = mainColor;
@@ -503,64 +616,59 @@ function drawBubbles(ctx, allCandles, startIdx, endIdx, cw, priceToY, rightEdge)
         break;
       }
       case 'REJECTED': {
-        // Hollow ring — warning style, color flipped
+        // Hollow ring — clean, no X mark unless zoomed in
         ctx.strokeStyle = mainColor;
         ctx.lineWidth = 2.5;
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
 
-        // Outer warning ring
-        ctx.strokeStyle = mainColor + '55';
-        ctx.lineWidth = 3;
+        // Soft outer ring
+        ctx.strokeStyle = mainColor + '44';
+        ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(x, y, radius + 3, 0, Math.PI * 2); ctx.stroke();
 
         // Very faint fill
-        ctx.fillStyle = mainColor + '18';
+        ctx.fillStyle = mainColor + '14';
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
 
-        // X mark for rejection
-        ctx.strokeStyle = mainColor + '88';
-        ctx.lineWidth = 1.5;
-        const s = radius * 0.4;
-        ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
+        // Only show X mark when zoomed in enough (candles wide enough)
+        if (cpw > 25) {
+          ctx.strokeStyle = mainColor + '77';
+          ctx.lineWidth = 1.5;
+          const s = radius * 0.4;
+          ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
+        }
         break;
       }
       case 'ABSORBED': {
-        // Translucent with soft halo
-        const grad = ctx.createRadialGradient(x, y, radius * 0.3, x, y, radius * 2);
-        grad.addColorStop(0, mainColor + '44');
-        grad.addColorStop(0.5, mainColor + '15');
+        // Soft translucent halo
+        const grad = ctx.createRadialGradient(x, y, radius * 0.2, x, y, radius * 2.2);
+        grad.addColorStop(0, mainColor + '33');
+        grad.addColorStop(0.5, mainColor + '11');
         grad.addColorStop(1, mainColor + '00');
         ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(x, y, radius * 2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, radius * 2.2, 0, Math.PI * 2); ctx.fill();
 
-        // Inner translucent circle
-        ctx.globalAlpha = 0.35;
+        // Inner translucent
+        ctx.globalAlpha = 0.3;
         ctx.fillStyle = mainColor;
-        ctx.beginPath(); ctx.arc(x, y, radius * 0.7, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.6, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
 
-        // Secondary ring
+        // Dashed ring
         ctx.strokeStyle = mainColor + '55';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([3, 3]);
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-
-        // Outer halo ring
-        ctx.strokeStyle = mainColor + '33';
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(x, y, radius * 1.4, 0, Math.PI * 2); ctx.stroke();
         break;
       }
       case 'EXHAUSTED': {
-        // Faded, low opacity
-        ctx.globalAlpha = 0.25;
+        ctx.globalAlpha = 0.2;
         ctx.fillStyle = mainColor;
-        ctx.beginPath(); ctx.arc(x, y, radius * 0.8, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.7, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
-
-        ctx.strokeStyle = mainColor + '44';
+        ctx.strokeStyle = mainColor + '33';
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 3]);
         ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
@@ -569,32 +677,31 @@ function drawBubbles(ctx, allCandles, startIdx, endIdx, cw, priceToY, rightEdge)
       }
     }
 
-    // Cluster count label
-    if (count > 1 && state.labelDensity !== 'minimal') {
-      const icon = side === 'buy' ? '▲' : '▼';
-      const stateAbbr = st === 'PENDING' ? '' : st === 'ACCEPTED' ? '' : st === 'REJECTED' ? 'R' : st === 'ABSORBED' ? 'Ab' : 'Ex';
-      const label = count > 2 ? `${count}${stateAbbr}` : `${icon}${count}`;
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 8px monospace';
+    // Minimal cluster count — only show when zoomed in enough and cluster has multiple
+    if (count > 1 && cpw > 12) {
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.font = `bold ${cpw > 30 ? 9 : 7}px monospace`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, x, y);
+      ctx.fillText(String(count), x, y);
     }
 
-    // Hover detection
+    // Hover detection — generous hit area
     const dx = state.mouse.x - x;
     const dy = state.mouse.y - y;
-    if (dx * dx + dy * dy < (radius + 6) * (radius + 6)) {
+    const hitR = Math.max(radius + 8, 14);
+    if (dx * dx + dy * dy < hitR * hitR) {
       state.hoveredBubble = { x, y, cluster: cl, mainBubble: bubs.reduce((a, b) => (b.notional || 0) > (a.notional || 0) ? b : a, bubs[0]) };
+      state.hoveredBubblePos = { x, y };
     }
   }
 }
 
 // ============ ZONE RENDERING ============
-function drawZones(ctx, h, rightEdge, priceToY, totalCandles, cw) {
+function drawZones(ctx, h, chartW) {
   for (const zone of state.zones) {
-    const y1 = priceToY(zone.priceHigh);
-    const y2 = priceToY(zone.priceLow);
+    const y1 = priceToScreenY(zone.priceHigh);
+    const y2 = priceToScreenY(zone.priceLow);
     if (y2 < 0 || y1 > h) continue;
 
     let fillCol, borderCol;
@@ -616,24 +723,22 @@ function drawZones(ctx, h, rightEdge, priceToY, totalCandles, cw) {
     }
 
     ctx.fillStyle = fillCol;
-    ctx.fillRect(0, y1, rightEdge, y2 - y1);
-
+    ctx.fillRect(0, y1, chartW, y2 - y1);
     ctx.strokeStyle = borderCol; ctx.lineWidth = 1; ctx.setLineDash([4, 2]);
-    ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(rightEdge, y1);
-    ctx.moveTo(0, y2); ctx.lineTo(rightEdge, y2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(chartW, y1);
+    ctx.moveTo(0, y2); ctx.lineTo(chartW, y2); ctx.stroke();
     ctx.setLineDash([]);
 
-    // Compact right-side label
-    if (state.labelDensity !== 'minimal') {
+    if (state.view.candlesVisible < 200) {
       const shortType = zone.type.replace(/_/g, ' ').replace('BUYER ', 'B.').replace('SELLER ', 'S.').replace('BUY ', 'B.').replace('SELL ', 'S.');
       ctx.fillStyle = borderCol; ctx.font = '8px monospace'; ctx.textAlign = 'right';
-      ctx.fillText(shortType, rightEdge - 4, (y1 + y2) / 2 + 3);
+      ctx.fillText(shortType, chartW - 4, (y1 + y2) / 2 + 3);
     }
   }
 }
 
 // ============ SELECTED RANGE ============
-function drawSelectedRange(ctx, priceToY, rightEdge, allCandles, cw) {
+function drawSelectedRange(ctx, allCandles, cpw, chartW) {
   const sr = state.selectedRange;
   if (!sr) return;
 
@@ -642,11 +747,10 @@ function drawSelectedRange(ctx, priceToY, rightEdge, allCandles, cw) {
   if (startIdx < 0) startIdx = 0;
   if (endIdx < 0) endIdx = allCandles.length - 1;
 
-  const total = allCandles.length;
-  const x1 = candleX(startIdx, total, rightEdge, cw, state.view.scrollX);
-  const x2 = candleX(endIdx, total, rightEdge, cw, state.view.scrollX);
-  const y1 = priceToY(sr.priceHigh);
-  const y2 = priceToY(sr.priceLow);
+  const x1 = worldToScreenX(startIdx);
+  const x2 = worldToScreenX(endIdx);
+  const y1 = priceToScreenY(sr.priceHigh);
+  const y2 = priceToScreenY(sr.priceLow);
 
   ctx.fillStyle = COL.selection;
   ctx.fillRect(Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1);
@@ -654,17 +758,17 @@ function drawSelectedRange(ctx, priceToY, rightEdge, allCandles, cw) {
   ctx.strokeRect(Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1);
   ctx.setLineDash([]);
 
-  if (sr.profile) drawProfileOverlay(ctx, sr.profile, Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1, priceToY);
+  if (sr.profile) drawProfileOverlay(ctx, sr.profile, Math.min(x1, x2), y1, Math.abs(x2 - x1), y2 - y1);
 }
 
-function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY) {
+function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH) {
   if (!profile.levels || !profile.levels.length) return;
   const maxVol = Math.max(...profile.levels.map(l => l.total), 1);
   const maxDelta = Math.max(...profile.levels.map(l => Math.abs(l.delta)), 1);
   const profileW = boxW * 0.35;
 
   for (const level of profile.levels) {
-    const y = priceToY(level.price);
+    const y = priceToScreenY(level.price);
     const barW = (level.total / maxVol) * profileW;
     const binH = Math.max(1, boxH / profile.levels.length);
     ctx.fillStyle = 'rgba(59,130,246,0.2)';
@@ -674,58 +778,55 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY) {
     ctx.fillRect(level.delta > 0 ? boxX + barW : boxX + barW - deltaW, y - binH/2, deltaW, binH);
   }
 
-  // POC
   if (profile.poc) {
-    const pocY = priceToY(profile.poc);
+    const pocY = priceToScreenY(profile.poc);
     ctx.strokeStyle = COL.poc; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
     ctx.beginPath(); ctx.moveTo(boxX, pocY); ctx.lineTo(boxX + boxW, pocY); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = COL.poc; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
     ctx.fillText(`POC ${fmtPrice(profile.poc)}`, boxX + 4, pocY - 4);
   }
-  // VAH/VAL
-  if (profile.vah) { const y = priceToY(profile.vah); ctx.strokeStyle = COL.vah; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.vah; ctx.font = '8px monospace'; ctx.fillText(`VAH ${fmtPrice(profile.vah)}`, boxX + 4, y - 3); }
-  if (profile.val) { const y = priceToY(profile.val); ctx.strokeStyle = COL.val; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.val; ctx.font = '8px monospace'; ctx.fillText(`VAL ${fmtPrice(profile.val)}`, boxX + 4, y + 10); }
-  if (profile.deltaPoc) { const y = priceToY(profile.deltaPoc); ctx.strokeStyle = COL.deltaPoc; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.deltaPoc; ctx.font = '8px monospace'; ctx.textAlign = 'right'; ctx.fillText(`ΔPOC ${fmtPrice(profile.deltaPoc)}`, boxX + boxW - 4, y - 3); }
+  if (profile.vah) { const y = priceToScreenY(profile.vah); ctx.strokeStyle = COL.vah; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.vah; ctx.font = '8px monospace'; ctx.fillText(`VAH ${fmtPrice(profile.vah)}`, boxX + 4, y - 3); }
+  if (profile.val) { const y = priceToScreenY(profile.val); ctx.strokeStyle = COL.val; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.val; ctx.font = '8px monospace'; ctx.fillText(`VAL ${fmtPrice(profile.val)}`, boxX + 4, y + 10); }
+  if (profile.deltaPoc) { const y = priceToScreenY(profile.deltaPoc); ctx.strokeStyle = COL.deltaPoc; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = COL.deltaPoc; ctx.font = '8px monospace'; ctx.textAlign = 'right'; ctx.fillText(`ΔPOC ${fmtPrice(profile.deltaPoc)}`, boxX + boxW - 4, y - 3); }
 
-  // HVN/LVN
-  for (const hvn of (profile.hvns || [])) { const y = priceToY(hvn); ctx.fillStyle = 'rgba(59,130,246,0.1)'; ctx.fillRect(boxX, y - 3, boxW, 6); }
-  for (const lvn of (profile.lvns || [])) { const y = priceToY(lvn); ctx.fillStyle = 'rgba(168,85,247,0.07)'; ctx.fillRect(boxX, y - 2, boxW, 4); }
+  for (const hvn of (profile.hvns || [])) { const y = priceToScreenY(hvn); ctx.fillStyle = 'rgba(59,130,246,0.1)'; ctx.fillRect(boxX, y - 3, boxW, 6); }
+  for (const lvn of (profile.lvns || [])) { const y = priceToScreenY(lvn); ctx.fillStyle = 'rgba(168,85,247,0.07)'; ctx.fillRect(boxX, y - 2, boxW, 4); }
 }
 
 // ============ DRAWING TOOLS ============
-function drawDrawings(ctx, priceToY, rightEdge, allCandles, cw) {
-  for (const d of state.drawings) drawSingleDrawing(ctx, d, priceToY, rightEdge);
+function drawDrawings(ctx, allCandles, cpw, chartW) {
+  for (const d of state.drawings) drawSingleDrawing(ctx, d, chartW);
 }
 
-function drawActiveDrawing(ctx, priceToY, rightEdge) {
-  drawSingleDrawing(ctx, state.drawingState, priceToY, rightEdge);
+function drawActiveDrawing(ctx) {
+  drawSingleDrawing(ctx, state.drawingState, state.width - state.priceScaleWidth);
 }
 
-function drawSingleDrawing(ctx, d, priceToY, rightEdge) {
+function drawSingleDrawing(ctx, d, chartW) {
   if (!d) return;
   ctx.strokeStyle = d.color || COL.drawing; ctx.lineWidth = 1.5;
   switch (d.type) {
     case 'hline': {
-      const y = priceToY(d.price);
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(rightEdge, y); ctx.stroke();
+      const y = priceToScreenY(d.price);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
       ctx.fillStyle = d.color || COL.drawing; ctx.font = '8px monospace'; ctx.textAlign = 'left';
       ctx.fillText(`— ${fmtPrice(d.price)}`, 4, y - 4);
       break;
     }
     case 'trendline': {
-      const y1 = priceToY(d.price1); const y2 = priceToY(d.price2);
+      const y1 = priceToScreenY(d.price1); const y2 = priceToScreenY(d.price2);
       ctx.beginPath(); ctx.moveTo(d.x1, y1); ctx.lineTo(d.x2, y2); ctx.stroke();
       break;
     }
     case 'rect': {
-      const y1 = priceToY(d.priceHigh); const y2 = priceToY(d.priceLow);
+      const y1 = priceToScreenY(d.priceHigh); const y2 = priceToScreenY(d.priceLow);
       ctx.fillStyle = 'rgba(59,130,246,0.06)';
       ctx.fillRect(d.x1, y1, d.x2 - d.x1, y2 - y1);
       ctx.strokeRect(d.x1, y1, d.x2 - d.x1, y2 - y1);
       break;
     }
     case 'text': {
-      const y = priceToY(d.price);
+      const y = priceToScreenY(d.price);
       ctx.fillStyle = d.color || COL.drawing; ctx.font = '10px monospace'; ctx.textAlign = 'left';
       ctx.fillText(d.text, d.x, y);
       break;
@@ -734,93 +835,99 @@ function drawSingleDrawing(ctx, d, priceToY, rightEdge) {
 }
 
 // ============ PRICE SCALE & CROSSHAIR ============
-function drawPriceScale(ctx, w, h, yToPrice, rightEdge) {
+function drawPriceScale(ctx, w, h, chartW) {
   ctx.fillStyle = '#111827';
-  ctx.fillRect(rightEdge, 0, w - rightEdge, h);
+  ctx.fillRect(chartW, 0, w - chartW, h);
   ctx.fillStyle = COL.gridText; ctx.font = '9px monospace'; ctx.textAlign = 'left';
 
   const priceStep = estimatePriceStep(state.view.pricePerPixel, h);
-  const topPrice = yToPrice(0); const botPrice = yToPrice(h);
-  const startPrice = Math.floor(Math.min(topPrice, botPrice) / priceStep) * priceStep;
+  const topPrice = screenToPriceY(0);
+  const botPrice = screenToPriceY(h);
+  const minPrice = Math.min(topPrice, botPrice);
+  const maxPrice = Math.max(topPrice, botPrice);
+  const startPrice = Math.floor(minPrice / priceStep) * priceStep;
 
-  for (let p = startPrice; p <= Math.max(topPrice, botPrice); p += priceStep) {
-    const y = (state.view.scrollY + h/2) - (p / state.view.pricePerPixel);
+  for (let p = startPrice; p <= maxPrice; p += priceStep) {
+    const y = priceToScreenY(p);
     if (y < 10 || y > h - 10) continue;
-    ctx.fillText(fmtPrice(p), rightEdge + 4, y + 3);
+    ctx.fillText(fmtPrice(p), chartW + 4, y + 3);
   }
 
   if (state.currentCandle) {
-    const cy = (state.view.scrollY + h/2) - (state.currentCandle.close / state.view.pricePerPixel);
+    const cy = priceToScreenY(state.currentCandle.close);
     const isUp = state.currentCandle.close >= state.currentCandle.open;
     ctx.fillStyle = isUp ? COL.candleUp : COL.candleDown;
-    ctx.fillRect(rightEdge, cy - 8, w - rightEdge, 16);
+    ctx.fillRect(chartW, cy - 8, w - chartW, 16);
     ctx.fillStyle = '#000'; ctx.font = 'bold 10px monospace';
-    ctx.fillText(fmtPrice(state.currentCandle.close), rightEdge + 4, cy + 4);
+    ctx.fillText(fmtPrice(state.currentCandle.close), chartW + 4, cy + 4);
   }
 }
 
-function drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, cw, allCandles) {
+function drawCrosshair(ctx, w, h, chartW, allCandles, cpw) {
   if (state.mouse.x < 0 || state.mouse.x > w || state.mouse.y < 0 || state.mouse.y > h) return;
-  if (state.mouse.x > rightEdge) return;
+  if (state.mouse.x > chartW) return;
 
   ctx.strokeStyle = COL.crosshair; ctx.lineWidth = 0.5; ctx.setLineDash([2, 2]);
-  ctx.beginPath(); ctx.moveTo(0, state.mouse.y); ctx.lineTo(rightEdge, state.mouse.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, state.mouse.y); ctx.lineTo(chartW, state.mouse.y); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(state.mouse.x, 0); ctx.lineTo(state.mouse.x, h); ctx.stroke();
   ctx.setLineDash([]);
 
-  const price = yToPrice(state.mouse.y);
+  const price = screenToPriceY(state.mouse.y);
   const label = document.getElementById('crosshair-label');
-  if (label) { label.classList.remove('hidden'); label.style.left = (rightEdge + 2) + 'px'; label.style.top = (state.mouse.y - 10) + 'px'; label.textContent = fmtPrice(price); }
+  if (label) { label.classList.remove('hidden'); label.style.left = (chartW + 2) + 'px'; label.style.top = (state.mouse.y - 10) + 'px'; label.textContent = fmtPrice(price); }
 
-  updateTooltip(allCandles, cw, rightEdge);
+  updateTooltip(allCandles, cpw, chartW);
 }
 
-function drawTimeLabels(ctx, visible, startIdx, total, cw, h, rightEdge) {
+function drawTimeLabels(ctx, allCandles, startIdx, endIdx, cpw, h, chartW) {
   ctx.fillStyle = COL.gridText; ctx.font = '8px monospace'; ctx.textAlign = 'center';
-  for (let i = 0; i < visible.length; i += 10) {
-    const c = visible[i];
-    const idx = startIdx + i;
-    const x = candleX(idx, total, rightEdge, cw, state.view.scrollX);
-    if (x < 0 || x > rightEdge) continue;
+  
+  // Label interval based on zoom
+  const labelInterval = cpw < 4 ? 50 : cpw < 8 ? 20 : cpw < 15 ? 10 : cpw < 30 ? 5 : 1;
+  
+  for (let i = startIdx; i <= endIdx && i < allCandles.length; i += labelInterval) {
+    const c = allCandles[i];
+    const x = worldToScreenX(i);
+    if (x < 0 || x > chartW) continue;
     const t = new Date(c.openTime);
     ctx.fillText(`${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}:${t.getSeconds().toString().padStart(2,'0')}`, x, h - 4);
   }
 }
 
 // ============ TOOLTIP ============
-function updateTooltip(allCandles, cw, rightEdge) {
+function updateTooltip(allCandles, cpw, chartW) {
   const tooltip = document.getElementById('hover-tooltip');
   if (!tooltip) return;
 
-  // Reset hovered bubble
-  state.hoveredBubble = null;
+  // Reset hovered candle
+  state.hoveredCandle = null;
 
-  // Find hovered candle
-  const total = allCandles.length;
-  const mouseFromRight = (rightEdge - RIGHT_PADDING_CANDLES * cw - state.view.scrollX * cw - state.mouse.x) / cw;
-  const candleIdx = Math.round(total - 1 - mouseFromRight);
-
-  if (candleIdx >= 0 && candleIdx < allCandles.length) {
-    const c = allCandles[candleIdx];
+  // Find hovered candle from mouse position
+  const worldIdx = Math.round(screenToWorldX(state.mouse.x));
+  if (worldIdx >= 0 && worldIdx < allCandles.length) {
+    const c = allCandles[worldIdx];
     state.hoveredCandle = c;
     const t = new Date(c.openTime);
     const timeStr = `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}:${t.getSeconds().toString().padStart(2,'0')}`;
 
-    tooltip.classList.remove('hidden');
-    tooltip.style.left = (state.mouse.x + 15) + 'px';
-    tooltip.style.top = (state.mouse.y - 10) + 'px';
-    tooltip.innerHTML = `
-      <div style="color:#94a3b8;margin-bottom:3px">${timeStr}</div>
-      <div>O: ${fmtPrice(c.open)} H: ${fmtPrice(c.high)} L: ${fmtPrice(c.low)} C: ${fmtPrice(c.close)}</div>
-      <div>Vol: ${fmtNum(c.volume)} | Δ: ${c.delta > 0 ? '+' : ''}${fmtNum(c.delta)}</div>
-      <div>Trades: ${c.tradeCount} | Bubbles: ${c.bubbleCount || 0}</div>
-      <div style="color:#94a3b8;font-size:9px">Absorbed: ${c.absorptionCount || 0} | Rejected: ${c.rejectionCount || 0}</div>
-    `;
+    // Only show candle tooltip if no bubble is hovered
+    if (!state.hoveredBubble) {
+      tooltip.classList.remove('hidden');
+      tooltip.style.left = (state.mouse.x + 15) + 'px';
+      tooltip.style.top = (state.mouse.y - 10) + 'px';
+      tooltip.innerHTML = `
+        <div style="color:#94a3b8;margin-bottom:3px">${timeStr}</div>
+        <div>O: ${fmtPrice(c.open)} H: ${fmtPrice(c.high)} L: ${fmtPrice(c.low)} C: ${fmtPrice(c.close)}</div>
+        <div>Vol: ${fmtNum(c.volume)} | Δ: ${c.delta > 0 ? '+' : ''}${fmtNum(c.delta)}</div>
+        <div>Trades: ${c.tradeCount} | Bubbles: ${c.bubbleCount || 0}</div>
+        <div style="color:#94a3b8;font-size:9px">Absorbed: ${c.absorptionCount || 0} | Rejected: ${c.rejectionCount || 0}</div>
+      `;
+    }
   } else {
-    tooltip.classList.add('hidden');
+    if (!state.hoveredBubble) tooltip.classList.add('hidden');
   }
 
-  // Bubble hover (overrides candle tooltip)
+  // Bubble hover — overrides candle tooltip with detailed cluster info
   if (state.hoveredBubble) {
     const b = state.hoveredBubble;
     tooltip.classList.remove('hidden');
@@ -871,12 +978,19 @@ function initInput() {
       const rect = canvas.getBoundingClientRect();
       state.mouse.x = e.clientX - rect.left;
       state.mouse.y = e.clientY - rect.top;
-      state.mouse.price = (state.view.scrollY + state.height/2 - state.mouse.y) * state.view.pricePerPixel;
+      state.mouse.price = screenToPriceY(state.mouse.y);
 
-      // Drag pan (horizontal)
+      // Drag pan — horizontal AND vertical
       if (state.mouse.isDown && state.mouse.button === 0 && state.activeTool === 'cursor') {
         const dx = e.clientX - state.mouse.dragStartX;
-        state.view.scrollX = state.mouse.dragStartScrollX - dx / state.view.candleWidth;
+        const dy = e.clientY - state.mouse.dragStartY;
+        const cpw = getCandlePixelWidth();
+        
+        // Horizontal pan: move centerIndex
+        state.view.centerIndex = state.mouse.dragStartCenterIndex - dx / cpw;
+        // Vertical pan: move priceCenter
+        state.view.priceCenter = state.mouse.dragStartPriceCenter + dy * state.view.pricePerPixel;
+        
         state.view.userModified = true;
         state.followLive = false;
         document.getElementById('btn-follow-live').classList.remove('active');
@@ -891,7 +1005,9 @@ function initInput() {
       state.mouse.isDown = true;
       state.mouse.button = e.button;
       state.mouse.dragStartX = e.clientX;
-      state.mouse.dragStartScrollX = state.view.scrollX;
+      state.mouse.dragStartY = e.clientY;
+      state.mouse.dragStartCenterIndex = state.view.centerIndex;
+      state.mouse.dragStartPriceCenter = state.view.priceCenter;
       if (e.button === 0) handleToolClick(e);
     } catch(err) { showToast('Click error: ' + err.message, 'error'); }
   });
@@ -903,35 +1019,27 @@ function initInput() {
     } catch(err) { /* silent */ }
   });
 
-  // Zoom: Ctrl+wheel = horizontal time zoom, normal wheel = vertical price scroll
+  // Zoom: wheel = cursor-centered time zoom, Shift+wheel = vertical price zoom
   canvas.addEventListener('wheel', (e) => {
     try {
       e.preventDefault();
-      const factor = e.deltaY > 0 ? 1.12 : 0.89;
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
 
       if (e.ctrlKey || e.metaKey) {
-        // Ctrl+wheel: horizontal time zoom around cursor
-        const oldCW = state.view.candleWidth;
-        const newCW = Math.max(MIN_SCALE_X, Math.min(MAX_SCALE_X, oldCW * factor));
-        // Zoom around cursor: adjust scrollX so the candle under cursor stays in place
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const rightEdge = state.width - state.priceScaleWidth;
-        const allCandles = getAllCandles();
-        const total = allCandles.length;
-        // Candle index at cursor position
-        const cursorFromRight = (rightEdge - RIGHT_PADDING_CANDLES * oldCW - state.view.scrollX * oldCW - mouseX) / oldCW;
-        // After zoom, keep same candle at same pixel
-        const newScrollX = (rightEdge - RIGHT_PADDING_CANDLES * newCW - mouseX) / newCW - (total - 1 - Math.round(total - 1 - cursorFromRight));
-        state.view.candleWidth = newCW;
-        state.view.scrollX = -newScrollX;
-      } else if (e.shiftKey) {
-        // Shift+wheel: horizontal pan
-        state.view.scrollX -= e.deltaY / state.view.candleWidth;
+        // Ctrl+wheel: vertical price zoom
+        const factor = e.deltaY > 0 ? 1.1 : 0.91;
+        const priceAtMouse = screenToPriceY(state.mouse.y);
+        state.view.pricePerPixel *= factor;
+        state.view.pricePerPixel = clamp(state.view.pricePerPixel, 0.00001, 100000);
+        // Keep price under cursor at same screen position
+        state.view.priceCenter = priceAtMouse + (state.height / 2 - state.mouse.y) * state.view.pricePerPixel;
       } else {
-        // Normal wheel: vertical price scroll
-        state.view.scrollY += e.deltaY * 0.5;
+        // Normal wheel: cursor-centered horizontal time zoom
+        const factor = e.deltaY > 0 ? 1.15 : 0.87;
+        zoomAtScreenX(mouseX, factor);
       }
+      
       state.view.userModified = true;
       state.followLive = false;
       state._priceScaleDirty = true;
@@ -952,6 +1060,7 @@ function initInput() {
         case 'r': case 'R': setActiveTool('range'); break;
         case 'Delete': case 'Backspace': deleteSelectedDrawing(); break;
         case 'f': case 'F': fitAll(); break;
+        case 'Home': snapToLive(); state.followLive = true; state.view.userModified = false; document.getElementById('btn-follow-live').classList.add('active'); break;
       }
     } catch(err) { /* silent */ }
   });
@@ -1004,7 +1113,6 @@ function finalizeDrawing() {
       if (state.wsReady && state.symbol) {
         state.ws.send(JSON.stringify({ type: 'get_profile', symbol: state.symbol, start: state.selectedRange.start, end: state.selectedRange.end, priceLow, priceHigh }));
       }
-      // Also fetch via REST
       fetch(`/api/range-profile?symbol=${state.symbol}&start=${state.selectedRange.start}&end=${state.selectedRange.end}&price_low=${priceLow}&price_high=${priceHigh}`)
         .then(r => r.json()).then(data => { if (data.ok && data.profile) { state.selectedRange.profile = data.profile; updateRangePanel(); } }).catch(() => {});
     }
@@ -1019,14 +1127,6 @@ function saveDrawings() { if (!state.symbol) return; try { localStorage.setItem(
 function loadDrawings() { if (!state.symbol) return; try { const s = localStorage.getItem(`drawings_${state.symbol}`); state.drawings = s ? JSON.parse(s) : []; } catch(e) { state.drawings = []; } }
 
 // ============ UI UPDATES ============
-function fitAll() {
-  state.view.scrollX = 0;
-  state.view.userModified = false;
-  state.followLive = true;
-  state._priceScaleDirty = true;
-  document.getElementById('btn-follow-live').classList.add('active');
-}
-
 function setActiveTool(tool) {
   state.activeTool = tool;
   document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tool === tool));
@@ -1061,7 +1161,6 @@ function updateSourceUI() {
   if (state.symbol) { execRef.textContent = `Exec: ${symbolToBinance(state.symbol)}`; execRef.classList.remove('dim'); }
   else { execRef.textContent = 'Exec: —'; execRef.classList.add('dim'); }
 
-  // Right panel source info
   const sc = document.getElementById('source-content');
   if (!sc) return;
   const hlTradesSub = ss.hyperliquidTradesSubscribed || false;
@@ -1090,6 +1189,7 @@ function updateRightPanel() {
       <div class="row"><span class="label">History:</span><span class="val ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' backfill' : state.historySource || 'loading...'}</span></div>
       <div class="row"><span class="label">Bubbles:</span><span class="val">${state.bubbles.length}</span></div>
       <div class="row"><span class="label">Zones:</span><span class="val">${state.zones.length}</span></div>
+      <div class="row"><span class="label">Zoom:</span><span class="val">${Math.round(state.view.candlesVisible)} candles</span></div>
     `;
   } else if (state.symbol) {
     el.innerHTML = `<div style="color:#f59e0b">Loading ${state.symbol}...</div>`;
@@ -1106,7 +1206,6 @@ function updateRangePanel() {
   if (!sr.profile) { el.innerHTML = '<div style="color:#f59e0b">Computing profile...</div>'; return; }
 
   const p = sr.profile;
-  const tStart = new Date(sr.start); const tEnd = new Date(sr.end);
   const duration = ((sr.end - sr.start) / 1000).toFixed(0);
 
   el.innerHTML = `
@@ -1159,28 +1258,31 @@ function initButtons() {
     state.followLive = !state.followLive;
     state.view.userModified = !state.followLive;
     document.getElementById('btn-follow-live').classList.toggle('active', state.followLive);
-    if (state.followLive) fitAll();
+    if (state.followLive) { snapToLive(); state._priceScaleDirty = true; }
   });
   document.getElementById('btn-fit-all').addEventListener('click', fitAll);
   document.getElementById('btn-reset').addEventListener('click', () => {
-    state.view = { candleWidth: 8, pricePerPixel: 0.05, scrollX: 0, scrollY: 0, userModified: false };
+    state.view = { centerIndex: 0, candlesVisible: 40, priceCenter: 0, pricePerPixel: 0.05, autoScalePrice: true, followLive: true, userModified: false };
     state.followLive = true; state._priceScaleDirty = true;
     document.getElementById('btn-follow-live').classList.add('active');
+    snapToLive();
   });
   document.getElementById('btn-zoom-in').addEventListener('click', () => {
-    state.view.candleWidth = Math.min(MAX_SCALE_X, state.view.candleWidth * 1.3);
+    const chartW = state.width - state.priceScaleWidth;
+    zoomAtScreenX(chartW / 2, 0.7);
     state.view.userModified = true; state.followLive = false; state._priceScaleDirty = true;
     document.getElementById('btn-follow-live').classList.remove('active');
   });
   document.getElementById('btn-zoom-out').addEventListener('click', () => {
-    state.view.candleWidth = Math.max(MIN_SCALE_X, state.view.candleWidth / 1.3);
+    const chartW = state.width - state.priceScaleWidth;
+    zoomAtScreenX(chartW / 2, 1.4);
     state.view.userModified = true; state.followLive = false; state._priceScaleDirty = true;
     document.getElementById('btn-follow-live').classList.remove('active');
   });
   document.getElementById('btn-auto-scale').addEventListener('click', () => {
-    state.autoScale = !state.autoScale;
-    document.getElementById('btn-auto-scale').classList.toggle('active', state.autoScale);
-    if (state.autoScale) state._priceScaleDirty = true;
+    state.view.autoScalePrice = !state.view.autoScalePrice;
+    document.getElementById('btn-auto-scale').classList.toggle('active', state.view.autoScalePrice);
+    if (state.view.autoScalePrice) state._priceScaleDirty = true;
   });
 
   document.querySelectorAll('.tool-btn').forEach(btn => {
@@ -1235,7 +1337,15 @@ function selectSymbol(symbol) {
   state.selectedRange = null; state.symbolLoaded = false;
   state.historyLoaded = false; state.historyCount = 0; state.historySource = '';
   state._priceScaleDirty = true;
-  state.view.scrollX = 0; // Reset to live view
+
+  // Reset viewport
+  state.view.centerIndex = 0;
+  state.view.candlesVisible = 40;
+  state.view.priceCenter = 0;
+  state.view.pricePerPixel = 0.05;
+  state.view.userModified = false;
+  state.followLive = true;
+  document.getElementById('btn-follow-live').classList.add('active');
 
   document.getElementById('symbol-input').value = sym;
   document.getElementById('fp-symbol').textContent = sym;
