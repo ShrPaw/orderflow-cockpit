@@ -123,7 +123,11 @@ function handleMessage(msg) {
       state.currentCandle=msg.data.current||null; state.bubbles=[];
       for(const c of state.candles){if(c.bubbles)for(const b of c.bubbles){b.candleTime=c.openTime;state.bubbles.push(b);}}
       state.symbolLoaded=true; state._priceScaleDirty=true; updateRightPanel();
-      if(state.followLive&&!state.view.userModified) resetToDefaultView();
+      // On first snapshot: reset to defaults. On reconnect: preserve zoom, just snap.
+      if(state.followLive){
+        if(state.candles.length>0&&state.view.candlesVisible===DEFAULT_CANDLES_VISIBLE) snapToLive();
+        else snapToLive();
+      }
     } break;
     case 'zones': if(msg.data.symbol===state.symbol) state.zones=msg.data.zones||[]; break;
     case 'profile': if(state.selectedRange){state.selectedRange.profile=msg.data.profile;updateRangePanel();} break;
@@ -138,7 +142,9 @@ function handleCandle(candle) {
   if(state.candles.length>800) state.candles=state.candles.slice(-800);
   state.currentCandle=null; state._priceScaleDirty=true;
   if(candle.bubbles&&candle.bubbles.length>0){for(const b of candle.bubbles){b.candleTime=candle.openTime;state.bubbles.push(b);}if(state.bubbles.length>5000)state.bubbles=state.bubbles.slice(-5000);}
-  if(state.followLive&&!state.view.userModified) snapToLive();
+  // CRITICAL: Always snap to live when followLive is ON — regardless of userModified.
+  // This ensures zoom + followLive work together: user zooms, new candle arrives, chart tracks.
+  if(state.followLive) snapToLive();
 }
 
 function getAllCandles() { const all=[...state.candles]; if(state.currentCandle)all.push(state.currentCandle); return all; }
@@ -212,8 +218,11 @@ function zoomAtScreenX(screenX,factor) {
   if(newCV===oldCV)return;
   state.view.candlesVisible=newCV;
   const chartW=state.width-state.priceScaleWidth;
+  // Keep the world point under cursor at the same screen position
   state.view.centerIndex=worldX-(screenX-chartW/2)/(chartW/newCV);
-  state.view.userModified=true; state._priceScaleDirty=true;
+  // DO NOT set userModified — zoom is NOT a disengage action.
+  // followLive remains active: next candle will snapToLive() with new zoom level.
+  state._priceScaleDirty=true;
 }
 
 // ============ CHART RENDERING ============
@@ -634,6 +643,7 @@ function initInput() {
         const cpw=getCandlePixelWidth();
         state.view.centerIndex=state.mouse.dragStartCenterIndex-dx/cpw;
         if(Math.abs(dy)>2){state.view.priceCenter=state.mouse.dragStartPriceCenter+dy*state.view.pricePerPixel;state.view.manualPrice=true;}
+        // ONLY explicit drag disables followLive — this is the intentional disengage action
         state.view.userModified=true;state.followLive=false;
         document.getElementById('btn-follow-live').classList.remove('active');
       }
@@ -646,22 +656,33 @@ function initInput() {
   });
   canvas.addEventListener('mouseup',(e)=>{try{if(state.drawingState&&state.mouse.isDown)finalizeDrawing();state.mouse.isDown=false;}catch(err){}});
 
-  // Wheel: Ctrl=time zoom, Shift=price zoom, default=pan
+  // Wheel: Ctrl=time zoom, Shift=price zoom, default=time pan
+  // CRITICAL: Zoom does NOT disable followLive — user can zoom and still track live candles.
+  // Only explicit drag pan disables followLive.
   canvas.addEventListener('wheel',(e)=>{
     try{
       e.preventDefault();
       const rect=canvas.getBoundingClientRect(), mouseX=e.clientX-rect.left, mouseY=e.clientY-rect.top;
       if(e.shiftKey){
+        // Shift+wheel: vertical price zoom (manual mode)
         const factor=e.deltaY>0?1.1:0.91;const priceAtMouse=screenToPriceY(mouseY);
         state.view.pricePerPixel*=factor;state.view.pricePerPixel=clamp(state.view.pricePerPixel,0.00001,100000);
-        state.view.priceCenter=priceAtMouse+(state.height/2-mouseY)*state.view.pricePerPixel;state.view.manualPrice=true;
+        state.view.priceCenter=priceAtMouse+(state.height/2-mouseY)*state.view.pricePerPixel;
+        state.view.manualPrice=true;
+        state._priceScaleDirty=true;
       } else if(e.ctrlKey||e.metaKey){
-        const factor=e.deltaY>0?ZOOM_FACTOR_WHEEL:1/ZOOM_FACTOR_WHEEL;zoomAtScreenX(mouseX,factor);
+        // Ctrl+wheel: cursor-centered time zoom — PRESERVES followLive
+        const factor=e.deltaY>0?ZOOM_FACTOR_WHEEL:1/ZOOM_FACTOR_WHEEL;
+        zoomAtScreenX(mouseX,factor);
+        state._priceScaleDirty=true;
+        // DO NOT set followLive=false — zoom + live tracking must coexist
       } else {
-        const panAmt=e.deltaY*0.3;const cpw=getCandlePixelWidth();state.view.centerIndex+=panAmt/cpw;state.view.userModified=true;
+        // Default wheel: horizontal time pan — gentle, preserves followLive
+        const panAmt=e.deltaY*0.3;const cpw=getCandlePixelWidth();
+        state.view.centerIndex+=panAmt/cpw;
+        // Pan does NOT disable followLive either — next candle will snap back
+        state._priceScaleDirty=true;
       }
-      state.followLive=false;state._priceScaleDirty=true;
-      document.getElementById('btn-follow-live').classList.remove('active');
     }catch(err){showToast('Zoom error: '+err.message,'error');}
   },{passive:false});
 
@@ -681,8 +702,8 @@ function initInput() {
         case 'r':case 'R':setActiveTool('range');break;
         case 'Delete':case 'Backspace':deleteSelectedDrawing();break;
         case 'f':case 'F':fitAll();break;
-        case '=':case '+':zoomAtScreenX(chartW/2,1/ZOOM_FACTOR_BTN);state.view.userModified=true;state.followLive=false;state._priceScaleDirty=true;document.getElementById('btn-follow-live').classList.remove('active');break;
-        case '-':case '_':zoomAtScreenX(chartW/2,ZOOM_FACTOR_BTN);state.view.userModified=true;state.followLive=false;state._priceScaleDirty=true;document.getElementById('btn-follow-live').classList.remove('active');break;
+        case '=':case '+':zoomAtScreenX(chartW/2,1/ZOOM_FACTOR_BTN);state._priceScaleDirty=true;break;
+        case '-':case '_':zoomAtScreenX(chartW/2,ZOOM_FACTOR_BTN);state._priceScaleDirty=true;break;
         case '0':resetToDefaultView();break;
         case 'Home':snapToLive();state.followLive=true;state.view.userModified=false;document.getElementById('btn-follow-live').classList.add('active');break;
       }
@@ -815,7 +836,8 @@ function updateScannerUI(){
 // ============ BUTTONS ============
 function initButtons(){
   document.getElementById('btn-follow-live').addEventListener('click',()=>{
-    state.followLive=!state.followLive;state.view.userModified=!state.followLive;
+    state.followLive=!state.followLive;
+    state.view.userModified=false; // Clear on toggle — zoom level is preserved
     document.getElementById('btn-follow-live').classList.toggle('active',state.followLive);
     if(state.followLive){snapToLive();state.view.manualPrice=false;state._priceScaleDirty=true;}
   });
@@ -825,11 +847,11 @@ function initButtons(){
   document.getElementById('btn-reset').addEventListener('click',resetToDefaultView);
   document.getElementById('btn-zoom-in').addEventListener('click',()=>{
     const chartW=state.width-state.priceScaleWidth;zoomAtScreenX(chartW/2,1/ZOOM_FACTOR_BTN);
-    state.view.userModified=true;state.followLive=false;state._priceScaleDirty=true;document.getElementById('btn-follow-live').classList.remove('active');
+    state._priceScaleDirty=true;
   });
   document.getElementById('btn-zoom-out').addEventListener('click',()=>{
     const chartW=state.width-state.priceScaleWidth;zoomAtScreenX(chartW/2,ZOOM_FACTOR_BTN);
-    state.view.userModified=true;state.followLive=false;state._priceScaleDirty=true;document.getElementById('btn-follow-live').classList.remove('active');
+    state._priceScaleDirty=true;
   });
   document.getElementById('btn-auto-scale').addEventListener('click',()=>{
     state.view.autoScalePrice=!state.view.autoScalePrice;state.view.manualPrice=false;
