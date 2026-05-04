@@ -308,6 +308,94 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // PHASE 3: GET /api/history — fetch historical candles from Hyperliquid
+  if (pathname === '/api/history') {
+    const symbol = url.searchParams.get('symbol');
+    const interval = url.searchParams.get('interval') || '1m';
+    const count = parseInt(url.searchParams.get('count') || '300');
+
+    if (!symbol) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'symbol required' }));
+      return;
+    }
+
+    // Hyperliquid has 1m, 3m, 5m, 15m, 1h etc — no 40s. Fetch 1m for context.
+    const hlInterval = '1m';
+    const endTime = Date.now();
+    const startTime = endTime - count * 60000; // 1m candles
+
+    const postData = JSON.stringify({
+      type: 'candleSnapshot',
+      req: { coin: symbol.toUpperCase(), interval: hlInterval, startTime, endTime }
+    });
+
+    const options = {
+      hostname: 'api.hyperliquid.xyz',
+      port: 443,
+      path: '/info',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) }
+    };
+
+    const https = require('https');
+    const proxyReq = https.request(options, (proxyRes) => {
+      let data = '';
+      proxyRes.on('data', chunk => data += chunk);
+      proxyRes.on('end', () => {
+        try {
+          const raw = JSON.parse(data);
+          if (!Array.isArray(raw)) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'unexpected response', raw: data.slice(0, 200) }));
+            return;
+          }
+
+          // Convert HL candle format to internal format
+          const candles = raw.map(c => ({
+            openTime: c.t,
+            open: parseFloat(c.o),
+            high: parseFloat(c.h),
+            low: parseFloat(c.l),
+            close: parseFloat(c.c),
+            volume: parseFloat(c.v) || 0,
+            buyVolume: parseFloat(c.v || 0) * 0.5,
+            sellVolume: parseFloat(c.v || 0) * 0.5,
+            delta: 0,
+            tradeCount: 0,
+            bubbleCount: 0,
+            absorptionCount: 0,
+            rejectionCount: 0,
+            bubbles: [],
+            priceMap: {},
+            _historical: true,
+            _interval: hlInterval
+          }));
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            symbol: symbol.toUpperCase(),
+            interval: hlInterval,
+            requestedInterval: interval,
+            count: candles.length,
+            candles
+          }));
+        } catch (e) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'parse error: ' + e.message }));
+        }
+      });
+    });
+    proxyReq.on('error', (e) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'request failed: ' + e.message }));
+    });
+    proxyReq.write(postData);
+    proxyReq.end();
+    return;
+  }
+
   // PHASE 3: GET /api/scanner — full scanner response
   if (pathname === '/api/scanner') {
     const mode = url.searchParams.get('mode') || 'top_attention';

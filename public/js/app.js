@@ -177,6 +177,39 @@ function fitAll() {
   document.getElementById('btn-follow-live').classList.add('active');
 }
 
+// ============ HISTORICAL CANDLES (Phase 3) ============
+function fetchHistoricalCandles(symbol) {
+  if (!symbol) return;
+  const interval = state.interval || '1m';
+  fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&interval=${interval}&count=300`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.candles && data.candles.length > 0) {
+        // Prepend historical candles (before existing live candles)
+        const existingTimes = new Set(state.candles.map(c => c.openTime));
+        const newCandles = data.candles.filter(c => !existingTimes.has(c.openTime));
+        state.candles = [...newCandles, ...state.candles];
+        if (state.candles.length > 500) state.candles = state.candles.slice(-500);
+        state.historyLoaded = true;
+        state.historyCount = data.count;
+        state.historySource = data.interval + ' historical context';
+        state._priceScaleDirty = true;
+        updateRightPanel();
+      } else {
+        state.historyLoaded = false;
+        state.historyCount = 0;
+        state.historySource = 'Live-only history building. Historical backfill unavailable for this source.';
+        updateRightPanel();
+      }
+    })
+    .catch(() => {
+      state.historyLoaded = false;
+      state.historyCount = 0;
+      state.historySource = 'Live-only history building. Historical backfill unavailable.';
+      updateRightPanel();
+    });
+}
+
 // ============ WEBSOCKET ============
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1294,6 +1327,7 @@ function updateRightPanel() {
       <div class="row"><span class="label">Trades:</span><span class="val">${hl.tradeCount||0}</span></div>
       <div class="row"><span class="label">Book:</span><span class="val ${hl.bookSubscribed?'green':''}">${hl.bookSubscribed?'active':'pending'}</span></div>
       <div class="row"><span class="label">Candles:</span><span class="val">${state.candles.length}</span></div>
+      <div class="row"><span class="label">Loaded:</span><span class="val ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' candles (' + state.historySource + ')' : state.historySource || 'loading...'}</span></div>
       <div class="row"><span class="label">Bubbles:</span><span class="val">${state.bubbles.length}</span></div>
       <div class="row"><span class="label">Zones:</span><span class="val">${state.zones.length}</span></div>
       <div class="row"><span class="label">Exec Ref:</span><span class="val">${symbolToBinance(state.symbol)}</span></div>
@@ -1559,6 +1593,9 @@ function selectSymbol(symbol) {
   });
 
   if (state.wsReady) state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+
+  // Phase 3: Fetch historical candles
+  fetchHistoricalCandles(sym);
 
   fetchScannerData();
   loadDrawings(); // Phase 9
