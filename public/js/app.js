@@ -1,11 +1,11 @@
-// Orderflow Cockpit — Frontend Application
-// Phases 5-12: Chart interaction, bubbles, label deconfliction, zones, drawing tools,
-//              selected range profile, footprint proxy, source/quality panel
+// Orderflow Cockpit — Full Rebuild
+// Sections 3-18: Source architecture, symbol loading, 40s candles, zoom, bubbles, zones,
+//               range profile, drawing tools, footprint, scanner, error handling, performance
 
 (function() {
 'use strict';
 
-// ============ TOAST SYSTEM (Phase 1) ============
+// ============ TOAST SYSTEM ============
 function showToast(msg, type) {
   type = type || 'error';
   let container = document.getElementById('toast-container');
@@ -26,13 +26,13 @@ function showToast(msg, type) {
   state._lastFrontendError = msg;
 }
 
-// ============ GLOBAL ERROR BOUNDARY (Phase 1) ============
+// ============ GLOBAL ERROR BOUNDARY ============
 window.onerror = function(msg, src, line, col, err) {
-  try { showToast('Chart error: ' + (msg || 'unknown') + '. Chart recovered.', 'error'); } catch(_) {}
+  try { showToast('Error: ' + (msg || 'unknown') + '. Recovered.', 'error'); } catch(_) {}
   return true;
 };
 window.addEventListener('unhandledrejection', function(e) {
-  try { showToast('Async error: ' + (e.reason?.message || e.reason || 'unknown') + '. Chart recovered.', 'error'); } catch(_) {}
+  try { showToast('Async error: ' + (e.reason?.message || e.reason || 'unknown') + '. Recovered.', 'error'); } catch(_) {}
 });
 
 // ============ STATE ============
@@ -44,6 +44,7 @@ const state = {
   source: 'hyperliquid',
   sourceStatus: {},
   symbolLoaded: false,
+  symbolError: null,
 
   // Chart data
   candles: [],
@@ -51,13 +52,13 @@ const state = {
   bubbles: [],
   zones: [],
 
-  // View transform — Phase 5: stable zoom/pan
+  // View transform — professional zoom/pan
   view: {
     offsetX: 0,
     scaleX: 8,
     pricePerPixel: 0.05,
     scrollY: 0,
-    userModified: false, // true if user has zoomed/panned
+    userModified: false,
   },
 
   // Mouse
@@ -65,11 +66,11 @@ const state = {
   hoveredCandle: null,
   hoveredBubble: null,
 
-  // Phase 9: Drawing tools with localStorage
+  // Drawing tools with localStorage
   drawings: [],
   drawingState: null,
 
-  // Phase 10: Selected range
+  // Selected range
   selectedRange: null,
 
   // Scanner
@@ -87,30 +88,33 @@ const state = {
   height: 0,
   dpr: 1,
 
-  // Phase 7: Label deconfliction
+  // Label deconfliction
   labelRects: [],
 
-  // Phase 2: Auto scale
+  // Auto scale
   autoScale: true,
 
-  // Phase 3: Historical candle tracking
+  // Historical candle tracking
   historyLoaded: false,
   historyCount: 0,
   historySource: '',
 
-  // Phase 5: Label density
-  labelDensity: 'compact', // 'minimal' | 'compact' | 'detailed'
+  // Label density
+  labelDensity: 'compact',
 
-  // Phase 1: Error tracking
+  // Error tracking
   _lastFrontendError: null,
 
-  // Phase 2: Render dirty flag
+  // Render dirty flag
   _priceScaleDirty: true,
 
-  // Phase 7: Diagnostics
+  // Diagnostics
   _lastTradeTs: null,
-  _lastBookTs: null,
   _totalTradeCount: 0,
+
+  // Symbol loading state
+  _loadingSymbol: false,
+  _loadRetries: 0,
 };
 
 // ============ COLORS ============
@@ -120,11 +124,12 @@ const COL = {
   gridText: '#3d4a5e',
   candleUp: '#22c55e',
   candleDown: '#ef4444',
-  bubbleAccepted: '#22c55e',
+  candleHistorical: '#374151',
+  bubbleAcceptedBuy: '#22c55e',
+  bubbleAcceptedSell: '#ef4444',
   bubbleRejected: '#ef4444',
   bubbleAbsorbed: '#f59e0b',
   bubbleExhausted: '#6b7280',
-  bubbleInvalidated: '#374151',
   zone: 'rgba(245,158,11,0.06)',
   zoneBorder: 'rgba(245,158,11,0.25)',
   poc: '#f59e0b',
@@ -143,14 +148,14 @@ const COL = {
 // ============ HELPERS ============
 function estimatePriceStep(ppp, h) {
   const totalRange = h * ppp;
-  const steps = [0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000,2000,5000];
+  const steps = [0.0001,0.0002,0.0005,0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000,2000,5000];
   const target = totalRange / 8;
   for (const s of steps) { if (s >= target) return s; }
   return steps[steps.length - 1];
 }
 
 function fmtPrice(p) {
-  if (p == null) return '—';
+  if (p == null || isNaN(p)) return '—';
   if (Math.abs(p) >= 1000) return p.toFixed(1);
   if (Math.abs(p) >= 100) return p.toFixed(2);
   if (Math.abs(p) >= 1) return p.toFixed(3);
@@ -159,25 +164,21 @@ function fmtPrice(p) {
 }
 
 function fmtNum(n) {
-  if (n >= 1e9) return (n/1e9).toFixed(1)+'B';
-  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
-  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  if (n == null || isNaN(n)) return '—';
+  if (Math.abs(n) >= 1e9) return (n/1e9).toFixed(1)+'B';
+  if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1)+'K';
   return n.toFixed(0);
 }
 
 function symbolToBinance(s) {
-  const sp = {PEPE:'1000PEPEUSDT',LUNC:'1000LUNCUSDT',SHIB:'1000SHIBUSDT',BONK:'1000BONKUSDT',FLOKI:'1000FLOKIUSDT'};
+  const sp = {PEPE:'1000PEPEUSDT',LUNC:'1000LUNCUSDT',SHIB:'1000SHIBUSDT',BONK:'1000BONKUSDT',FLOKI:'1000FLOKIUSDT',XEC:'1000XECUSDT',CAT:'1000CATSUSDT',RATS:'1000RATSUSDT'};
   return sp[s] || `${s}USDT`;
 }
 
-function fitAll() {
-  state.view.offsetX = 0;
-  state.followLive = true;
-  state.view.userModified = false;
-  document.getElementById('btn-follow-live').classList.add('active');
-}
+function safeNum(v, fallback) { return (v != null && isFinite(v)) ? v : (fallback || 0); }
 
-// ============ HISTORICAL CANDLES (Phase 3) ============
+// ============ HISTORICAL CANDLES ============
 function fetchHistoricalCandles(symbol) {
   if (!symbol) return;
   const interval = state.interval || '1m';
@@ -185,27 +186,25 @@ function fetchHistoricalCandles(symbol) {
     .then(r => r.json())
     .then(data => {
       if (data.ok && data.candles && data.candles.length > 0) {
-        // Prepend historical candles (before existing live candles)
         const existingTimes = new Set(state.candles.map(c => c.openTime));
         const newCandles = data.candles.filter(c => !existingTimes.has(c.openTime));
         state.candles = [...newCandles, ...state.candles];
         if (state.candles.length > 500) state.candles = state.candles.slice(-500);
         state.historyLoaded = true;
         state.historyCount = data.count;
-        state.historySource = data.interval + ' historical context';
+        state.historySource = data.interval + ' historical';
         state._priceScaleDirty = true;
+        state.symbolLoaded = true;
         updateRightPanel();
       } else {
-        state.historyLoaded = false;
-        state.historyCount = 0;
-        state.historySource = 'Live-only history building. Historical backfill unavailable for this source.';
+        state.historySource = 'Building live history — no historical backfill available yet';
+        state.symbolLoaded = true;
         updateRightPanel();
       }
     })
     .catch(() => {
-      state.historyLoaded = false;
-      state.historyCount = 0;
-      state.historySource = 'Live-only history building. Historical backfill unavailable.';
+      state.historySource = 'Building live history — no historical backfill available yet';
+      state.symbolLoaded = true;
       updateRightPanel();
     });
 }
@@ -266,6 +265,7 @@ function handleMessage(msg) {
         }
       }
       state.symbolLoaded = true;
+      state._priceScaleDirty = true;
       updateRightPanel();
       if (state.followLive && !state.view.userModified) fitAll();
       break;
@@ -288,13 +288,15 @@ function handleMessage(msg) {
 
     case 'symbol_selected':
       if (msg.data.symbol) {
-        state.symbol = msg.data.symbol;
+        // This is the WS confirmation — state.symbol was already set from REST
         state.symbolLoaded = true;
+        state._loadingSymbol = false;
+        state._loadRetries = 0;
+        state.symbolError = null;
         document.getElementById('symbol-input').value = msg.data.symbol;
         document.getElementById('fp-symbol').textContent = msg.data.symbol;
         updateRightPanel();
         updateSourceUI();
-        // Phase 9: Load drawings for this symbol
         loadDrawings();
       }
       break;
@@ -302,6 +304,8 @@ function handleMessage(msg) {
 }
 
 function handleCandle(candle) {
+  state._lastTradeTs = Date.now();
+  state._totalTradeCount += candle.tradeCount || 0;
   const existing = state.candles.find(c => c.openTime === candle.openTime);
   if (existing) {
     Object.assign(existing, candle);
@@ -309,7 +313,17 @@ function handleCandle(candle) {
     state.candles.push(candle);
   }
   if (state.candles.length > 500) state.candles = state.candles.slice(-500);
+  state.currentCandle = null; // Will be set by next snapshot or live candle
   state._priceScaleDirty = true;
+
+  // Extract bubbles from new candle
+  if (candle.bubbles && candle.bubbles.length > 0) {
+    for (const b of candle.bubbles) {
+      b.candleTime = candle.openTime;
+      state.bubbles.push(b);
+    }
+    if (state.bubbles.length > 500) state.bubbles = state.bubbles.slice(-500);
+  }
 }
 
 // ============ CHART RENDERING ============
@@ -340,11 +354,14 @@ function render() {
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, w, h);
 
+  // Status messages
   if (!state.symbol) {
     ctx.fillStyle = COL.gridText;
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Connecting to Hyperliquid...', w/2, h/2);
+    ctx.font = '11px sans-serif';
+    ctx.fillText('BTC will auto-load shortly', w/2, h/2 + 20);
     requestAnimationFrame(render);
     return;
   }
@@ -353,9 +370,14 @@ function render() {
     ctx.fillStyle = COL.gridText;
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Loading ${state.symbol} from Hyperliquid...`, w/2, h/2);
+    ctx.fillText(`Loading ${state.symbol}...`, w/2, h/2);
     ctx.font = '11px sans-serif';
-    ctx.fillText('Building 40s candles…', w/2, h/2 + 20);
+    if (state.symbolError) {
+      ctx.fillStyle = '#ef4444';
+      ctx.fillText(state.symbolError, w/2, h/2 + 20);
+    } else {
+      ctx.fillText('Building 40s candles — waiting for trades...', w/2, h/2 + 20);
+    }
     requestAnimationFrame(render);
     return;
   }
@@ -381,21 +403,8 @@ function render() {
 
   if (!visible.length) { requestAnimationFrame(render); return; }
 
-  // Phase 2: Only auto-fit price when data changes (dirty flag), not every frame
-  if (state.followLive && !state.view.userModified && state._priceScaleDirty) {
-    let minP = Infinity, maxP = -Infinity;
-    for (const c of visible) {
-      if (c.low < minP) minP = c.low;
-      if (c.high > maxP) maxP = c.high;
-    }
-    const range = maxP - minP || 1;
-    state.view.pricePerPixel = range / (h * 0.85);
-    state.view.scrollY = ((minP + maxP) / 2) / state.view.pricePerPixel - h / 2;
-    state._priceScaleDirty = false;
-  }
-
-  // Phase 2: Auto scale mode — adjust price to fit visible candles
-  if (state.autoScale && state.followLive && !state.view.userModified) {
+  // Auto scale — only when dirty + follow live
+  if (state.autoScale && state.followLive && !state.view.userModified && state._priceScaleDirty) {
     let minP = Infinity, maxP = -Infinity;
     for (const c of visible) {
       if (c.low < minP) minP = c.low;
@@ -403,9 +412,9 @@ function render() {
     }
     const range = maxP - minP || 1;
     const targetPPP = range / (h * 0.85);
-    // Smooth transition
     state.view.pricePerPixel += (targetPPP - state.view.pricePerPixel) * 0.15;
     state.view.scrollY += (((minP + maxP) / 2) / state.view.pricePerPixel - h / 2 - state.view.scrollY) * 0.15;
+    state._priceScaleDirty = false;
   }
 
   // Reset label deconfliction
@@ -467,8 +476,11 @@ function drawCandles(ctx, visible, candleW, gap, bodyW, priceToY, rightEdge) {
     if (x < -candleW || x > rightEdge + candleW) continue;
 
     const isUp = c.close >= c.open;
-    const color = isUp ? COL.candleUp : COL.candleDown;
+    const isHistorical = c._historical || c._sourceInterval;
+    let color = isUp ? COL.candleUp : COL.candleDown;
+    if (isHistorical) color = COL.candleHistorical;
 
+    // Wick
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -476,12 +488,18 @@ function drawCandles(ctx, visible, candleW, gap, bodyW, priceToY, rightEdge) {
     ctx.lineTo(x, priceToY(c.low));
     ctx.stroke();
 
+    // Body
     const bodyTop = priceToY(Math.max(c.open, c.close));
     const bodyBot = priceToY(Math.min(c.open, c.close));
     const bodyH = Math.max(1, bodyBot - bodyTop);
 
-    ctx.fillStyle = color;
-    ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyH);
+    if (isHistorical) {
+      ctx.fillStyle = 'rgba(55,65,81,0.6)';
+      ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyH);
+    } else {
+      ctx.fillStyle = color;
+      ctx.fillRect(x - bodyW/2, bodyTop, bodyW, bodyH);
+    }
   }
 }
 
@@ -497,36 +515,41 @@ function drawVolumeBars(ctx, visible, candleW, gap, priceToY, h, rightEdge) {
 
     const barH = ((c.volume || 0) / maxVol) * barMaxH;
     const isUp = c.close >= c.open;
+    const isHistorical = c._historical || c._sourceInterval;
 
-    ctx.fillStyle = isUp ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)';
+    ctx.fillStyle = isHistorical ? 'rgba(55,65,81,0.2)' : (isUp ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)');
     ctx.fillRect(x - (candleW - gap)/2, h - barH, candleW - gap, barH);
   }
 }
 
-// ============ PHASE 6: BUBBLE CLUSTERING ============
+// ============ DEEPCHART-STYLE BUBBLE RENDERING ============
 function drawBubbles(ctx, visible, candleW, priceToY, rightEdge, scaleX) {
   // Build clusters: group by candle + price band + side + state
   const clusters = [];
-  const bandPx = Math.max(8, scaleX * 0.8); // price band in pixels for clustering
+  const bandPx = Math.max(10, scaleX * 0.9);
 
-  for (const bubble of state.bubbles) {
+  // Viewport culling — only process bubbles in visible candles
+  const visibleTimes = new Set(visible.map(c => c.openTime));
+  const visibleBubbles = state.bubbles.filter(b => visibleTimes.has(b.candleTime));
+
+  for (const bubble of visibleBubbles) {
     const cIdx = visible.findIndex(c => c.openTime === bubble.candleTime);
     if (cIdx < 0) continue;
     const c = visible[cIdx];
     const x = rightEdge - (visible.length - 1 - cIdx) * candleW - candleW / 2;
     const y = priceToY(bubble.price);
-    const state_ = bubble.state || 'accepted';
+    const st = bubble.state || 'accepted';
 
-    // Skip invalidated bubbles
-    if (state_ === 'invalidated') continue;
+    if (st === 'invalidated') continue;
 
-    // Find matching cluster (same candle area, same side, same state, close price)
+    // Find matching cluster
     let merged = false;
     for (const cl of clusters) {
-      if (Math.abs(cl.x - x) < candleW && Math.abs(cl.y - y) < bandPx &&
-          cl.side === bubble.side && cl.state === state_) {
+      if (Math.abs(cl.x - x) < candleW * 0.8 && Math.abs(cl.y - y) < bandPx &&
+          cl.side === bubble.side && cl.state === st) {
         cl.bubbles.push(bubble);
         cl.totalNotional += bubble.notional || 0;
+        cl.totalQty += bubble.qty || 0;
         cl.y = (cl.y * (cl.bubbles.length - 1) + y) / cl.bubbles.length;
         merged = true;
         break;
@@ -535,117 +558,159 @@ function drawBubbles(ctx, visible, candleW, priceToY, rightEdge, scaleX) {
     if (!merged) {
       clusters.push({
         x, y, bubbles: [bubble], totalNotional: bubble.notional || 0,
-        side: bubble.side, state: state_
+        totalQty: bubble.qty || 0,
+        side: bubble.side, state: st
       });
     }
   }
 
-  // Draw clusters
+  // Draw clusters — Deepchart concentric ring style
   for (const cl of clusters) {
     const { x, y, bubbles: bubs, side, state: st } = cl;
     const count = bubs.length;
-    const radius = Math.min(14, Math.max(3, Math.sqrt(cl.totalNotional / 800)));
+    // Radius scales by notional with sqrt — large prints look large
+    const radius = Math.min(18, Math.max(4, Math.sqrt(cl.totalNotional / 500)));
 
-    let color;
-    switch (st) {
-      case 'accepted':
-        color = side === 'buy' ? COL.bubbleAccepted : COL.bubbleRejected;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.45;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.fill();
-        ctx.globalAlpha = 1;
-        // Glow
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 6;
-        ctx.beginPath(); ctx.arc(x, y, radius*0.6, 0, Math.PI*2); ctx.fill();
-        ctx.shadowBlur = 0;
-        break;
-      case 'rejected':
-        color = COL.bubbleRejected;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.stroke();
-        // Warning ring
-        ctx.strokeStyle = 'rgba(239,68,68,0.25)';
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(x, y, radius+2, 0, Math.PI*2); ctx.stroke();
-        break;
-      case 'absorbed':
-        color = COL.bubbleAbsorbed;
-        ctx.fillStyle = 'rgba(245,158,11,0.2)';
-        ctx.beginPath(); ctx.arc(x, y, radius+3, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.6;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.fill();
-        ctx.globalAlpha = 1;
-        break;
-      case 'exhausted':
-        color = COL.bubbleExhausted;
-        ctx.globalAlpha = 0.3;
-        ctx.fillStyle = color;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = 'rgba(107,114,128,0.3)';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([2,2]);
-        ctx.beginPath(); ctx.arc(x, y, radius+1, 0, Math.PI*2); ctx.stroke();
-        ctx.setLineDash([]);
-        break;
-      default:
-        color = side === 'buy' ? COL.bubbleAccepted : COL.bubbleRejected;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.3;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.fill();
-        ctx.globalAlpha = 1;
+    let mainColor;
+    if (st === 'accepted') {
+      mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell;
+    } else if (st === 'rejected') {
+      mainColor = COL.bubbleRejected;
+    } else if (st === 'absorbed') {
+      mainColor = COL.bubbleAbsorbed;
+    } else if (st === 'exhausted') {
+      mainColor = COL.bubbleExhausted;
+    } else {
+      mainColor = side === 'buy' ? COL.bubbleAcceptedBuy : COL.bubbleAcceptedSell;
     }
 
-    // Cluster count label — Phase 4: "B×N" format
-    // Phase 5: respect labelDensity
+    // --- Concentric ring rendering ---
+    switch (st) {
+      case 'accepted': {
+        // Outer halo (fades out)
+        const grad = ctx.createRadialGradient(x, y, radius * 0.3, x, y, radius * 1.4);
+        grad.addColorStop(0, mainColor + 'aa');
+        grad.addColorStop(0.6, mainColor + '44');
+        grad.addColorStop(1, mainColor + '00');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(x, y, radius * 1.4, 0, Math.PI * 2); ctx.fill();
+
+        // Main filled circle
+        ctx.fillStyle = mainColor + 'bb';
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+
+        // Inner bright core
+        ctx.fillStyle = mainColor;
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2); ctx.fill();
+
+        // Solid border ring
+        ctx.strokeStyle = mainColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
+        break;
+      }
+      case 'rejected': {
+        // Hollow with sharp outer ring
+        ctx.strokeStyle = mainColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.stroke();
+
+        // Outer warning ring
+        ctx.strokeStyle = mainColor + '44';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, radius + 3, 0, Math.PI * 2); ctx.stroke();
+
+        // Very faint fill
+        ctx.fillStyle = mainColor + '15';
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'absorbed': {
+        // Halo/aura ring
+        const grad = ctx.createRadialGradient(x, y, radius * 0.5, x, y, radius * 2);
+        grad.addColorStop(0, mainColor + '66');
+        grad.addColorStop(0.5, mainColor + '22');
+        grad.addColorStop(1, mainColor + '00');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(x, y, radius * 2, 0, Math.PI * 2); ctx.fill();
+
+        // Inner circle
+        ctx.fillStyle = mainColor + '88';
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.8, 0, Math.PI * 2); ctx.fill();
+
+        // Ring
+        ctx.strokeStyle = mainColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.8, 0, Math.PI * 2); ctx.stroke();
+        break;
+      }
+      case 'exhausted': {
+        // Faded
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = mainColor;
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Dashed ring
+        ctx.strokeStyle = mainColor + '55';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.arc(x, y, radius + 1, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        break;
+      }
+    }
+
+    // --- Cluster count label ---
     if (count > 1 && state.labelDensity !== 'minimal') {
+      // Show direction icon + count + state abbreviation
+      const icon = side === 'buy' ? '▲' : '▼';
+      const stateAbbr = st === 'accepted' ? '' : st === 'rejected' ? 'R' : st === 'absorbed' ? 'Ab' : 'Ex';
+      const label = `${icon}${count}${stateAbbr}`;
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 8px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(`B×${count}`, x, y);
-    } else if (count === 1 && state.labelDensity === 'detailed') {
-      // In detailed mode, show individual bubble size label
-      ctx.fillStyle = '#fff';
-      ctx.font = '7px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(fmtNum(cl.totalNotional), x, y - radius - 4);
+      ctx.fillText(label, x, y);
     }
 
     // Hover detection
     const dx = state.mouse.x - x;
     const dy = state.mouse.y - y;
-    if (dx*dx + dy*dy < (radius+4)*(radius+4)) {
-      state.hoveredBubble = { x, y, cluster: cl, mainBubble: bubs.reduce((a,b) => (b.notional||0)>(a.notional||0)?b:a, bubs[0]) };
+    if (dx * dx + dy * dy < (radius + 6) * (radius + 6)) {
+      state.hoveredBubble = {
+        x, y, cluster: cl,
+        mainBubble: bubs.reduce((a, b) => (b.notional || 0) > (a.notional || 0) ? b : a, bubs[0])
+      };
     }
   }
 }
 
-// ============ PHASE 8: ZONE RENDERING ============
+// ============ ZONE RENDERING ============
 function drawZones(ctx, w, h, priceToY, rightEdge) {
   for (const zone of state.zones) {
     const y1 = priceToY(zone.priceHigh);
     const y2 = priceToY(zone.priceLow);
-    if (y2 < 0 || y1 > h) continue; // off screen
+    if (y2 < 0 || y1 > h) continue;
 
     const zoneH = y2 - y1;
 
-    // Determine zone color based on type
-    let fillCol = COL.zone;
-    let borderCol = COL.zoneBorder;
+    let fillCol, borderCol;
     if (zone.type.includes('BUY')) {
       fillCol = 'rgba(34,197,94,0.05)';
       borderCol = 'rgba(34,197,94,0.2)';
     } else if (zone.type.includes('SELL')) {
       fillCol = 'rgba(239,68,68,0.05)';
       borderCol = 'rgba(239,68,68,0.2)';
+    } else {
+      fillCol = COL.zone;
+      borderCol = COL.zoneBorder;
     }
     if (zone.type.includes('DEFENSE')) {
       fillCol = zone.type.includes('BUY') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)';
+    }
+    if (zone.type.includes('ABSORPTION')) {
+      fillCol = zone.type.includes('BUY') ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)';
     }
 
     // Fill band
@@ -655,36 +720,47 @@ function drawZones(ctx, w, h, priceToY, rightEdge) {
     // Top/bottom borders
     ctx.strokeStyle = borderCol;
     ctx.lineWidth = 1;
+    ctx.setLineDash([4, 2]);
     ctx.beginPath();
     ctx.moveTo(0, y1); ctx.lineTo(rightEdge, y1);
     ctx.moveTo(0, y2); ctx.lineTo(rightEdge, y2);
     ctx.stroke();
+    ctx.setLineDash([]);
 
-    // Phase 7: Compact right-side label with deconfliction
-    // Phase 5: respect labelDensity — hide zone labels in minimal mode
+    // Right-side compact label with deconfliction
     if (state.labelDensity !== 'minimal') {
-      const labelText = zone.type.replace(/_/g, ' ').replace('ZONE', '').trim();
+      const shortType = zone.type
+        .replace(/_ZONE/g, '')
+        .replace(/BUYER_/g, 'B.')
+        .replace(/SELLER_/g, 'S.')
+        .replace(/BUY_/g, 'B.')
+        .replace(/SELL_/g, 'S.')
+        .replace(/ACCEPTANCE/g, 'ACC')
+        .replace(/REJECTION/g, 'REJ')
+        .replace(/ABSORPTION/g, 'ABS')
+        .replace(/DEFENSE/g, 'DEF')
+        .replace(/_/g, ' ');
       const labelY = (y1 + y2) / 2;
-      const deconflicted = deconflictLabel(rightEdge - 4, labelY, labelText, 'right');
+      const deconflicted = deconflictLabel(rightEdge - 4, labelY, shortType, 'right');
 
       ctx.fillStyle = borderCol;
       ctx.font = '8px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(labelText, deconflicted.x, deconflicted.y + 3);
+      ctx.fillText(shortType, deconflicted.x, deconflicted.y + 3);
     }
   }
 }
 
-// ============ PHASE 7: LABEL DECONFLICTION ============
+// ============ LABEL DECONFLICTION ============
 function deconflictLabel(x, y, text, anchor) {
   const estW = text.length * 5;
   const estH = 10;
-  const padding = 2;
+  const padding = 3;
 
   let testY = y;
   let testX = x;
   let attempts = 0;
-  const maxAttempts = 20;
+  const maxAttempts = 15;
   const step = 12;
 
   while (attempts < maxAttempts) {
@@ -707,7 +783,7 @@ function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-// ============ SELECTED RANGE (Phase 10) ============
+// ============ SELECTED RANGE ============
 function drawSelectedRange(ctx, priceToY, yToPrice, rightEdge, allCandles) {
   const sr = state.selectedRange;
   if (!sr) return;
@@ -728,7 +804,9 @@ function drawSelectedRange(ctx, priceToY, yToPrice, rightEdge, allCandles) {
   ctx.fillRect(Math.min(x1,x2), y1, Math.abs(x2-x1), y2-y1);
   ctx.strokeStyle = COL.selectionBorder;
   ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 2]);
   ctx.strokeRect(Math.min(x1,x2), y1, Math.abs(x2-x1), y2-y1);
+  ctx.setLineDash([]);
 
   // Profile overlay
   if (sr.profile) {
@@ -850,7 +928,7 @@ function drawProfileOverlay(ctx, profile, boxX, boxY, boxW, boxH, priceToY) {
   }
 }
 
-// ============ DRAWING TOOLS (Phase 9) ============
+// ============ DRAWING TOOLS ============
 function drawDrawings(ctx, priceToY, rightEdge, allCandles) {
   for (const d of state.drawings) {
     drawSingleDrawing(ctx, d, priceToY, rightEdge);
@@ -947,10 +1025,12 @@ function drawCrosshair(ctx, w, h, rightEdge, yToPrice, priceToY, candleW, allCan
 
   const price = yToPrice(state.mouse.y);
   const label = document.getElementById('crosshair-label');
-  label.classList.remove('hidden');
-  label.style.left = (rightEdge + 2) + 'px';
-  label.style.top = (state.mouse.y - 10) + 'px';
-  label.textContent = fmtPrice(price);
+  if (label) {
+    label.classList.remove('hidden');
+    label.style.left = (rightEdge + 2) + 'px';
+    label.style.top = (state.mouse.y - 10) + 'px';
+    label.textContent = fmtPrice(price);
+  }
 
   updateTooltip(allCandles, candleW, rightEdge);
 }
@@ -971,6 +1051,7 @@ function drawTimeLabels(ctx, visible, candleW, h, rightEdge) {
 // ============ TOOLTIP ============
 function updateTooltip(allCandles, candleW, rightEdge) {
   const tooltip = document.getElementById('hover-tooltip');
+  if (!tooltip) return;
 
   // Candle hover
   const visibleCount = Math.floor(state.width / candleW) + 2;
@@ -999,7 +1080,7 @@ function updateTooltip(allCandles, candleW, rightEdge) {
     tooltip.classList.add('hidden');
   }
 
-  // Bubble hover — Phase 4: detailed cluster tooltip
+  // Bubble hover
   if (state.hoveredBubble) {
     const b = state.hoveredBubble;
     tooltip.classList.remove('hidden');
@@ -1009,7 +1090,6 @@ function updateTooltip(allCandles, candleW, rightEdge) {
     const cl = b.cluster;
     const bubs = cl.bubbles;
 
-    // Cluster analysis
     const prices = bubs.map(bb => bb.price);
     const priceRange = prices.length > 1 ? `${fmtPrice(Math.min(...prices))} — ${fmtPrice(Math.max(...prices))}` : fmtPrice(prices[0]);
     const buyCount = bubs.filter(bb => bb.side === 'buy').length;
@@ -1039,7 +1119,7 @@ function updateTooltip(allCandles, candleW, rightEdge) {
       <div style="margin-top:3px">Size: ${fmtNum(bub.qty)} | $${fmtNum(bub.notional)}</div>
       ${isCluster ? `<div>Cluster total: $${fmtNum(cl.totalNotional)}</div>` : ''}
       <div style="border-top:1px solid #1e293b;margin:4px 0;padding-top:3px">
-        <div>Side: <span style="color:${buyCount>0?'#22c55e':''}">${buyCount} buy</span> / <span style="color:${sellCount>0?'#ef4444':''}">${sellCount} sell</span></div>
+        <div>Side: <span style="color:${buyCount>0?'#22c55e':'#94a3b8'}">${buyCount} buy</span> / <span style="color:${sellCount>0?'#ef4444':'#94a3b8'}">${sellCount} sell</span></div>
         <div>State: ${stateBreakdown}</div>
       </div>
       <div style="color:#94a3b8;font-style:italic;margin-top:3px">${interpText}</div>
@@ -1048,7 +1128,7 @@ function updateTooltip(allCandles, candleW, rightEdge) {
   }
 }
 
-// ============ INPUT HANDLING (Phase 5) ============
+// ============ INPUT HANDLING ============
 function initInput() {
   const canvas = state.canvas;
 
@@ -1091,7 +1171,7 @@ function initInput() {
     } catch(err) { showToast('Mouse error: ' + err.message, 'error'); }
   });
 
-  // Phase 2: Professional cursor-centered zoom/pan
+  // Professional zoom — Section 7: wheel zooms BOTH time and price
   canvas.addEventListener('wheel', (e) => {
     try {
       e.preventDefault();
@@ -1100,45 +1180,27 @@ function initInput() {
       const mouseY = e.clientY - rect.top;
       const rightEdge = state.width - 60;
 
+      const factor = e.deltaY > 0 ? 1.1 : 0.9;
+
       if (e.ctrlKey || e.metaKey) {
-        // Vertical price zoom around cursor price
-        const factor = e.deltaY > 0 ? 1.08 : 0.92;
+        // Ctrl+wheel: price-only zoom around cursor
         const cursorPrice = (state.view.scrollY + state.height / 2 - mouseY) * state.view.pricePerPixel;
         state.view.pricePerPixel *= factor;
-        // Adjust scrollY so cursor price stays at same screen position
         state.view.scrollY = cursorPrice / state.view.pricePerPixel - state.height / 2 + mouseY;
       } else if (e.shiftKey) {
-        // Horizontal pan
+        // Shift+wheel: horizontal pan
         state.view.offsetX -= e.deltaY / state.view.scaleX;
       } else {
-        // Horizontal zoom around cursor position
+        // Default: zoom BOTH time and price axes around cursor
+        // Time axis zoom
         const oldScaleX = state.view.scaleX;
-        const factor = e.deltaY > 0 ? 1.12 : 0.88;
         const newScaleX = Math.max(2, Math.min(80, oldScaleX * factor));
-
-        // Calculate which candle index is under the cursor
-        const candleW = oldScaleX;
-        const allCandles = [...state.candles];
-        if (state.currentCandle) allCandles.push(state.currentCandle);
-        const visibleCount = Math.ceil(state.width / candleW) + 2;
-        const startIdx = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / candleW));
-        const cursorCandleScreenPos = (rightEdge - mouseX) / candleW;
-        const cursorCandleIdx = startIdx + Math.floor(visibleCount - 1 - cursorCandleScreenPos);
-
-        // Apply new scale
         state.view.scaleX = newScaleX;
 
-        // Adjust offsetX so that the same candle stays under the cursor
-        const newVisibleCount = Math.ceil(state.width / newScaleX) + 2;
-        const newStartIdx = cursorCandleIdx - Math.floor(newVisibleCount - 1 - cursorCandleScreenPos * (oldScaleX / newScaleX));
-        state.view.offsetX = (allCandles.length - newVisibleCount - newStartIdx) * newScaleX / newScaleX;
-        // Recalculate: the candle at cursorCandleIdx should be at screen position mouseX
-        // x = rightEdge - (allCandles.length - 1 - i) * candleW - candleW/2
-        // mouseX = rightEdge - (allCandles.length - 1 - cursorCandleIdx) * newScaleX - newScaleX/2
-        // => we need startIdx such that visible[cursorScreenIdx] = cursorCandleIdx
-        const targetVisiblePos = cursorCandleScreenPos * (oldScaleX / newScaleX);
-        const neededStart = cursorCandleIdx - (newVisibleCount - 1 - targetVisiblePos);
-        state.view.offsetX = Math.max(0, (allCandles.length - newVisibleCount - neededStart));
+        // Price axis zoom
+        const cursorPrice = (state.view.scrollY + state.height / 2 - mouseY) * state.view.pricePerPixel;
+        state.view.pricePerPixel *= factor;
+        state.view.scrollY = cursorPrice / state.view.pricePerPixel - state.height / 2 + mouseY;
       }
       state.view.userModified = true;
       state.followLive = false;
@@ -1154,15 +1216,12 @@ function initInput() {
       switch (e.key) {
         case 'Escape':
           if (state.drawingState) {
-            // First escape: cancel active drawing
             state.drawingState = null;
           } else if (state.activeTool !== 'cursor') {
-            // Second escape: return to cursor
             setActiveTool('cursor');
             state.selectedRange = null;
             updateRangePanel();
           } else {
-            // Already on cursor: clear selected range
             state.selectedRange = null;
             updateRangePanel();
           }
@@ -1266,7 +1325,6 @@ function deleteSelectedDrawing() {
   }
 }
 
-// Phase 9: localStorage persistence
 function saveDrawings() {
   if (!state.symbol) return;
   const key = `drawings_${state.symbol}`;
@@ -1283,13 +1341,20 @@ function loadDrawings() {
 }
 
 // ============ UI UPDATES ============
+function fitAll() {
+  state.view.offsetX = 0;
+  state.followLive = true;
+  state.view.userModified = false;
+  state._priceScaleDirty = true;
+  document.getElementById('btn-follow-live').classList.add('active');
+}
+
 function setActiveTool(tool) {
   state.activeTool = tool;
   document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === tool);
   });
 
-  // Phase 6: Tool-specific cursor
   const cursorMap = {
     cursor: 'grab',
     hline: 'crosshair',
@@ -1301,7 +1366,6 @@ function setActiveTool(tool) {
   };
   state.canvas.style.cursor = cursorMap[tool] || 'crosshair';
 
-  // Phase 6: Status bar
   const toolNames = {
     cursor: 'Cursor',
     hline: 'Horizontal Line — click to place',
@@ -1315,7 +1379,7 @@ function setActiveTool(tool) {
   if (bar) bar.textContent = 'Active Tool: ' + (toolNames[tool] || tool);
 }
 
-// Phase 12: Source/quality panel — truthful
+// Source UI — Section 3: truthful perp-first display
 function updateSourceUI() {
   const ss = state.sourceStatus;
   const pill = document.getElementById('active-source');
@@ -1323,27 +1387,29 @@ function updateSourceUI() {
   const execRef = document.getElementById('exec-ref');
   const warning = document.getElementById('fallback-warning');
 
-  const hl = ss.hyperliquid || {};
-  const hlConnected = hl.connected || false;
+  const hlConnected = ss.hyperliquidConnected || (ss.hyperliquid && ss.hyperliquid.connected) || false;
+  const hlTradesSub = ss.hyperliquidTradesSubscribed || (ss.hyperliquid && ss.hyperliquid.tradesSubscribed) || false;
+  const hlBookSub = ss.hyperliquidBookSubscribed || (ss.hyperliquid && ss.hyperliquid.bookSubscribed) || false;
+  const lastTrade = ss.lastTradeTs || (ss.hyperliquid && ss.hyperliquid.lastTradeTs) || null;
 
   if (hlConnected && state.symbolLoaded) {
     pill.textContent = 'HL';
     pill.classList.add('active');
-    const tradeAge = hl.lastTradeTs ? Date.now() - hl.lastTradeTs : Infinity;
+    const tradeAge = lastTrade ? Date.now() - lastTrade : Infinity;
     if (tradeAge < 30000) quality.textContent = 'Quality: Good';
     else if (tradeAge < 120000) quality.textContent = 'Quality: Stale';
     else quality.textContent = 'Quality: Waiting';
   } else if (hlConnected && !state.symbolLoaded) {
     pill.textContent = 'HL';
     pill.classList.add('active');
-    quality.textContent = 'Quality: No Symbol';
+    quality.textContent = 'Quality: Loading...';
   } else {
     pill.textContent = '—';
     pill.classList.remove('active');
     quality.textContent = 'Quality: Disconnected';
   }
 
-  warning.classList.add('hidden');
+  if (warning) warning.classList.add('hidden');
 
   if (state.symbol) {
     execRef.textContent = `Exec: ${symbolToBinance(state.symbol)}`;
@@ -1353,49 +1419,50 @@ function updateSourceUI() {
     execRef.classList.add('dim');
   }
 
-  // Phase 12: Source panel
-  const bn = ss.binanceUsdm || {};
+  // Source panel — detailed truth
+  const bnWsConn = ss.binanceUsdmLiveTradeReceiving || (ss.binanceUsdm && ss.binanceUsdm.futuresWsConnected) || false;
+  const bnRefConn = ss.binanceUsdmReferenceConnected || (ss.binanceUsdm && ss.binanceUsdm.restConnected) || false;
   const sc = document.getElementById('source-content');
+  if (!sc) return;
+
   sc.innerHTML = `
-    <div class="row"><span class="label">Read:</span><span class="val">Hyperliquid</span></div>
-    <div class="row"><span class="label">HL WS:</span><span class="val ${hlConnected?'green':'red'}">${hlConnected?'connected':'disconnected'}</span></div>
-    <div class="row"><span class="label">HL symbol:</span><span class="val">${hl.activeSymbol||'—'}</span></div>
-    <div class="row"><span class="label">HL trades:</span><span class="val">${hl.tradeCount||0}</span></div>
-    <div class="row"><span class="label">HL book:</span><span class="val ${hl.bookSubscribed?'green':''}">${hl.bookSubscribed?'active':'off'}</span></div>
-    <div class="row"><span class="label">HL last trade:</span><span class="val">${hl.lastTradeTs ? new Date(hl.lastTradeTs).toLocaleTimeString() : '—'}</span></div>
-    <div class="row"><span class="label">HL last book:</span><span class="val">${hl.lastBookTs ? new Date(hl.lastBookTs).toLocaleTimeString() : '—'}</span></div>
+    <div class="row"><span class="label">Read source:</span><span class="val green">Hyperliquid</span></div>
+    <div class="row"><span class="label">HL connected:</span><span class="val ${hlConnected?'green':'red'}">${hlConnected?'yes':'no'}</span></div>
+    <div class="row"><span class="label">HL trades sub:</span><span class="val ${hlTradesSub?'green':'red'}">${hlTradesSub?'yes':'no'}</span></div>
+    <div class="row"><span class="label">HL book sub:</span><span class="val ${hlBookSub?'green':''}">${hlBookSub?'active':'off'}</span></div>
+    <div class="row"><span class="label">HL last trade:</span><span class="val">${lastTrade ? new Date(lastTrade).toLocaleTimeString() : '—'}</span></div>
+    <div class="row"><span class="label">HL coins:</span><span class="val">${ss.hyperliquidSubscribedCoins || (ss.hyperliquid && ss.hyperliquid.subscribedCoins) || 0}</span></div>
     <div style="border-top:1px solid #1e293b;margin:4px 0"></div>
     <div class="row"><span class="label">Exec ref:</span><span class="val">Binance USD-M</span></div>
-    <div class="row"><span class="label">BN futures WS:</span><span class="val ${bn.futuresWsConnected?'green':'red'}">${bn.futuresWsConnected?'connected':'disconnected'}</span></div>
-    <div class="row"><span class="label">BN aggTrade:</span><span class="val ${bn.aggTradeReceiving?'green':'red'}">${bn.aggTradeReceiving?'receiving':'off'}</span></div>
-    <div class="row"><span class="label">BN forceOrder:</span><span class="val" style="color:#475569">off</span></div>
-    <div class="row"><span class="label">BN bookTicker:</span><span class="val" style="color:#475569">off</span></div>
-    <div class="row"><span class="label">BN markPrice:</span><span class="val" style="color:#475569">off</span></div>
+    <div class="row"><span class="label">BN reference:</span><span class="val ${bnRefConn?'green':'yellow'}">${bnRefConn?'connected':'reference only'}</span></div>
+    <div class="row"><span class="label">BN aggTrade:</span><span class="val ${bnWsConn?'green':'yellow'}">${bnWsConn?'receiving':'not active'}</span></div>
+    <div class="row"><span class="label">BN forceOrder:</span><span class="val" style="color:#475569">not active</span></div>
+    <div class="row"><span class="label">BN bookTicker:</span><span class="val" style="color:#475569">not active</span></div>
+    <div class="row"><span class="label">BN markPrice:</span><span class="val" style="color:#475569">not active</span></div>
     <div style="border-top:1px solid #1e293b;margin:4px 0"></div>
-    <div class="row"><span class="label">Spot:</span><span class="val" style="color:#475569">debug only (disabled)</span></div>
-    <div style="border-top:1px solid #1e293b;margin:4px 0"></div>
-    <div style="font-size:9px;color:#475569">
-      ${hlConnected?'HYPERLIQUID_DEEP, HYPERLIQUID_TRADES, HYPERLIQUID_BOOK':''}
-      ${bn.futuresWsConnected?', BINANCE_USDM_REFERENCE':''}
-      , BINANCE_SPOT_DEBUG_DISABLED
-    </div>
+    <div class="row"><span class="label">Spot debug:</span><span class="val" style="color:#475569">disabled</span></div>
+    ${!bnWsConn && bnRefConn ? '<div style="margin-top:4px;font-size:9px;color:#f59e0b">Binance USD-M reference only — live orderflow not active.</div>' : ''}
   `;
 }
 
 function updateRightPanel() {
   const auction = document.getElementById('auction-content');
+  if (!auction) return;
+
+  const hl = state.sourceStatus.hyperliquid || {};
+  const tradeCount = state.sourceStatus.hyperliquidTradeCount || hl.tradeCount || 0;
+
   if (state.symbol && state.symbolLoaded) {
-    const hl = state.sourceStatus.hyperliquid || {};
     auction.innerHTML = `
       <div class="row"><span class="label">Symbol:</span><span class="val">${state.symbol}</span></div>
-      <div class="row"><span class="label">Source:</span><span class="val green">Hyperliquid</span></div>
-      <div class="row"><span class="label">Trades:</span><span class="val">${hl.tradeCount||0}</span></div>
-      <div class="row"><span class="label">Book:</span><span class="val ${hl.bookSubscribed?'green':''}">${hl.bookSubscribed?'active':'pending'}</span></div>
+      <div class="row"><span class="label">Read:</span><span class="val green">Hyperliquid</span></div>
+      <div class="row"><span class="label">Exec ref:</span><span class="val">${symbolToBinance(state.symbol)}</span></div>
+      <div class="row"><span class="label">Interval:</span><span class="val">${state.interval}</span></div>
+      <div class="row"><span class="label">Trades:</span><span class="val">${tradeCount}</span></div>
       <div class="row"><span class="label">Candles:</span><span class="val">${state.candles.length}</span></div>
-      <div class="row"><span class="label">Loaded:</span><span class="val ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' candles (' + state.historySource + ')' : state.historySource || 'loading...'}</span></div>
+      <div class="row"><span class="label">History:</span><span class="val ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' × ' + state.historySource : state.historySource || 'loading...'}</span></div>
       <div class="row"><span class="label">Bubbles:</span><span class="val">${state.bubbles.length}</span></div>
       <div class="row"><span class="label">Zones:</span><span class="val">${state.zones.length}</span></div>
-      <div class="row"><span class="label">Exec Ref:</span><span class="val">${symbolToBinance(state.symbol)}</span></div>
     `;
   } else if (state.symbol) {
     auction.innerHTML = `<div style="color:#f59e0b">Loading ${state.symbol}...</div>`;
@@ -1406,6 +1473,7 @@ function updateRightPanel() {
 
 function updateRangePanel() {
   const el = document.getElementById('range-content');
+  if (!el) return;
   const sr = state.selectedRange;
 
   if (!sr) { el.innerHTML = 'Select a range on chart'; return; }
@@ -1429,7 +1497,6 @@ function updateRangePanel() {
     <div class="row"><span class="label">VWAP:</span><span class="val">${fmtPrice(p.vwap)}</span></div>
     <div class="row"><span class="label">Side:</span><span class="val ${p.dominantSide==='buy'?'green':p.dominantSide==='sell'?'red':''}">${p.dominantSide}</span></div>
     <div class="row"><span class="label">Efficiency:</span><span class="val">${(p.directionalEfficiency*100).toFixed(1)}%</span></div>
-    <div class="row"><span class="label">Acceptance:</span><span class="val">${p.acceptance.replace(/_/g,' ')}</span></div>
     <div class="row"><span class="label">Bubbles:</span><span class="val">${p.bubbleCount} (A:${p.bubbleStates.accepted} R:${p.bubbleStates.rejected} Ab:${p.bubbleStates.absorbed})</span></div>
     <div style="margin-top:6px;padding:4px;background:rgba(245,158,11,0.08);border-radius:3px;font-size:9px;color:#94a3b8">
       ${p.interpretation||'—'}
@@ -1437,72 +1504,50 @@ function updateRangePanel() {
   `;
 }
 
-// Phase 7: Diagnostics panel
+// Diagnostics panel
 function updateDiagnostics() {
   const el = document.getElementById('diag-content');
   if (!el || document.getElementById('diagnostics-panel').classList.contains('hidden')) return;
 
-  const hl = state.sourceStatus.hyperliquid || {};
-  const bn = state.sourceStatus.binanceUsdm || {};
-  const allCandles = [...state.candles];
-  if (state.currentCandle) allCandles.push(state.currentCandle);
-
-  // Visible candle count
-  const candleW = state.view.scaleX;
-  const visibleCount = Math.ceil(state.width / candleW) + 2;
-  const visibleStart = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / candleW));
-  const visibleEnd = Math.min(allCandles.length, visibleStart + visibleCount);
-
-  // Viewport time range
-  let vpStart = '—', vpEnd = '—';
-  if (allCandles.length > 0) {
-    const vs = allCandles[Math.max(0, visibleStart)];
-    const ve = allCandles[Math.min(allCandles.length - 1, visibleEnd - 1)];
-    if (vs) vpStart = new Date(vs.openTime).toLocaleTimeString();
-    if (ve) vpEnd = new Date(ve.openTime).toLocaleTimeString();
-  }
-
+  const ss = state.sourceStatus;
+  const hlConnected = ss.hyperliquidConnected || (ss.hyperliquid && ss.hyperliquid.connected) || false;
+  const hlTradesSub = ss.hyperliquidTradesSubscribed || false;
+  const hlBookSub = ss.hyperliquidBookSubscribed || false;
+  const lastTrade = ss.lastTradeTs || null;
+  const lastBook = ss.lastBookTs || null;
+  const bnWsConn = ss.binanceUsdmLiveTradeReceiving || false;
   const wsState = state.ws ? ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][state.ws.readyState] || 'unknown' : 'none';
 
   el.innerHTML = `
     <div class="diag-section">Connection</div>
-    <div class="diag-row"><span class="dlabel">Selected source</span><span class="dval">${state.source}</span></div>
-    <div class="diag-row"><span class="dlabel">Selected symbol</span><span class="dval">${state.symbol || '—'}</span></div>
+    <div class="diag-row"><span class="dlabel">Symbol</span><span class="dval">${state.symbol || '—'}</span></div>
     <div class="diag-row"><span class="dlabel">Interval</span><span class="dval">${state.interval}</span></div>
-    <div class="diag-row"><span class="dlabel">HL WS</span><span class="dval ${hl.connected?'green':'red'}">${hl.connected?'connected':'disconnected'}</span></div>
+    <div class="diag-row"><span class="dlabel">HL WS</span><span class="dval ${hlConnected?'green':'red'}">${hlConnected?'connected':'disconnected'}</span></div>
     <div class="diag-row"><span class="dlabel">Client WS</span><span class="dval ${wsState==='OPEN'?'green':'red'}">${wsState}</span></div>
-    <div class="diag-row"><span class="dlabel">Trades subscribed</span><span class="dval ${hl.tradesSubscribed?'green':'red'}">${hl.tradesSubscribed?'yes':'no'}</span></div>
-    <div class="diag-row"><span class="dlabel">Book subscribed</span><span class="dval ${hl.bookSubscribed?'green':''}">${hl.bookSubscribed?'yes':'no'}</span></div>
-
+    <div class="diag-row"><span class="dlabel">Trades sub</span><span class="dval ${hlTradesSub?'green':'red'}">${hlTradesSub?'yes':'no'}</span></div>
+    <div class="diag-row"><span class="dlabel">Book sub</span><span class="dval ${hlBookSub?'green':''}">${hlBookSub?'yes':'no'}</span></div>
+    <div class="diag-row"><span class="dlabel">BN aggTrade</span><span class="dval ${bnWsConn?'green':'yellow'}">${bnWsConn?'receiving':'not active'}</span></div>
     <div class="diag-section">Data</div>
-    <div class="diag-row"><span class="dlabel">Last trade</span><span class="dval">${hl.lastTradeTs ? new Date(hl.lastTradeTs).toLocaleTimeString() : '—'}</span></div>
-    <div class="diag-row"><span class="dlabel">Last book</span><span class="dval">${hl.lastBookTs ? new Date(hl.lastBookTs).toLocaleTimeString() : '—'}</span></div>
-    <div class="diag-row"><span class="dlabel">Trade count (HL)</span><span class="dval">${hl.tradeCount||0}</span></div>
-    <div class="diag-row"><span class="dlabel">Candle count</span><span class="dval">${state.candles.length}</span></div>
-    <div class="diag-row"><span class="dlabel">Bubble count</span><span class="dval">${state.bubbles.length}</span></div>
-    <div class="diag-row"><span class="dlabel">Visible candles</span><span class="dval">${visibleEnd - visibleStart}</span></div>
-    <div class="diag-row"><span class="dlabel">Viewport range</span><span class="dval">${vpStart} — ${vpEnd}</span></div>
-    <div class="diag-row"><span class="dlabel">History loaded</span><span class="dval ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' (' + state.historySource + ')' : 'no'}</span></div>
-
-    <div class="diag-section">View State</div>
-    <div class="diag-row"><span class="dlabel">Active tool</span><span class="dval">${state.activeTool}</span></div>
+    <div class="diag-row"><span class="dlabel">Last trade</span><span class="dval">${lastTrade ? new Date(lastTrade).toLocaleTimeString() : '—'}</span></div>
+    <div class="diag-row"><span class="dlabel">Candles</span><span class="dval">${state.candles.length}</span></div>
+    <div class="diag-row"><span class="dlabel">Bubbles</span><span class="dval">${state.bubbles.length}</span></div>
+    <div class="diag-row"><span class="dlabel">History</span><span class="dval ${state.historyLoaded?'green':''}">${state.historyLoaded ? state.historyCount + ' (' + state.historySource + ')' : 'no'}</span></div>
+    <div class="diag-section">View</div>
+    <div class="diag-row"><span class="dlabel">Tool</span><span class="dval">${state.activeTool}</span></div>
     <div class="diag-row"><span class="dlabel">Follow live</span><span class="dval ${state.followLive?'green':'yellow'}">${state.followLive?'ON':'OFF'}</span></div>
-    <div class="diag-row"><span class="dlabel">Auto scale</span><span class="dval ${state.autoScale?'green':''}">${state.autoScale?'ON':'OFF'}</span></div>
-    <div class="diag-row"><span class="dlabel">Label density</span><span class="dval">${state.labelDensity}</span></div>
+    <div class="diag-row"><span class="dlabel">Auto scale</span><span class="dval">${state.autoScale?'ON':'OFF'}</span></div>
     <div class="diag-row"><span class="dlabel">scaleX</span><span class="dval">${state.view.scaleX.toFixed(1)}</span></div>
     <div class="diag-row"><span class="dlabel">pricePerPixel</span><span class="dval">${state.view.pricePerPixel.toFixed(4)}</span></div>
-    <div class="diag-row"><span class="dlabel">userModified</span><span class="dval">${state.view.userModified?'yes':'no'}</span></div>
-
     <div class="diag-section">Errors</div>
-    <div class="diag-row"><span class="dlabel">Last frontend error</span><span class="dval red">${state._lastFrontendError || 'none'}</span></div>
-    <div class="diag-row"><span class="dlabel">Last backend error</span><span class="dval red">${state.sourceStatus.lastError || 'none'}</span></div>
-    <div class="diag-row"><span class="dlabel">BN futures WS</span><span class="dval ${bn.futuresWsConnected?'green':'red'}">${bn.futuresWsConnected?'connected':'disconnected'}</span></div>
+    <div class="diag-row"><span class="dlabel">Last error</span><span class="dval red">${state._lastFrontendError || 'none'}</span></div>
+    <div class="diag-row"><span class="dlabel">Backend error</span><span class="dval red">${ss.lastError || 'none'}</span></div>
   `;
 }
 
-// Phase 3: Scanner UI
+// Scanner UI
 function updateScannerUI() {
   const body = document.getElementById('scanner-body');
+  if (!body) return;
   const data = state.scannerData;
 
   if (!data || !data.ok || !data.rows || !data.rows.length) {
@@ -1559,10 +1604,9 @@ function initButtons() {
     document.getElementById('btn-follow-live').classList.add('active');
   });
 
-  // Phase 1: Reset UI State button
-  // Phase 2: Zoom buttons
   document.getElementById('btn-zoom-in').addEventListener('click', () => {
     state.view.scaleX = Math.min(80, state.view.scaleX * 1.3);
+    state.view.pricePerPixel *= 0.85;
     state.view.userModified = true;
     state.followLive = false;
     state._priceScaleDirty = true;
@@ -1570,20 +1614,19 @@ function initButtons() {
   });
   document.getElementById('btn-zoom-out').addEventListener('click', () => {
     state.view.scaleX = Math.max(2, state.view.scaleX / 1.3);
+    state.view.pricePerPixel *= 1.15;
     state.view.userModified = true;
     state.followLive = false;
     state._priceScaleDirty = true;
     document.getElementById('btn-follow-live').classList.remove('active');
   });
 
-  // Phase 2: Auto scale toggle
   document.getElementById('btn-auto-scale').addEventListener('click', () => {
     state.autoScale = !state.autoScale;
     document.getElementById('btn-auto-scale').classList.toggle('active', state.autoScale);
     if (state.autoScale) state._priceScaleDirty = true;
   });
 
-  // Phase 5: Label density toggle (cycles: compact → detailed → minimal → compact)
   document.getElementById('btn-label-density').addEventListener('click', () => {
     const modes = ['compact', 'detailed', 'minimal'];
     const idx = modes.indexOf(state.labelDensity);
@@ -1593,7 +1636,6 @@ function initButtons() {
     btn.textContent = state.labelDensity === 'minimal' ? '◻ Labels' : state.labelDensity === 'detailed' ? '◉◉ Labels' : '◉ Labels';
   });
 
-  // Phase 7: Diagnostics panel toggle
   document.getElementById('btn-diagnostics').addEventListener('click', () => {
     const panel = document.getElementById('diagnostics-panel');
     panel.classList.toggle('hidden');
@@ -1626,20 +1668,12 @@ function initButtons() {
     } catch(err) { showToast('Reset error: ' + err.message, 'error'); }
   });
 
-  // Phase 1: Reconnect / Reload Market Data button
   document.getElementById('btn-reconnect').addEventListener('click', () => {
     try {
-      state.candles = [];
-      state.currentCandle = null;
-      state.bubbles = [];
-      state.zones = [];
-      state.selectedRange = null;
-      state.symbolLoaded = false;
-      state._priceScaleDirty = true;
       if (state.symbol) {
         selectSymbol(state.symbol);
+        showToast('Reconnecting to ' + state.symbol + '...', 'warn');
       }
-      showToast('Reconnecting to ' + (state.symbol || 'market') + '...', 'warn');
     } catch(err) { showToast('Reconnect error: ' + err.message, 'error'); }
   });
 
@@ -1686,9 +1720,7 @@ function initButtons() {
     });
   });
 
-  document.getElementById('source-select').addEventListener('change', (e) => {
-    state.source = e.target.value;
-  });
+  // No source-select dropdown — Hyperliquid is the only read source
 }
 
 function showSymbolDropdown(filter) {
@@ -1705,18 +1737,25 @@ function showSymbolDropdown(filter) {
   `).join('');
 }
 
-// ============ SYMBOL SELECTION ============
+// ============ SYMBOL SELECTION — Section 4: Bulletproof ============
 function selectSymbol(symbol) {
   const sym = symbol.toUpperCase().trim();
   if (!sym) return;
+  if (state._loadingSymbol) return; // Prevent double-clicks
 
-  state.symbol = sym;
+  state._loadingSymbol = true;
+  state.symbol = sym; // Set immediately — don't wait for WS
+  state.symbolError = null;
   state.candles = [];
   state.currentCandle = null;
   state.bubbles = [];
   state.zones = [];
   state.selectedRange = null;
   state.symbolLoaded = false;
+  state.historyLoaded = false;
+  state.historyCount = 0;
+  state.historySource = '';
+  state._priceScaleDirty = true;
 
   document.getElementById('symbol-input').value = sym;
   document.getElementById('fp-symbol').textContent = sym;
@@ -1725,30 +1764,51 @@ function selectSymbol(symbol) {
   updateRightPanel();
   updateSourceUI();
 
+  // REST call — primary path
   fetch('/api/select-symbol', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: state.source, symbol: sym, interval: state.interval })
+    body: JSON.stringify({ source: 'hyperliquid', symbol: sym, interval: state.interval })
   })
   .then(r => r.json())
   .then(data => {
     if (data.ok) {
-      if (data.lastError) console.warn(`[SELECT] Warning: ${data.lastError}`);
+      if (data.lastError) {
+        state.symbolError = data.lastError;
+        showToast(data.lastError, 'warn');
+      }
+      // If server already has candles, they'll come via snapshot WS message
+      // If not, fetch historical
+      if (!data.historicalCandlesLoaded) {
+        fetchHistoricalCandles(sym);
+      }
     } else {
-      console.error(`[SELECT] Failed: ${data.error}`);
+      state.symbolError = data.error || 'Failed to load symbol';
+      showToast('Symbol error: ' + (data.error || 'unknown'), 'error');
+      state._loadingSymbol = false;
     }
   })
-  .catch(() => {
-    if (state.wsReady) state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+  .catch(err => {
+    state.symbolError = 'Network error — retrying via WebSocket';
+    showToast('REST error: ' + err.message + '. Using WS fallback.', 'warn');
+    // Fallback to WS
+    if (state.wsReady) {
+      state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+    }
+    fetchHistoricalCandles(sym);
+    state._loadingSymbol = false;
   });
 
-  if (state.wsReady) state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+  // Also send WS subscribe (parallel path — one will succeed)
+  if (state.wsReady) {
+    state.ws.send(JSON.stringify({ type: 'subscribe_symbol', symbol: sym }));
+  }
 
-  // Phase 3: Fetch historical candles
+  // Always try to fetch historical candles
   fetchHistoricalCandles(sym);
 
   fetchScannerData();
-  loadDrawings(); // Phase 9
+  loadDrawings();
 }
 
 window.__selectSymbol = selectSymbol;
@@ -1770,7 +1830,7 @@ function startScannerPolling() {
   scannerTimer = setInterval(fetchScannerData, 5000);
 }
 
-// ============ FOOTPRINT PANEL (Phase 11) ============
+// ============ FOOTPRINT PANEL ============
 function updateFootprint() {
   if (!state.symbol) return;
 
@@ -1778,6 +1838,7 @@ function updateFootprint() {
     .then(r => r.json())
     .then(data => {
       const el = document.getElementById('footprint-content');
+      if (!el) return;
       if (!data.levels || !Object.keys(data.levels).length) {
         el.innerHTML = '<div style="color:#475569">No footprint data — taker-side footprint proxy</div>';
         return;

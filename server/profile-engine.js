@@ -20,6 +20,7 @@ class ProfileEngine {
     // Determine price range
     let pLow = priceLow ?? Math.min(...candles.map(c => c.low));
     let pHigh = priceHigh ?? Math.max(...candles.map(c => c.high));
+    if (pLow > pHigh) { const tmp = pLow; pLow = pHigh; pHigh = tmp; }
 
     // Determine bin size
     const autoBin = binSize || ProfileEngine._autoBinSize(pLow, pHigh);
@@ -187,7 +188,7 @@ class ProfileEngine {
 
     return {
       timeRange: { start: timeStart, end: timeEnd },
-      priceRange: { low: rangeHigh, high: rangeHigh },
+      priceRange: { low: pLow, high: pHigh },
       binSize: autoBin,
       totalVolume,
       buyVolume: totalBuyVolume,

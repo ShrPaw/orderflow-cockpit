@@ -207,6 +207,18 @@ class CandleEngine {
     return Math.round(price / binSize) * binSize;
   }
 
+  injectHistorical(symbol, candle) {
+    if (!this.candles.has(symbol)) this.candles.set(symbol, []);
+    const arr = this.candles.get(symbol);
+    // Don't duplicate
+    if (arr.some(c => c.openTime === candle.openTime)) return;
+    arr.push(candle);
+    // Sort by time
+    arr.sort((a, b) => a.openTime - b.openTime);
+    // Trim
+    while (arr.length > this.maxCandles) arr.shift();
+  }
+
   getCandles(symbol, count = 500) {
     const arr = this.candles.get(symbol) || [];
     return arr.slice(-count);

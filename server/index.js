@@ -91,18 +91,41 @@ function buildStatus() {
     selectedSource: activeSource,
     selectedSymbol: activeSymbol,
     selectedInterval: activeInterval,
-    hyperliquid: hlStatus,
-    binanceUsdm: bnStatus,
-    spotDebug: {
-      enabled: binanceSource.spotDebugEnabled,
-      active: binanceSource.spotDebugActive
-    },
+    // Hyperliquid — primary read source
+    hyperliquidConnected: hlStatus.connected,
+    hyperliquidTradesSubscribed: hlStatus.connected && hlStatus.tradesSubscribed,
+    hyperliquidBookSubscribed: hlStatus.bookSubscribed,
+    hyperliquidActiveSymbol: hlStatus.activeSymbol,
+    hyperliquidTradeCount: hlStatus.tradeCount,
+    hyperliquidBookUpdateCount: hlStatus.bookUpdateCount,
+    hyperliquidSubscribedCoins: hlStatus.subscribedCoins,
+    hyperliquidTradeCountForSymbol: hlStatus.tradeCountForSymbol,
+    lastTradeTs: hlStatus.lastTradeTs,
+    lastBookTs: hlStatus.lastBookTs,
+    // Binance USD-M — reference only
+    binanceUsdmReferenceConnected: bnStatus.restConnected,
+    binanceUsdmLiveTradeReceiving: bnStatus.futuresWsConnected,
+    binanceUsdmForceOrderReceiving: false,
+    binanceUsdmBookTickerReceiving: false,
+    binanceUsdmMarkPriceReceiving: false,
+    // Spot debug
+    spotDebugEnabled: binanceSource.spotDebugEnabled,
+    spotDebugActive: binanceSource.spotDebugActive,
+    // Cockpit state
     candles: candleCount,
     currentCandle: !!currentCandle,
     bubbles: currentCandle ? currentCandle.bubbleCount : 0,
     zones: zones.length,
     scannerRows: scanner.stats.size,
-    lastError: lastError
+    scannerHydrated: scanner.hydrated,
+    lastError: lastError,
+    // Legacy fields for backward compat
+    hyperliquid: hlStatus,
+    binanceUsdm: bnStatus,
+    spotDebug: {
+      enabled: binanceSource.spotDebugEnabled,
+      active: binanceSource.spotDebugActive
+    }
   };
 }
 
@@ -354,6 +377,7 @@ const server = http.createServer((req, res) => {
           // Convert HL candle format to internal format
           const candles = raw.map(c => ({
             openTime: c.t,
+            closeTime: c.t + 60000,
             open: parseFloat(c.o),
             high: parseFloat(c.h),
             low: parseFloat(c.l),
@@ -363,14 +387,21 @@ const server = http.createServer((req, res) => {
             sellVolume: parseFloat(c.v || 0) * 0.5,
             delta: 0,
             tradeCount: 0,
+            maxTradeSize: 0,
+            largeTradeCount: 0,
             bubbleCount: 0,
             absorptionCount: 0,
             rejectionCount: 0,
             bubbles: [],
             priceMap: {},
             _historical: true,
-            _interval: hlInterval
+            _sourceInterval: hlInterval
           }));
+
+          // Also inject into candle engine so symbol switches preserve data
+          for (const c of candles) {
+            candleEngine.injectHistorical(symbol.toUpperCase(), c);
+          }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -427,6 +458,37 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/symbols/overlap') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(symbolMap.getOverlap()));
+    return;
+  }
+
+  if (pathname === '/api/symbols/check') {
+    const sym = url.searchParams.get('symbol');
+    if (!sym) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'symbol required' }));
+      return;
+    }
+    const coin = sym.toUpperCase().replace('USDT', '').replace('1000', '');
+    const existsOnHL = hlSource.coins.includes(coin);
+    const bnSymbol = symbolMap.toBinance(coin);
+    const existsOnBN = symbolMap.binanceFuturesSymbols.has(bnSymbol);
+    const matchType = symbolMap.specialMappings[coin] ? 'special' : 'standard';
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      symbol: coin,
+      existsOnHyperliquid: existsOnHL,
+      existsOnBinanceUsdm: existsOnBN,
+      mappedSymbol: bnSymbol,
+      matchType,
+      confidence: existsOnHL && existsOnBN ? 'high' : existsOnHL ? 'hl_only' : existsOnBN ? 'bn_only' : 'none'
+    }));
+    return;
+  }
+
+  if (pathname === '/api/symbols/overlap') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(symbolMap.getOverlap()));
     return;
@@ -518,13 +580,16 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// --- Symbol selection logic (PHASE 2) ---
+// --- Symbol selection logic ---
 function selectSymbol(symbol, source, interval) {
   const sym = symbol.toUpperCase().trim();
   if (!sym) return { ok: false, error: 'empty symbol' };
 
+  // Validate source — only hyperliquid is a valid read source
+  const src = 'hyperliquid'; // Force hyperliquid regardless of what was passed
+
   activeSymbol = sym;
-  activeSource = source || 'hyperliquid';
+  activeSource = src;
   activeInterval = interval || '40s';
   lastError = null;
 
@@ -534,10 +599,10 @@ function selectSymbol(symbol, source, interval) {
     candleEngine.setInterval(intervals[activeInterval]);
   }
 
-  // Subscribe on Hyperliquid
+  // Subscribe on Hyperliquid (primary read source)
   hlSource.subscribeSymbol(sym);
 
-  // Subscribe on Binance for reference
+  // Subscribe on Binance for reference mapping only
   const bnSymbol = symbolMap.toBinance(sym);
   binanceSource.subscribeSymbol(bnSymbol.replace('USDT', ''));
 
@@ -550,18 +615,28 @@ function selectSymbol(symbol, source, interval) {
   const existsOnHL = hlSource.coins.includes(sym);
   if (!existsOnHL && hlSource.coins.length > 0) {
     lastError = `Symbol ${sym} not found on Hyperliquid (${hlSource.coins.length} perps available)`;
+  } else if (!hlStatus.connected) {
+    lastError = 'Hyperliquid WebSocket not connected — retrying...';
   }
+
+  // Check how many candles already exist for this symbol
+  const existingCandles = candleEngine.getCandles(sym, 2000).length;
+  const currentCandle = candleEngine.getCurrentCandle(sym);
+  const historicalCandlesLoaded = existingCandles > 0 || !!currentCandle;
 
   const result = {
     ok: true,
     source: activeSource,
     symbol: sym,
     interval: activeInterval,
-    subscribedTrades,
-    subscribedBook,
+    tradesSubscribed: subscribedTrades,
+    bookSubscribed: subscribedBook,
     binanceSymbol: bnSymbol,
     availableOnBinance: symbolMap.binanceFuturesSymbols.has(bnSymbol),
     existsOnHL,
+    historicalCandlesLoaded,
+    candleCount: existingCandles,
+    hasCurrentCandle: !!currentCandle,
     lastError
   };
 
@@ -569,7 +644,7 @@ function selectSymbol(symbol, source, interval) {
   emit('symbol_selected', result);
   emit('source_status', buildStatus());
 
-  console.log(`[SELECT] ${sym} | source=${activeSource} | interval=${activeInterval} | HL=${existsOnHL} | Binance=${bnSymbol}`);
+  console.log(`[SELECT] ${sym} | source=${activeSource} | interval=${activeInterval} | HL=${existsOnHL} | candles=${existingCandles} | Binance=${bnSymbol}`);
   return result;
 }
 

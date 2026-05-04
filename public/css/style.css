@@ -205,8 +205,10 @@ button:hover { opacity: 0.85; }
 .tag-ABSORPTION_ACTIVE { background: var(--cyan); color: #000; }
 .tag-REJECTION_CLUSTER { background: #f97316; color: #000; }
 .tag-CHAOTIC { background: #ec4899; color: #fff; }
+.tag-QUIET { background: #1e293b; color: #475569; }
 .tag-THIN { background: var(--text-dim); color: #fff; }
 .tag-GOOD_FLOW { background: var(--bg-tertiary); color: var(--text-secondary); }
+.tag-SOURCE_LIMITED { background: #475569; color: #94a3b8; }
 .tag-STALE { background: var(--text-dim); color: #666; }
 .tag-NEW { background: var(--bg-tertiary); color: var(--text-dim); }
 .pinned-badge { color: var(--yellow); font-size: 9px; }

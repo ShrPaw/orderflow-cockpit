@@ -11,8 +11,8 @@ class Scanner extends EventEmitter {
     this.stats = new Map();
     this.pinnedFundamentals = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'SUI', 'DOGE', 'HYPE'];
     this.volatilityWatchlist = [
-      'LAB', 'PLAY', 'CHIP', 'FHE', 'SKYAI', 'NAORIS', 'BIO', 'TAG',
-      'XNY', 'ZEREBRO', 'AIXBT', 'KNC', 'U', 'BSB', '1000LUNC'
+      'LAB', 'ORCA', 'PLAY', 'CHIP', 'FHE', 'SKYAI', 'NAORIS', 'BIO', 'TAG',
+      'XNY', 'ZEREBRO', 'AIXBT', 'KNC', 'UB', 'BSB', '1000LUNC'
     ];
     this.updateInterval = null;
     this.hydrated = { hyperliquid: false, binance: false };
@@ -153,6 +153,8 @@ class Scanner extends EventEmitter {
     if (s.tradeFrequency > 20) return 'HIGH_ATTENTION';
     if (s.volume < 100) return 'THIN';
     if (s.volatilityExpansion > 1 && s.bubbleCount > 5) return 'CHAOTIC';
+    if (s.tradeFrequency < 0.5 && s.volatilityExpansion < 0.1) return 'QUIET';
+    if (s.source !== 'hyperliquid') return 'SOURCE_LIMITED';
     return 'GOOD_FLOW';
   }
 
@@ -172,61 +174,63 @@ class Scanner extends EventEmitter {
    */
   getScannerResponse(mode = 'top_attention') {
     try {
+      // Show data from whatever source is hydrated — don't require both
       if (!this.hydrated.hyperliquid && !this.hydrated.binance) {
         return { ok: false, rows: [], reason: 'universe_not_loaded', lastError: this.lastError };
       }
 
       let symbols = [...this.stats.values()];
 
-      // Apply mode filter
-      switch (mode) {
-        case 'pinned':
-          symbols = symbols.filter(s => this.pinnedFundamentals.includes(s.symbol));
-          break;
-        case 'volatility_watchlist':
-          symbols = symbols.filter(s => this.volatilityWatchlist.includes(s.symbol));
-          break;
-        case 'hl_binance_overlap':
-          symbols = symbols.filter(s => {
-            const bn = this.symbolMap.toBinance(s.symbol);
-            return this.symbolMap.binanceFuturesSymbols.has(bn);
-          });
-          break;
-        case 'top_bubbles':
-          symbols.sort((a, b) => b.bubbleCount - a.bubbleCount);
-          break;
-        case 'top_absorption':
-          symbols.sort((a, b) => (b.absorptionCount + b.rejectionCount) - (a.absorptionCount + a.rejectionCount));
-          break;
-        case 'top_volatility':
-          symbols.sort((a, b) => b.volatilityExpansion - a.volatilityExpansion);
-          break;
-        case 'top_attention':
-        default:
-          symbols.sort((a, b) => b.attentionScore - a.attentionScore);
-          break;
-        case 'full_hyperliquid':
-          // All HL symbols, even without trades
-          symbols = [];
-          for (const coin of this.symbolMap.hlCoins) {
-            const existing = this.stats.get(coin);
-            if (existing) {
-              symbols.push(existing);
-            } else {
-              symbols.push({
-                symbol: coin, source: 'hyperliquid', price: 0, priceChange: 0,
-                volume: 0, delta: 0, tradeFrequency: 0, volatilityExpansion: 0,
-                bubbleCount: 0, absorptionCount: 0, rejectionCount: 0, zoneCount: 0,
-                attentionScore: 0, status: 'NO_DATA', tradeCount: 0,
-                funding: null, openInterest: null, firstSeen: Date.now(), lastSeen: 0,
-                priceStart: 0, high24h: 0, low24h: Infinity, notional: 0,
-                buyVolume: 0, sellVolume: 0, largeTradeCount: 0,
-                windowTrades: [], windowVolume: []
-              });
-            }
+      // For full_hyperliquid mode, always try to show HL universe
+      if (mode === 'full_hyperliquid') {
+        symbols = [];
+        for (const coin of this.symbolMap.hlCoins) {
+          const existing = this.stats.get(coin);
+          if (existing) {
+            symbols.push(existing);
+          } else {
+            symbols.push({
+              symbol: coin, source: 'hyperliquid', price: 0, priceChange: 0,
+              volume: 0, delta: 0, tradeFrequency: 0, volatilityExpansion: 0,
+              bubbleCount: 0, absorptionCount: 0, rejectionCount: 0, zoneCount: 0,
+              attentionScore: 0, status: 'NO_DATA', tradeCount: 0,
+              funding: null, openInterest: null, firstSeen: Date.now(), lastSeen: 0,
+              priceStart: 0, high24h: 0, low24h: Infinity, notional: 0,
+              buyVolume: 0, sellVolume: 0, largeTradeCount: 0,
+              windowTrades: [], windowVolume: []
+            });
           }
-          symbols.sort((a, b) => b.attentionScore - a.attentionScore);
-          break;
+        }
+        symbols.sort((a, b) => b.attentionScore - a.attentionScore);
+      } else {
+        // Apply mode filter
+        switch (mode) {
+          case 'pinned':
+            symbols = symbols.filter(s => this.pinnedFundamentals.includes(s.symbol));
+            break;
+          case 'volatility_watchlist':
+            symbols = symbols.filter(s => this.volatilityWatchlist.includes(s.symbol));
+            break;
+          case 'hl_binance_overlap':
+            symbols = symbols.filter(s => {
+              const bn = this.symbolMap.toBinance(s.symbol);
+              return this.symbolMap.binanceFuturesSymbols.has(bn);
+            });
+            break;
+          case 'top_bubbles':
+            symbols.sort((a, b) => b.bubbleCount - a.bubbleCount);
+            break;
+          case 'top_absorption':
+            symbols.sort((a, b) => (b.absorptionCount + b.rejectionCount) - (a.absorptionCount + a.rejectionCount));
+            break;
+          case 'top_volatility':
+            symbols.sort((a, b) => b.volatilityExpansion - a.volatilityExpansion);
+            break;
+          case 'top_attention':
+          default:
+            symbols.sort((a, b) => b.attentionScore - a.attentionScore);
+            break;
+        }
       }
 
       if (symbols.length === 0) {

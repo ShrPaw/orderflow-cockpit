@@ -10,11 +10,7 @@
   <!-- TOP BAR -->
   <div id="top-bar">
     <div class="top-left">
-      <select id="source-select" title="Read Source">
-        <option value="hyperliquid">Hyperliquid</option>
-        <option value="binance_futures">Binance USD-M</option>
-        <option value="binance_spot">Binance Spot (debug)</option>
-      </select>
+      <div id="active-source" class="status-pill">HL</div>
       <div id="symbol-input-wrap">
         <input id="symbol-input" type="text" placeholder="Symbol..." autocomplete="off" />
         <div id="symbol-dropdown" class="dropdown hidden"></div>
@@ -27,7 +23,6 @@
         <option value="3m">3m</option>
         <option value="5m">5m</option>
       </select>
-      <div id="active-source" class="status-pill">HL</div>
       <div id="exec-ref" class="status-pill dim">Exec: —</div>
       <div id="data-quality" class="status-pill">Quality: —</div>
     </div>
