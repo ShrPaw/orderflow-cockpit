@@ -24,13 +24,32 @@
       <div id="data-quality" class="status-pill">Quality: —</div>
     </div>
     <div class="top-right">
-      <button id="btn-follow-live" class="toggle active" title="Follow Live">◉ Live</button>
-      <button id="btn-zoom-in" title="Zoom In">+</button>
-      <button id="btn-zoom-out" title="Zoom Out">−</button>
-      <button id="btn-fit-all" title="Fit All">⊞</button>
-      <button id="btn-reset" title="Reset View">↺</button>
+      <!-- Part 10: Full scalper controls -->
+      <button id="btn-follow-live" class="toggle active" title="Follow Live (Home)">◉ Live</button>
+      <button id="btn-fit-recent" title="Fit Recent 250 candles (F)">⊞ Recent</button>
+      <button id="btn-fit-all" title="Fit All History">⊞ All</button>
+      <button id="btn-zoom-in" title="Zoom In (+)">+</button>
+      <button id="btn-zoom-out" title="Zoom Out (-)">−</button>
+      <button id="btn-reset" title="Reset View (0)">↺ Reset</button>
+      <div class="control-divider"></div>
+      <!-- Part 7: Label density toggle -->
+      <button id="btn-labels" class="toggle active" title="Label Density: Compact">Ⓐ Labels</button>
       <button id="btn-auto-scale" class="toggle active" title="Auto Scale Price">⚖ Auto</button>
+      <!-- Part 11: Debug toggle -->
+      <button id="btn-debug" class="toggle" title="Toggle Debug Panel">🐛</button>
     </div>
+  </div>
+
+  <!-- Part 10: Hint bar -->
+  <div id="hint-bar">
+    <span class="hint">Ctrl+Wheel = zoom time</span>
+    <span class="hint">Shift+Wheel = zoom price</span>
+    <span class="hint">Drag = pan</span>
+    <span class="hint">+/- = zoom</span>
+    <span class="hint">0 = reset</span>
+    <span class="hint">F = fit recent</span>
+    <span class="hint">Home = live</span>
+    <span class="hint">R = range tool</span>
   </div>
 
   <!-- MAIN AREA -->
@@ -68,6 +87,11 @@
       <div id="crosshair-label" class="hidden"></div>
       <div id="hover-tooltip" class="hidden"></div>
       <div id="tool-status-bar">Tool: Cursor</div>
+      <!-- Part 11: Debug panel -->
+      <div id="debug-panel" class="hidden">
+        <div class="debug-title" onclick="document.getElementById('debug-panel').classList.toggle('collapsed')">Viewport Debug ▾</div>
+        <div class="debug-body" id="debug-body"></div>
+      </div>
     </div>
 
     <!-- RIGHT PANEL -->

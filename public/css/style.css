@@ -1,4 +1,4 @@
-/* Orderflow Cockpit — Deepchart Scalper Theme */
+/* Orderflow Cockpit — Deepchart Scalper Theme (Parts 6–13) */
 :root {
   --bg-primary: #0a0e17;
   --bg-secondary: #111827;
@@ -33,9 +33,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-p
 /* TOP BAR */
 #top-bar {
   height: 36px; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between; padding: 0 8px; gap: 6px; z-index: 100;
+  display: flex; align-items: center; justify-content: space-between; padding: 0 8px; gap: 4px; z-index: 100;
 }
-.top-left, .top-right { display: flex; align-items: center; gap: 6px; }
+.top-left, .top-right { display: flex; align-items: center; gap: 4px; }
 #top-bar select, #symbol-input {
   background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text-primary);
   padding: 4px 8px; border-radius: 4px; font-family: var(--font); font-size: 11px; outline: none;
@@ -66,8 +66,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-p
 .toggle.active { background: var(--green-bg); color: var(--green); border-color: var(--green-dim); }
 button:hover { opacity: 0.85; }
 
+.control-divider { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+
+/* Part 10: HINT BAR */
+#hint-bar {
+  height: 18px; background: rgba(17,24,39,0.6); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 16px; padding: 0 12px; overflow: hidden;
+}
+#hint-bar .hint {
+  font-size: 9px; color: var(--text-dim); white-space: nowrap; letter-spacing: 0.3px;
+}
+
 /* MAIN AREA */
-#main-area { display: flex; height: calc(100vh - 36px - 180px); }
+#main-area { display: flex; height: calc(100vh - 36px - 18px - 180px); }
 
 /* LEFT TOOLBAR */
 #toolbar {
@@ -86,7 +97,7 @@ button:hover { opacity: 0.85; }
 #chart-container { flex: 1; position: relative; overflow: hidden; background: var(--bg-primary); }
 #chart-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
 #tool-status-bar {
-  position: absolute; bottom: 0; left: 0; right: 60px;
+  position: absolute; bottom: 0; left: 0; right: 62px;
   background: rgba(17,24,39,0.85); border-top: 1px solid var(--border);
   padding: 3px 8px; font-size: 10px; color: var(--text-secondary); pointer-events: none; z-index: 40;
 }
@@ -96,9 +107,28 @@ button:hover { opacity: 0.85; }
 }
 #hover-tooltip {
   position: absolute; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-light);
-  border-radius: 6px; font-size: 10px; pointer-events: none; z-index: 60; max-width: 300px;
+  border-radius: 6px; font-size: 10px; pointer-events: none; z-index: 60; max-width: 320px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.5);
 }
+
+/* Part 11: DEBUG PANEL */
+#debug-panel {
+  position: absolute; top: 8px; right: 70px; width: 260px;
+  background: rgba(17,24,39,0.92); border: 1px solid var(--border-light);
+  border-radius: 6px; z-index: 70; font-size: 9px; backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+}
+#debug-panel.collapsed .debug-body { display: none; }
+.debug-title {
+  padding: 6px 10px; color: var(--yellow); font-weight: 700; cursor: pointer;
+  border-bottom: 1px solid var(--border); font-size: 9px; letter-spacing: 0.5px; text-transform: uppercase;
+}
+.debug-body { padding: 6px 10px; }
+.debug-row { display: flex; justify-content: space-between; padding: 1px 0; }
+.debug-row .dk { color: var(--text-dim); }
+.debug-row .dv { color: var(--text-primary); font-weight: 600; }
+.debug-row .dv.warn { color: var(--yellow); }
+.debug-row .dv.ok { color: var(--green); }
 
 /* RIGHT PANEL */
 #right-panel {
