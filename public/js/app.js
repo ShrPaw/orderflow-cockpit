@@ -600,12 +600,20 @@ function drawBubbles(ctx, visible, candleW, priceToY, rightEdge, scaleX) {
     }
 
     // Cluster count label — Phase 4: "B×N" format
-    if (count > 1) {
+    // Phase 5: respect labelDensity
+    if (count > 1 && state.labelDensity !== 'minimal') {
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 8px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`B×${count}`, x, y);
+    } else if (count === 1 && state.labelDensity === 'detailed') {
+      // In detailed mode, show individual bubble size label
+      ctx.fillStyle = '#fff';
+      ctx.font = '7px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(fmtNum(cl.totalNotional), x, y - radius - 4);
     }
 
     // Hover detection
@@ -653,14 +661,17 @@ function drawZones(ctx, w, h, priceToY, rightEdge) {
     ctx.stroke();
 
     // Phase 7: Compact right-side label with deconfliction
-    const labelText = zone.type.replace(/_/g, ' ').replace('ZONE', '').trim();
-    const labelY = (y1 + y2) / 2;
-    const deconflicted = deconflictLabel(rightEdge - 4, labelY, labelText, 'right');
+    // Phase 5: respect labelDensity — hide zone labels in minimal mode
+    if (state.labelDensity !== 'minimal') {
+      const labelText = zone.type.replace(/_/g, ' ').replace('ZONE', '').trim();
+      const labelY = (y1 + y2) / 2;
+      const deconflicted = deconflictLabel(rightEdge - 4, labelY, labelText, 'right');
 
-    ctx.fillStyle = borderCol;
-    ctx.font = '8px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(labelText, deconflicted.x, deconflicted.y + 3);
+      ctx.fillStyle = borderCol;
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(labelText, deconflicted.x, deconflicted.y + 3);
+    }
   }
 }
 
@@ -1483,6 +1494,16 @@ function initButtons() {
     state.autoScale = !state.autoScale;
     document.getElementById('btn-auto-scale').classList.toggle('active', state.autoScale);
     if (state.autoScale) state._priceScaleDirty = true;
+  });
+
+  // Phase 5: Label density toggle (cycles: compact → detailed → minimal → compact)
+  document.getElementById('btn-label-density').addEventListener('click', () => {
+    const modes = ['compact', 'detailed', 'minimal'];
+    const idx = modes.indexOf(state.labelDensity);
+    state.labelDensity = modes[(idx + 1) % modes.length];
+    const btn = document.getElementById('btn-label-density');
+    btn.title = 'Label Density: ' + state.labelDensity;
+    btn.textContent = state.labelDensity === 'minimal' ? '◻ Labels' : state.labelDensity === 'detailed' ? '◉◉ Labels' : '◉ Labels';
   });
 
   document.getElementById('btn-reset-ui').addEventListener('click', () => {
