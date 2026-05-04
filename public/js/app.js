@@ -5,6 +5,36 @@
 (function() {
 'use strict';
 
+// ============ TOAST SYSTEM (Phase 1) ============
+function showToast(msg, type) {
+  type = type || 'error';
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.style.cssText = 'position:fixed;top:42px;right:8px;z-index:9999;display:flex;flex-direction:column;gap:4px;pointer-events:none';
+    document.body.appendChild(container);
+  }
+  const t = document.createElement('div');
+  const bg = type === 'error' ? 'rgba(239,68,68,0.9)' : type === 'warn' ? 'rgba(245,158,11,0.9)' : 'rgba(34,197,94,0.9)';
+  t.style.cssText = `background:${bg};color:#fff;padding:6px 12px;border-radius:4px;font:11px monospace;pointer-events:auto;cursor:pointer;max-width:360px;box-shadow:0 2px 12px rgba(0,0,0,0.5);opacity:0;transition:opacity 0.2s`;
+  t.textContent = msg;
+  t.onclick = function() { t.remove(); };
+  container.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 5000);
+  state._lastFrontendError = msg;
+}
+
+// ============ GLOBAL ERROR BOUNDARY (Phase 1) ============
+window.onerror = function(msg, src, line, col, err) {
+  try { showToast('Chart error: ' + (msg || 'unknown') + '. Chart recovered.', 'error'); } catch(_) {}
+  return true;
+};
+window.addEventListener('unhandledrejection', function(e) {
+  try { showToast('Async error: ' + (e.reason?.message || e.reason || 'unknown') + '. Chart recovered.', 'error'); } catch(_) {}
+});
+
 // ============ STATE ============
 const state = {
   symbol: null,
@@ -59,6 +89,28 @@ const state = {
 
   // Phase 7: Label deconfliction
   labelRects: [],
+
+  // Phase 2: Auto scale
+  autoScale: true,
+
+  // Phase 3: Historical candle tracking
+  historyLoaded: false,
+  historyCount: 0,
+  historySource: '',
+
+  // Phase 5: Label density
+  labelDensity: 'compact', // 'minimal' | 'compact' | 'detailed'
+
+  // Phase 1: Error tracking
+  _lastFrontendError: null,
+
+  // Phase 2: Render dirty flag
+  _priceScaleDirty: true,
+
+  // Phase 7: Diagnostics
+  _lastTradeTs: null,
+  _lastBookTs: null,
+  _totalTradeCount: 0,
 };
 
 // ============ COLORS ============
@@ -138,7 +190,7 @@ function connectWS() {
   };
 
   state.ws.onmessage = (e) => {
-    try { handleMessage(JSON.parse(e.data)); } catch(err) {}
+    try { handleMessage(JSON.parse(e.data)); } catch(err) { showToast('WS message error: ' + err.message, 'error'); }
   };
 
   state.ws.onclose = () => {
@@ -911,110 +963,165 @@ function initInput() {
   const canvas = state.canvas;
 
   canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    state.mouse.x = e.clientX - rect.left;
-    state.mouse.y = e.clientY - rect.top;
-    state.mouse.price = (state.view.scrollY + state.height/2 - state.mouse.y) * state.view.pricePerPixel;
+    try {
+      const rect = canvas.getBoundingClientRect();
+      state.mouse.x = e.clientX - rect.left;
+      state.mouse.y = e.clientY - rect.top;
+      state.mouse.price = (state.view.scrollY + state.height/2 - state.mouse.y) * state.view.pricePerPixel;
 
-    // Phase 5: Drag pan
-    if (state.mouse.isDown && state.mouse.button === 0 && state.activeTool === 'cursor') {
-      state.view.offsetX += e.movementX / state.view.scaleX;
-      state.view.scrollY -= e.movementY;
-      state.view.userModified = true;
-      state.followLive = false;
-      document.getElementById('btn-follow-live').classList.remove('active');
-    }
+      // Drag pan
+      if (state.mouse.isDown && state.mouse.button === 0 && state.activeTool === 'cursor') {
+        state.view.offsetX += e.movementX / state.view.scaleX;
+        state.view.scrollY -= e.movementY;
+        state.view.userModified = true;
+        state.followLive = false;
+        document.getElementById('btn-follow-live').classList.remove('active');
+      }
 
-    if (state.drawingState && state.mouse.isDown) {
-      updateDrawingState(state.mouse.x, state.mouse.price);
-    }
+      if (state.drawingState && state.mouse.isDown) {
+        updateDrawingState(state.mouse.x, state.mouse.price);
+      }
+    } catch(err) { showToast('Mouse error: ' + err.message, 'error'); }
   });
 
   canvas.addEventListener('mousedown', (e) => {
-    state.mouse.isDown = true;
-    state.mouse.button = e.button;
-    state.mouse.startX = e.clientX;
-    state.mouse.startY = e.clientY;
-    if (e.button === 0) handleToolClick(e);
+    try {
+      state.mouse.isDown = true;
+      state.mouse.button = e.button;
+      state.mouse.startX = e.clientX;
+      state.mouse.startY = e.clientY;
+      if (e.button === 0) handleToolClick(e);
+    } catch(err) { showToast('Click error: ' + err.message, 'error'); }
   });
 
   canvas.addEventListener('mouseup', (e) => {
-    if (state.drawingState && state.mouse.isDown) finalizeDrawing();
-    state.mouse.isDown = false;
+    try {
+      if (state.drawingState && state.mouse.isDown) finalizeDrawing();
+      state.mouse.isDown = false;
+    } catch(err) { showToast('Mouse error: ' + err.message, 'error'); }
   });
 
-  // Phase 5: Mouse wheel zoom
+  // Phase 2: Professional cursor-centered zoom/pan
   canvas.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    if (e.ctrlKey || e.metaKey) {
-      // Vertical zoom
-      const factor = e.deltaY > 0 ? 1.08 : 0.92;
-      state.view.pricePerPixel *= factor;
-    } else if (e.shiftKey) {
-      // Horizontal pan
-      state.view.offsetX -= e.deltaY / state.view.scaleX;
-    } else {
-      // Horizontal zoom
-      const factor = e.deltaY > 0 ? 1.1 : 0.9;
-      state.view.scaleX = Math.max(2, Math.min(50, state.view.scaleX * factor));
-    }
-    state.view.userModified = true;
-    state.followLive = false;
-    document.getElementById('btn-follow-live').classList.remove('active');
+    try {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const rightEdge = state.width - 60;
+
+      if (e.ctrlKey || e.metaKey) {
+        // Vertical price zoom around cursor price
+        const factor = e.deltaY > 0 ? 1.08 : 0.92;
+        const cursorPrice = (state.view.scrollY + state.height / 2 - mouseY) * state.view.pricePerPixel;
+        state.view.pricePerPixel *= factor;
+        // Adjust scrollY so cursor price stays at same screen position
+        state.view.scrollY = cursorPrice / state.view.pricePerPixel - state.height / 2 + mouseY;
+      } else if (e.shiftKey) {
+        // Horizontal pan
+        state.view.offsetX -= e.deltaY / state.view.scaleX;
+      } else {
+        // Horizontal zoom around cursor position
+        const oldScaleX = state.view.scaleX;
+        const factor = e.deltaY > 0 ? 1.12 : 0.88;
+        const newScaleX = Math.max(2, Math.min(80, oldScaleX * factor));
+
+        // Calculate which candle index is under the cursor
+        const candleW = oldScaleX;
+        const allCandles = [...state.candles];
+        if (state.currentCandle) allCandles.push(state.currentCandle);
+        const visibleCount = Math.ceil(state.width / candleW) + 2;
+        const startIdx = Math.max(0, allCandles.length - visibleCount - Math.floor(state.view.offsetX / candleW));
+        const cursorCandleScreenPos = (rightEdge - mouseX) / candleW;
+        const cursorCandleIdx = startIdx + Math.floor(visibleCount - 1 - cursorCandleScreenPos);
+
+        // Apply new scale
+        state.view.scaleX = newScaleX;
+
+        // Adjust offsetX so that the same candle stays under the cursor
+        const newVisibleCount = Math.ceil(state.width / newScaleX) + 2;
+        const newStartIdx = cursorCandleIdx - Math.floor(newVisibleCount - 1 - cursorCandleScreenPos * (oldScaleX / newScaleX));
+        state.view.offsetX = (allCandles.length - newVisibleCount - newStartIdx) * newScaleX / newScaleX;
+        // Recalculate: the candle at cursorCandleIdx should be at screen position mouseX
+        // x = rightEdge - (allCandles.length - 1 - i) * candleW - candleW/2
+        // mouseX = rightEdge - (allCandles.length - 1 - cursorCandleIdx) * newScaleX - newScaleX/2
+        // => we need startIdx such that visible[cursorScreenIdx] = cursorCandleIdx
+        const targetVisiblePos = cursorCandleScreenPos * (oldScaleX / newScaleX);
+        const neededStart = cursorCandleIdx - (newVisibleCount - 1 - targetVisiblePos);
+        state.view.offsetX = Math.max(0, (allCandles.length - newVisibleCount - neededStart));
+      }
+      state.view.userModified = true;
+      state.followLive = false;
+      state._priceScaleDirty = true;
+      document.getElementById('btn-follow-live').classList.remove('active');
+    } catch(err) { showToast('Zoom error: ' + err.message, 'error'); }
   }, { passive: false });
 
   // Keyboard
   document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    switch (e.key) {
-      case 'Escape':
-        setActiveTool('cursor');
-        state.drawingState = null;
-        state.selectedRange = null;
-        updateRangePanel();
-        break;
-      case 'r': case 'R': setActiveTool('range'); break;
-      case 'Delete': case 'Backspace': deleteSelectedDrawing(); break;
-      case 'f': case 'F': fitAll(); break;
-    }
+    try {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      switch (e.key) {
+        case 'Escape':
+          if (state.drawingState) {
+            // First escape: cancel active drawing
+            state.drawingState = null;
+          } else if (state.activeTool !== 'cursor') {
+            // Second escape: return to cursor
+            setActiveTool('cursor');
+            state.selectedRange = null;
+            updateRangePanel();
+          } else {
+            // Already on cursor: clear selected range
+            state.selectedRange = null;
+            updateRangePanel();
+          }
+          break;
+        case 'r': case 'R': setActiveTool('range'); break;
+        case 'Delete': case 'Backspace': deleteSelectedDrawing(); break;
+        case 'f': case 'F': fitAll(); break;
+      }
+    } catch(err) { showToast('Key error: ' + err.message, 'error'); }
   });
 }
 
 function handleToolClick(e) {
-  const x = state.mouse.x;
-  const price = state.mouse.price;
+  try {
+    const x = state.mouse.x;
+    const price = state.mouse.price;
 
-  switch (state.activeTool) {
-    case 'cursor': break;
-    case 'hline':
-      state.drawings.push({ type: 'hline', price, color: COL.drawing });
-      saveDrawings();
-      setActiveTool('cursor');
-      break;
-    case 'trendline':
-      if (!state.drawingState) {
-        state.drawingState = { type: 'trendline', x1: x, price1: price, x2: x, price2: price, color: COL.drawing };
-      }
-      break;
-    case 'rect':
-      if (!state.drawingState) {
-        state.drawingState = { type: 'rect', x1: x, price1: price, x2: x, price2: price, color: COL.drawing };
-      }
-      break;
-    case 'text':
-      const text = prompt('Enter label:');
-      if (text) {
-        state.drawings.push({ type: 'text', x, price, text, color: COL.drawing });
+    switch (state.activeTool) {
+      case 'cursor': break;
+      case 'hline':
+        state.drawings.push({ type: 'hline', price, color: COL.drawing });
         saveDrawings();
-      }
-      setActiveTool('cursor');
-      break;
-    case 'range':
-      if (!state.drawingState) {
-        state.drawingState = { type: 'range', x1: x, price1: price, x2: x, price2: price };
-      }
-      break;
-  }
+        setActiveTool('cursor');
+        break;
+      case 'trendline':
+        if (!state.drawingState) {
+          state.drawingState = { type: 'trendline', x1: x, price1: price, x2: x, price2: price, color: COL.drawing };
+        }
+        break;
+      case 'rect':
+        if (!state.drawingState) {
+          state.drawingState = { type: 'rect', x1: x, price1: price, x2: x, price2: price, color: COL.drawing };
+        }
+        break;
+      case 'text':
+        const text = prompt('Enter label:');
+        if (text) {
+          state.drawings.push({ type: 'text', x, price, text, color: COL.drawing });
+          saveDrawings();
+        }
+        setActiveTool('cursor');
+        break;
+      case 'range':
+        if (!state.drawingState) {
+          state.drawingState = { type: 'range', x1: x, price1: price, x2: x, price2: price };
+        }
+        break;
+    }
+  } catch(err) { showToast('Tool error: ' + err.message, 'error'); }
 }
 
 function updateDrawingState(x, price) {
@@ -1270,7 +1377,47 @@ function initButtons() {
   document.getElementById('btn-reset').addEventListener('click', () => {
     state.view = { offsetX: 0, scaleX: 8, pricePerPixel: 0.05, scrollY: 0, userModified: false };
     state.followLive = true;
+    state._priceScaleDirty = true;
     document.getElementById('btn-follow-live').classList.add('active');
+  });
+
+  // Phase 1: Reset UI State button
+  document.getElementById('btn-reset-ui').addEventListener('click', () => {
+    try {
+      state.activeTool = 'cursor';
+      state.drawingState = null;
+      state.hoveredCandle = null;
+      state.hoveredBubble = null;
+      state.selectedRange = null;
+      state.view = { offsetX: 0, scaleX: 8, pricePerPixel: 0.05, scrollY: 0, userModified: false };
+      state.followLive = true;
+      state._priceScaleDirty = true;
+      state._lastFrontendError = null;
+      document.getElementById('btn-follow-live').classList.add('active');
+      document.querySelectorAll('.tool-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tool === 'cursor');
+      });
+      document.getElementById('hover-tooltip').classList.add('hidden');
+      document.getElementById('crosshair-label').classList.add('hidden');
+      showToast('UI state reset', 'info');
+    } catch(err) { showToast('Reset error: ' + err.message, 'error'); }
+  });
+
+  // Phase 1: Reconnect / Reload Market Data button
+  document.getElementById('btn-reconnect').addEventListener('click', () => {
+    try {
+      state.candles = [];
+      state.currentCandle = null;
+      state.bubbles = [];
+      state.zones = [];
+      state.selectedRange = null;
+      state.symbolLoaded = false;
+      state._priceScaleDirty = true;
+      if (state.symbol) {
+        selectSymbol(state.symbol);
+      }
+      showToast('Reconnecting to ' + (state.symbol || 'market') + '...', 'warn');
+    } catch(err) { showToast('Reconnect error: ' + err.message, 'error'); }
   });
 
   document.querySelectorAll('.tool-btn').forEach(btn => {
