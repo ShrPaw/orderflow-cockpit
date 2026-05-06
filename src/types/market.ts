@@ -89,3 +89,52 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '3m': 180_000,
   '5m': 300_000,
 }
+
+// ─── 24h Market Stats ───
+export interface Ticker24h {
+  price: number
+  change: number
+  changePct: number
+  high: number
+  low: number
+  volume: number
+  quoteVolume: number
+  trades: number
+}
+
+// ─── Instrument Catalog ───
+export interface Instrument {
+  symbol: string
+  base: string
+  quote: string
+  category: 'major' | 'alt' | 'defi' | 'meme'
+  tickSize: number
+  qtyPrecision: number
+}
+
+export const INSTRUMENTS: Instrument[] = [
+  { symbol: 'BTCUSDT', base: 'BTC', quote: 'USDT', category: 'major', tickSize: 0.1, qtyPrecision: 3 },
+  { symbol: 'ETHUSDT', base: 'ETH', quote: 'USDT', category: 'major', tickSize: 0.01, qtyPrecision: 3 },
+  { symbol: 'BNBUSDT', base: 'BNB', quote: 'USDT', category: 'major', tickSize: 0.01, qtyPrecision: 2 },
+  { symbol: 'SOLUSDT', base: 'SOL', quote: 'USDT', category: 'major', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'XRPUSDT', base: 'XRP', quote: 'USDT', category: 'major', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'DOGEUSDT', base: 'DOGE', quote: 'USDT', category: 'meme', tickSize: 0.00001, qtyPrecision: 0 },
+  { symbol: 'ADAUSDT', base: 'ADA', quote: 'USDT', category: 'alt', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'AVAXUSDT', base: 'AVAX', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'DOTUSDT', base: 'DOT', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'LINKUSDT', base: 'LINK', quote: 'USDT', category: 'defi', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'MATICUSDT', base: 'MATIC', quote: 'USDT', category: 'defi', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'UNIUSDT', base: 'UNI', quote: 'USDT', category: 'defi', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'ATOMUSDT', base: 'ATOM', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'LTCUSDT', base: 'LTC', quote: 'USDT', category: 'alt', tickSize: 0.01, qtyPrecision: 2 },
+  { symbol: 'NEARUSDT', base: 'NEAR', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'ARBUSDT', base: 'ARB', quote: 'USDT', category: 'defi', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'OPUSDT', base: 'OP', quote: 'USDT', category: 'defi', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'APTUSDT', base: 'APT', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'SUIUSDT', base: 'SUI', quote: 'USDT', category: 'alt', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'PEPEUSDT', base: 'PEPE', quote: 'USDT', category: 'meme', tickSize: 0.00000001, qtyPrecision: 0 },
+  { symbol: 'WIFUSDT', base: 'WIF', quote: 'USDT', category: 'meme', tickSize: 0.0001, qtyPrecision: 0 },
+  { symbol: 'FILUSDT', base: 'FIL', quote: 'USDT', category: 'alt', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'INJUSDT', base: 'INJ', quote: 'USDT', category: 'defi', tickSize: 0.001, qtyPrecision: 1 },
+  { symbol: 'AAVEUSDT', base: 'AAVE', quote: 'USDT', category: 'defi', tickSize: 0.01, qtyPrecision: 2 },
+]

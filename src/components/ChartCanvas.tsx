@@ -20,6 +20,7 @@ export default function ChartCanvas() {
   const volumeProfile = useMarketStore(s => s.volumeProfile)
   const followLive = useMarketStore(s => s.followLive)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
+  const livePrice = useMarketStore(s => s.livePrice)
 
   // Sync followLive from store → view
   useEffect(() => {
@@ -84,7 +85,8 @@ export default function ChartCanvas() {
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
-          volumeProfile, mouseRef.current
+          volumeProfile, mouseRef.current,
+          livePrice
         )
         viewRef.current = result.view
       }
@@ -95,18 +97,17 @@ export default function ChartCanvas() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, volumeProfile, size])
+  }, [candles, currentCandle, volumeProfile, size, livePrice])
 
   // ─── Mouse handlers ───
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
     viewRef.current = handleWheel(e, viewRef.current, size.width, size.height, mouseRef.current)
-    // Sync followLive back to store
     setFollowLive(viewRef.current.followLive)
   }, [size, setFollowLive])
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return // left button only
+    if (e.button !== 0) return
     viewRef.current = handleDragStart(e, viewRef.current, size.width, size.height)
   }, [size])
 
@@ -138,7 +139,6 @@ export default function ChartCanvas() {
     setFollowLive(true)
   }, [setFollowLive])
 
-  // Cursor style
   const cursor = viewRef.current._dragging ? 'grabbing' : 'crosshair'
 
   return (

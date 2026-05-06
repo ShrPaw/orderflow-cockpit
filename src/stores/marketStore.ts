@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type {
   Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
-  Interval, AppMode,
+  Interval, AppMode, Ticker24h,
 } from '../types/market'
 import { INTERVAL_MS } from '../types/market'
 import {
@@ -36,18 +36,29 @@ interface MarketState {
   volumeProfile: VolumeLevel[]
   heatmapLevels: HeatmapLevel[]
 
+  // ─── Live market data ───
+  ticker: Ticker24h | null
+  livePrice: number
+  liveChange: number
+  liveChangePct: number
+  connectionError: string | null
+  lastTradeTime: number
+
   // Actions
   setMode: (mode: AppMode) => void
   setSymbol: (symbol: string) => void
   setInterval: (interval: Interval) => void
   setConnected: (connected: boolean) => void
-  setDepthConnected: (connected: boolean) => void
+  setDepthConnected: (depthConnected: boolean) => void
   setFollowLive: (follow: boolean) => void
   processTrade: (trade: Trade) => void
   setDepth: (bids: OrderLevel[], asks: OrderLevel[]) => void
   rebuildVolumeProfile: () => void
   addHeatmapSnapshot: () => void
   updateBubbles: () => void
+  setTicker: (ticker: Ticker24h | null) => void
+  updateLivePrice: (price: number, change: number, changePct: number) => void
+  setConnectionError: (error: string | null) => void
   reset: () => void
 }
 
@@ -57,9 +68,12 @@ const MAX_LARGE_TRADES = 100
 const MAX_HEATMAP = 3000
 const MAX_BUBBLES = 500
 
+// Stale data detection: 15s without a trade = likely disconnected
+const STALE_THRESHOLD = 15_000
+
 function getInitialState() {
   return {
-    mode: 'demo' as AppMode,
+    mode: 'live' as AppMode,
     symbol: 'BTCUSDT',
     interval: '40s' as Interval,
     connected: false,
@@ -79,6 +93,12 @@ function getInitialState() {
     bubbles: [] as Bubble[],
     volumeProfile: [] as VolumeLevel[],
     heatmapLevels: [] as HeatmapLevel[],
+    ticker: null as Ticker24h | null,
+    livePrice: 0,
+    liveChange: 0,
+    liveChangePct: 0,
+    connectionError: null as string | null,
+    lastTradeTime: 0,
   }
 }
 
@@ -87,12 +107,23 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   setMode: (mode) => set({ mode }),
   setSymbol: (symbol) => {
-    set({ ...getInitialState(), symbol, mode: get().mode })
+    set({
+      ...getInitialState(),
+      symbol,
+      mode: get().mode,
+      // Keep live mode when switching symbols
+    })
   },
   setInterval: (interval) => {
     set({ interval, candles: [], currentCandle: null, bubbles: [] })
   },
-  setConnected: (connected) => set({ connected }),
+  setConnected: (connected) => {
+    const update: Partial<MarketState> = { connected }
+    if (connected) {
+      update.connectionError = null
+    }
+    set(update as any)
+  },
   setDepthConnected: (depthConnected) => set({ depthConnected }),
   setFollowLive: (followLive) => set({ followLive }),
 
@@ -156,6 +187,8 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       delta,
       cvd,
       bubbles: allBubbles,
+      livePrice: trade.price,
+      lastTradeTime: trade.time,
     })
   },
 
@@ -192,6 +225,14 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const state = get()
     if (!state.currentCandle) return
 
+    // Check for stale data
+    if (state.mode === 'live' && state.connected && state.lastTradeTime > 0) {
+      const stale = Date.now() - state.lastTradeTime > STALE_THRESHOLD
+      if (stale && !state.connectionError) {
+        set({ connectionError: 'No trades received — data may be stale' })
+      }
+    }
+
     const updated = state.currentCandle.bubbles.map(b =>
       classifyBubble(b, state.currentCandle!.close, state.currentCandle!.high, state.currentCandle!.low)
     )
@@ -199,6 +240,14 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       currentCandle: { ...state.currentCandle, bubbles: updated },
     })
   },
+
+  setTicker: (ticker) => set({ ticker }),
+  updateLivePrice: (price, change, changePct) => set({
+    livePrice: price,
+    liveChange: change,
+    liveChangePct: changePct,
+  }),
+  setConnectionError: (error) => set({ connectionError: error }),
 
   reset: () => set(getInitialState()),
 }))

@@ -42,8 +42,8 @@ html, body, #root {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font);
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

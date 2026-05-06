@@ -5,8 +5,8 @@ const COL = {
   bg: '#080c14',
   grid: '#151b28',
   gridMajor: '#1c2436',
-  gridText: '#3a4560',
-  gridTextBright: '#5a6a88',
+  gridText: '#4a5570',
+  gridTextBright: '#6a7a98',
   candleUp: '#00d4aa',
   candleDown: '#ff4d6a',
   candleUpDim: 'rgba(0,212,170,0.35)',
@@ -20,7 +20,7 @@ const COL = {
   bubbleRejected: '#ff4d6a',
   bubbleAbsorbed: '#38bdf8',
   bubbleExhausted: '#525c72',
-  crosshair: 'rgba(148,163,184,0.2)',
+  crosshair: 'rgba(148,163,184,0.25)',
   crosshairLabel: '#1a2235',
   poc: '#ffb020',
   vwap: '#a78bfa',
@@ -40,6 +40,8 @@ const COL = {
   violet: '#a78bfa',
   liveDot: '#00d4aa',
   manualDot: '#ffb020',
+  priceLine: '#38bdf8',
+  priceLineBg: 'rgba(56,189,248,0.12)',
 }
 
 const BUBBLE_COLORS: Record<string, string> = {
@@ -52,14 +54,11 @@ const BUBBLE_COLORS: Record<string, string> = {
 
 // ─── View State ───
 export interface ViewState {
-  // The index into allCandles that the viewport is centered on.
-  // In follow-live mode this tracks the last candle.
   anchorIndex: number
   candlesVisible: number
   priceCenter: number
   pricePerPixel: number
   followLive: boolean
-  // Drag state (not serialized, transient)
   _dragging?: boolean
   _dragAnchorIdx?: number
   _dragAnchorPrice?: number
@@ -72,8 +71,8 @@ const MAX_CANDLES = 800
 const DEFAULT_CANDLES = 120
 const BUBBLE_MIN_R = 3
 const BUBBLE_MAX_R = 22
-const PRICE_SCALE_W = 72
-const TIME_AXIS_H = 22
+const PRICE_SCALE_W = 80
+const TIME_AXIS_H = 26
 const LEFT_MARGIN = 4
 
 export function createViewState(): ViewState {
@@ -94,9 +93,6 @@ function makeCoords(width: number, height: number, view: ViewState) {
   const gap = Math.max(0.5, Math.min(3, candleW * 0.1))
   const bodyW = candleW - gap
 
-  // The anchor index maps to a specific screen-x position.
-  // In follow-live, the last candle sits at ~85% from left.
-  // In manual view, the anchor sits at center.
   const anchorScreenX = view.followLive
     ? chartW * 0.85
     : chartW * 0.5
@@ -109,7 +105,6 @@ function makeCoords(width: number, height: number, view: ViewState) {
     return view.priceCenter - (y - chartH / 2) * view.pricePerPixel
   }
 
-  // Index of the leftmost visible candle
   const candlesFromAnchor = anchorScreenX / candleW
   const firstVisibleIdx = Math.floor(view.anchorIndex - candlesFromAnchor)
   const lastVisibleIdx = Math.ceil(view.anchorIndex + (chartW - anchorScreenX) / candleW)
@@ -141,7 +136,8 @@ export function renderChart(
   currentCandle: Candle | null,
   view: ViewState,
   volumeProfile: VolumeLevel[],
-  mousePos: { x: number; y: number } | null
+  mousePos: { x: number; y: number } | null,
+  livePrice?: number
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -155,7 +151,7 @@ export function renderChart(
 
   if (totalCandles === 0) {
     ctx.fillStyle = COL.text
-    ctx.font = '13px "SF Mono", "Fira Code", monospace'
+    ctx.font = '14px "SF Mono", "Fira Code", monospace'
     ctx.textAlign = 'center'
     ctx.fillText('Waiting for data…', width / 2, height / 2)
     ctx.restore()
@@ -165,7 +161,6 @@ export function renderChart(
   // ─── Follow-live anchor update ───
   if (view.followLive) {
     view.anchorIndex = totalCandles - 1
-    // Auto-fit price to visible range
     const c = makeCoords(width, height, view)
     const vis = getVisibleCandles(allCandles, c.firstVisibleIdx, c.lastVisibleIdx)
     if (vis.length > 0) {
@@ -205,7 +200,6 @@ export function renderChart(
     const x = c.indexToX(idx)
     const cx = x + c.bodyW / 2
 
-    // Skip if entirely off-screen
     if (x + c.bodyW < 0 || x > c.priceScaleX) continue
 
     const isUp = candle.close >= candle.open
@@ -228,16 +222,14 @@ export function renderChart(
     const bodyH = Math.max(1, bodyBot - bodyTop)
 
     if (c.bodyW > 6) {
-      // Filled body for wider candles
       ctx.fillStyle = col
       ctx.fillRect(x + 0.5, bodyTop, c.bodyW - 1, bodyH)
     } else {
-      // Thin line for narrow candles
       ctx.fillStyle = col
       ctx.fillRect(x, bodyTop, c.bodyW, bodyH)
     }
 
-    // Footprint cells (only when candles are wide enough)
+    // Footprint cells
     if (c.bodyW > 10) {
       const entries = Object.entries(candle.priceMap)
       if (entries.length > 0) {
@@ -289,10 +281,36 @@ export function renderChart(
     // Volume bar
     if (maxVolCandle > 0) {
       const volBarTop = c.chartH + 4
-      const volBarMaxH = TIME_AXIS_H - 6
+      const volBarMaxH = TIME_AXIS_H - 8
       const volBarH = (candle.volume / maxVolCandle) * volBarMaxH
       ctx.fillStyle = isUp ? COL.volumeUp : COL.volumeDown
       ctx.fillRect(x, volBarTop + volBarMaxH - volBarH, c.bodyW, volBarH)
+    }
+  }
+
+  // ─── Live Price Line ───
+  if (livePrice && livePrice > 0) {
+    const priceY = c.priceToY(livePrice)
+    if (priceY > 0 && priceY < c.chartH) {
+      // Dashed line across chart
+      ctx.strokeStyle = COL.priceLine
+      ctx.lineWidth = 0.8
+      ctx.setLineDash([4, 3])
+      ctx.beginPath()
+      ctx.moveTo(LEFT_MARGIN, priceY)
+      ctx.lineTo(c.priceScaleX, priceY)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Price badge on scale
+      const badgeW = PRICE_SCALE_W - 2
+      const badgeH = 18
+      ctx.fillStyle = COL.priceLine
+      ctx.fillRect(c.priceScaleX + 1, priceY - badgeH / 2, badgeW, badgeH)
+      ctx.fillStyle = '#000'
+      ctx.font = 'bold 11px "SF Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(fmtPriceLabel(livePrice), c.priceScaleX + PRICE_SCALE_W / 2, priceY + 4)
     }
   }
 
@@ -310,27 +328,27 @@ export function renderChart(
     ctx.stroke()
     ctx.setLineDash([])
 
-    // Price label on scale
+    // Price label on scale (bigger)
     const crossPrice = c.yToPrice(mousePos.y)
     ctx.fillStyle = COL.crosshairLabel
-    ctx.fillRect(c.priceScaleX + 1, mousePos.y - 9, PRICE_SCALE_W - 2, 18)
+    ctx.fillRect(c.priceScaleX + 1, mousePos.y - 11, PRICE_SCALE_W - 2, 22)
     ctx.fillStyle = COL.textBright
-    ctx.font = '10px "SF Mono", monospace'
+    ctx.font = '12px "SF Mono", monospace'
     ctx.textAlign = 'center'
     ctx.fillText(fmtPriceLabel(crossPrice), c.priceScaleX + PRICE_SCALE_W / 2, mousePos.y + 4)
 
-    // Time label on axis
+    // Time label on axis (bigger)
     const hoverIdx = Math.round(c.xToIndex(mousePos.x))
     if (hoverIdx >= 0 && hoverIdx < totalCandles) {
       const hoverCandle = allCandles[hoverIdx]
       const timeStr = new Date(hoverCandle.openTime).toLocaleTimeString('en-US', { hour12: false })
-      const labelW = 60
+      const labelW = 70
       ctx.fillStyle = COL.crosshairLabel
-      ctx.fillRect(mousePos.x - labelW / 2, c.chartH + 1, labelW, 16)
+      ctx.fillRect(mousePos.x - labelW / 2, c.chartH + 1, labelW, 18)
       ctx.fillStyle = COL.textBright
-      ctx.font = '9px "SF Mono", monospace'
+      ctx.font = '11px "SF Mono", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(timeStr, mousePos.x, c.chartH + 12)
+      ctx.fillText(timeStr, mousePos.x, c.chartH + 14)
     }
   }
 
@@ -357,8 +375,14 @@ export function renderChart(
     if (lastX > LEFT_MARGIN && lastX < c.priceScaleX) {
       ctx.fillStyle = COL.liveDot
       ctx.beginPath()
-      ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 3, 0, Math.PI * 2)
+      ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 4, 0, Math.PI * 2)
       ctx.fill()
+      // Glow
+      ctx.globalAlpha = 0.3
+      ctx.beginPath()
+      ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
     }
   }
 
@@ -398,7 +422,7 @@ function drawGrid(
   const hi = Math.max(topPrice, botPrice)
   const startPrice = Math.ceil(lo / priceStep) * priceStep
 
-  ctx.font = '9px "SF Mono", monospace'
+  ctx.font = '11px "SF Mono", monospace'
   ctx.textAlign = 'right'
 
   for (let p = startPrice; p <= hi; p += priceStep) {
@@ -412,14 +436,17 @@ function drawGrid(
     ctx.lineTo(c.priceScaleX, y)
     ctx.stroke()
     ctx.fillStyle = isMajor ? COL.gridTextBright : COL.gridText
-    ctx.fillText(fmtPriceLabel(p), c.priceScaleX - 4, y + 3)
+    ctx.fillText(fmtPriceLabel(p), c.priceScaleX - 4, y + 4)
   }
 
-  // Vertical time grid (every N candles)
+  // Vertical time grid
   const timeStep = Math.max(1, Math.round(view.candlesVisible / 8))
   const allLen = Math.ceil(c.xToIndex(c.priceScaleX))
   const firstIdx = Math.max(0, Math.floor(c.xToIndex(LEFT_MARGIN)))
   const startTick = Math.ceil(firstIdx / timeStep) * timeStep
+
+  ctx.font = '10px "SF Mono", monospace'
+  ctx.textAlign = 'center'
 
   for (let idx = startTick; idx <= allLen; idx += timeStep) {
     const x = c.indexToX(idx)
@@ -430,6 +457,13 @@ function drawGrid(
     ctx.moveTo(x, 0)
     ctx.lineTo(x, c.chartH)
     ctx.stroke()
+
+    // Time label at bottom
+    if (idx >= 0 && idx < allLen) {
+      ctx.fillStyle = COL.gridText
+      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
+      ctx.fillText(timeStr, x, c.chartH + TIME_AXIS_H - 4)
+    }
   }
 }
 
@@ -464,34 +498,12 @@ export function handleWheel(
   const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
   const factor = e.deltaY > 0 ? 1.08 : 1 / 1.08
 
-  // Determine focal point (candle index under mouse, or anchor)
   const c = makeCoords(width, height, view)
   const focalIdx = mousePos ? c.xToIndex(mousePos.x) : view.anchorIndex
 
-  // Check if mouse is over price scale → vertical zoom
   const overPriceScale = mousePos && mousePos.x > width - PRICE_SCALE_W
 
   if (overPriceScale || e.shiftKey) {
-    // Vertical price zoom
-    newView.pricePerPixel *= factor
-    // Keep price under mouse stable
-    if (mousePos && mousePos.y > 0 && mousePos.y < height - TIME_AXIS_H) {
-      const priceAtMouse = c.yToPrice(mousePos.y)
-      const newChartH = height - TIME_AXIS_H
-      const newPricePerPixel = newView.pricePerPixel
-      // After zoom, what price would be at mouse Y?
-      // y = chartH/2 - (price - priceCenter) / pricePerPixel
-      // price = priceCenter - (y - chartH/2) * pricePerPixel
-      // We want priceAtMouse to stay at mousePos.y
-      // priceAtMouse = newPriceCenter - (mousePos.y - newChartH/2) * newPricePerPixel
-      newView.priceCenter = priceAtMouse + (mousePos.y - newChartH / 2) * newPricePerPixel
-    }
-    newView.followLive = false
-    return newView
-  }
-
-  if (e.ctrlKey || e.metaKey) {
-    // Vertical zoom with ctrl
     newView.pricePerPixel *= factor
     if (mousePos && mousePos.y > 0 && mousePos.y < height - TIME_AXIS_H) {
       const priceAtMouse = c.yToPrice(mousePos.y)
@@ -502,14 +514,20 @@ export function handleWheel(
     return newView
   }
 
-  // Horizontal zoom — preserve focal point
+  if (e.ctrlKey || e.metaKey) {
+    newView.pricePerPixel *= factor
+    if (mousePos && mousePos.y > 0 && mousePos.y < height - TIME_AXIS_H) {
+      const priceAtMouse = c.yToPrice(mousePos.y)
+      const newChartH = height - TIME_AXIS_H
+      newView.priceCenter = priceAtMouse + (mousePos.y - newChartH / 2) * newView.pricePerPixel
+    }
+    newView.followLive = false
+    return newView
+  }
+
   const oldVisible = view.candlesVisible
   newView.candlesVisible = Math.max(MIN_CANDLES, Math.min(MAX_CANDLES, Math.round(oldVisible * factor)))
 
-  // Adjust anchor so focal point stays at the same screen position
-  // focalScreenX = anchorScreenX + (focalIdx - anchorIndex) * oldCandleW
-  // After zoom: focalScreenX = newAnchorScreenX + (focalIdx - newAnchorIndex) * newCandleW
-  // We want the same focalScreenX, so solve for newAnchorIndex
   const oldCandleW = Math.max(2, chartW / oldVisible)
   const newCandleW = Math.max(2, chartW / newView.candlesVisible)
   const anchorScreenX = view.followLive ? chartW * 0.85 : chartW * 0.5
@@ -518,7 +536,6 @@ export function handleWheel(
   if (view.followLive) {
     const newAnchorScreenX = chartW * 0.85
     newView.anchorIndex = focalIdx - (focalScreenX - newAnchorScreenX) / newCandleW
-    // Clamp so we don't go past the last candle
     const totalCandles = Math.ceil(c.xToIndex(c.priceScaleX)) + 10
     newView.anchorIndex = Math.min(newView.anchorIndex, totalCandles)
   } else {
@@ -561,9 +578,7 @@ export function handleDragMove(
   const dy = e.clientY - (view._dragStartY ?? e.clientY)
 
   const newView = { ...view }
-  // Pan: moving mouse right → see older candles (lower index)
   newView.anchorIndex = (view._dragAnchorIdx ?? view.anchorIndex) - dx / candleW
-  // Price pan: moving mouse down → lower price center
   newView.priceCenter = (view._dragAnchorPrice ?? view.priceCenter) + dy * view.pricePerPixel
   newView.followLive = false
 
@@ -588,7 +603,6 @@ export function resetView(view: ViewState): ViewState {
 
 export function fitAllData(view: ViewState, totalCandles: number, width: number, height: number): ViewState {
   if (totalCandles === 0) return view
-  const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
   return {
     ...view,
     anchorIndex: totalCandles - 1,
