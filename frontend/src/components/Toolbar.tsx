@@ -1,6 +1,7 @@
 import React from 'react';
 import { useMarketStore } from '../stores/marketStore';
 import { Timeframe } from '../types';
+import { DataSource, ConnectionStatus } from '../types/connector';
 
 const TIMEFRAMES: { label: string; value: Timeframe }[] = [
   { label: '1s', value: '1s' },
@@ -12,24 +13,76 @@ const TIMEFRAMES: { label: string; value: Timeframe }[] = [
   { label: '15m', value: '15m' },
 ];
 
+const DATA_SOURCES: { label: string; value: DataSource }[] = [
+  { label: '🎮 Demo', value: 'demo' },
+  { label: '⚡ Binance', value: 'binance' },
+  { label: '🔷 Hyperliquid', value: 'hyperliquid' },
+];
+
+const TICK_SIZES = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
+
+const STATUS_COLORS: Record<ConnectionStatus, string> = {
+  connected: '#26a69a',
+  connecting: '#ffab00',
+  reconnecting: '#ffab00',
+  disconnected: '#6a6a7a',
+  error: '#ef5350',
+};
+
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  connected: '● LIVE',
+  connecting: '◌ CONNECTING',
+  reconnecting: '◌ RECONNECTING',
+  disconnected: '○ OFF',
+  error: '✕ ERROR',
+};
+
 const Toolbar: React.FC = () => {
   const {
-    timeframe, setTimeframe, isPaused, setPaused, isConnected, currentPrice,
+    timeframe, setTimeframe, isPaused, setPaused, currentPrice,
+    dataSource, setDataSource, connectionStatus, reconnect,
+    tickSize, setTickSize,
     showBigTrades, setShowBigTrades, showVolumeProfile, setShowVolumeProfile,
     showCVD, setShowCVD, showDelta, setShowDelta,
-    bigTradeFilter, setBigTradeFilter, zoomIn, zoomOut, resetView, panLeft, panRight,
+    bigTradeFilter, setBigTradeFilter, bigTradeThresholds, setBigTradeThresholds,
+    zoomIn, zoomOut, resetView, panLeft, panRight,
   } = useMarketStore();
 
   return (
     <div style={styles.container}>
+      {/* Symbol + Price + Status */}
       <div style={styles.section}>
-        <span style={styles.symbol}>BTC/USDT</span>
-        <span style={styles.price}>{currentPrice.toFixed(1)}</span>
-        <span style={{ ...styles.status, color: isConnected ? '#26a69a' : '#ef5350' }}>
-          {isConnected ? '● LIVE' : '○ DISCONNECTED'}
+        <span style={styles.symbol}>
+          {dataSource === 'binance' ? 'BTC/USDT' : dataSource === 'hyperliquid' ? 'BTC-PERP' : 'BTC/USDT'}
+        </span>
+        <span style={styles.price}>{currentPrice > 0 ? currentPrice.toFixed(1) : '---'}</span>
+        <span style={{ ...styles.status, color: STATUS_COLORS[connectionStatus] }}>
+          {STATUS_LABELS[connectionStatus]}
         </span>
       </div>
 
+      {/* Data Source Selector */}
+      <div style={styles.section}>
+        {DATA_SOURCES.map(ds => (
+          <button
+            key={ds.value}
+            onClick={() => setDataSource(ds.value)}
+            style={{
+              ...styles.tfButton,
+              background: dataSource === ds.value ? '#7c4dff' : 'transparent',
+              color: dataSource === ds.value ? '#fff' : '#8a8a9a',
+              borderColor: dataSource === ds.value ? '#7c4dff' : '#2a2a3a',
+            }}
+          >
+            {ds.label}
+          </button>
+        ))}
+        {connectionStatus === 'error' && (
+          <button onClick={reconnect} style={{ ...styles.toolButton, color: '#ef5350' }}>↻</button>
+        )}
+      </div>
+
+      {/* Timeframe Selector */}
       <div style={styles.section}>
         {TIMEFRAMES.map(tf => (
           <button
@@ -46,6 +99,7 @@ const Toolbar: React.FC = () => {
         ))}
       </div>
 
+      {/* Zoom/Pan Controls */}
       <div style={styles.section}>
         <button onClick={zoomIn} style={styles.toolButton} title="Zoom In">🔍+</button>
         <button onClick={zoomOut} style={styles.toolButton} title="Zoom Out">🔍−</button>
@@ -57,6 +111,36 @@ const Toolbar: React.FC = () => {
         </button>
       </div>
 
+      {/* Tick Size */}
+      <div style={styles.section}>
+        <span style={styles.label}>Tick</span>
+        <select value={tickSize} onChange={(e) => setTickSize(Number(e.target.value))} style={styles.select}>
+          {TICK_SIZES.map(ts => (
+            <option key={ts} value={ts}>${ts}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Thresholds */}
+      <div style={styles.section}>
+        <span style={styles.label}>Big≥</span>
+        <select
+          value={bigTradeThresholds.medium}
+          onChange={(e) => {
+            const med = Number(e.target.value);
+            setBigTradeThresholds({ medium: med, large: med * 5, extreme: med * 10 });
+          }}
+          style={styles.select}
+        >
+          <option value={50000}>$50K</option>
+          <option value={100000}>$100K</option>
+          <option value={250000}>$250K</option>
+          <option value={500000}>$500K</option>
+          <option value={1000000}>$1M</option>
+        </select>
+      </div>
+
+      {/* Toggles */}
       <div style={styles.section}>
         <label style={styles.toggle}>
           <input type="checkbox" checked={showBigTrades} onChange={(e) => setShowBigTrades(e.target.checked)} />
@@ -68,17 +152,17 @@ const Toolbar: React.FC = () => {
         </label>
         <label style={styles.toggle}>
           <input type="checkbox" checked={showDelta} onChange={(e) => setShowDelta(e.target.checked)} />
-          <span>Delta</span>
+          <span>Δ</span>
         </label>
         <label style={styles.toggle}>
           <input type="checkbox" checked={showCVD} onChange={(e) => setShowCVD(e.target.checked)} />
           <span>CVD</span>
         </label>
         <select value={bigTradeFilter} onChange={(e) => setBigTradeFilter(e.target.value as any)} style={styles.select}>
-          <option value="all">All Trades</option>
-          <option value="medium">Medium+</option>
+          <option value="all">All</option>
+          <option value="medium">Med+</option>
           <option value="large">Large+</option>
-          <option value="extreme">Extreme</option>
+          <option value="extreme">XL</option>
         </select>
       </div>
     </div>
@@ -87,28 +171,29 @@ const Toolbar: React.FC = () => {
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    display: 'flex', alignItems: 'center', gap: '16px',
+    display: 'flex', alignItems: 'center', gap: '12px',
     padding: '6px 12px', background: '#0d0d14', borderBottom: '1px solid #1a1a25',
-    height: '40px', flexShrink: 0,
+    height: '40px', flexShrink: 0, overflowX: 'auto',
   },
-  section: { display: 'flex', alignItems: 'center', gap: '6px' },
-  symbol: { fontWeight: 700, fontSize: '14px', color: '#ffffff', marginRight: '8px' },
-  price: { fontWeight: 600, fontSize: '14px', color: '#2196f3', fontVariantNumeric: 'tabular-nums' },
-  status: { fontSize: '10px', marginLeft: '8px' },
+  section: { display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 },
+  symbol: { fontWeight: 700, fontSize: '13px', color: '#ffffff', marginRight: '6px' },
+  price: { fontWeight: 600, fontSize: '13px', color: '#2196f3', fontVariantNumeric: 'tabular-nums', minWidth: '60px' },
+  status: { fontSize: '9px', marginLeft: '4px', fontFamily: 'monospace' },
+  label: { fontSize: '9px', color: '#6a6a7a', fontFamily: 'monospace' },
   tfButton: {
-    padding: '3px 8px', border: '1px solid #2a2a3a', borderRadius: '3px',
-    fontSize: '11px', cursor: 'pointer', fontFamily: 'monospace', fontWeight: 600,
+    padding: '2px 6px', border: '1px solid #2a2a3a', borderRadius: '3px',
+    fontSize: '10px', cursor: 'pointer', fontFamily: 'monospace', fontWeight: 600,
   },
   toolButton: {
-    padding: '3px 8px', border: '1px solid #2a2a3a', borderRadius: '3px',
-    fontSize: '12px', cursor: 'pointer', background: 'transparent', color: '#e0e0e0',
+    padding: '2px 6px', border: '1px solid #2a2a3a', borderRadius: '3px',
+    fontSize: '11px', cursor: 'pointer', background: 'transparent', color: '#e0e0e0',
   },
   toggle: {
-    display: 'flex', alignItems: 'center', gap: '3px', fontSize: '10px', color: '#8a8a9a', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: '2px', fontSize: '9px', color: '#8a8a9a', cursor: 'pointer',
   },
   select: {
     background: '#1a1a25', color: '#e0e0e0', border: '1px solid #2a2a3a',
-    borderRadius: '3px', padding: '2px 4px', fontSize: '10px',
+    borderRadius: '3px', padding: '1px 3px', fontSize: '9px',
   },
 };
 

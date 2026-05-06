@@ -5,16 +5,21 @@ import ChartCanvas from './components/ChartCanvas';
 import SidePanel from './components/SidePanel';
 
 const App: React.FC = () => {
-  const { init, tick, isPaused } = useMarketStore();
+  const { init, tick, isPaused, dataSource } = useMarketStore();
   const tickRef = useRef<ReturnType<typeof setInterval>>();
 
   useEffect(() => {
     init();
-    tickRef.current = setInterval(() => {
-      tick();
-    }, 200);
+  }, [init]);
+
+  // Demo mode tick loop
+  useEffect(() => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    if (dataSource === 'demo' && !isPaused) {
+      tickRef.current = setInterval(() => tick(), 200);
+    }
     return () => { if (tickRef.current) clearInterval(tickRef.current); };
-  }, [init, tick]);
+  }, [dataSource, isPaused, tick]);
 
   return (
     <div style={styles.app}>
@@ -24,8 +29,13 @@ const App: React.FC = () => {
         <SidePanel />
       </div>
       <div style={styles.footer}>
-        <span style={styles.footerText}>ORDERFLOW COCKPIT v0.1 — Crypto-Native</span>
-        <span style={styles.footerText}>Data: Simulated BTC/USDT • {isPaused ? 'PAUSED' : 'LIVE'}</span>
+        <span style={styles.footerText}>ORDERFLOW COCKPIT v0.2 — Real-Time Data</span>
+        <span style={styles.footerText}>
+          {dataSource === 'demo'
+            ? 'Simulated BTC/USDT • DEMO'
+            : `${dataSource === 'binance' ? 'Binance Futures' : 'Hyperliquid'} • BTC • LIVE`}
+          {' • '}{isPaused ? 'PAUSED' : 'STREAMING'}
+        </span>
         <span style={styles.footerText}>Scroll: zoom • Drag: pan • Ctrl+scroll: price scale</span>
       </div>
     </div>
