@@ -5,13 +5,31 @@ const SidePanel: React.FC = () => {
   const {
     sessionStats, bigTrades, currentPrice, cvdHistory,
     dataSource, exchangeName, connectionStatus, tradesPerSecond, lastTradeTimestamp,
-    tickSize,
+    tickSize, orderBook, showHeatmap,
   } = useMarketStore();
   const lastCvd = cvdHistory.length > 0 ? cvdHistory[cvdHistory.length - 1].value : 0;
   const recentBigTrades = bigTrades.slice(-8).reverse();
 
   const statusColor = connectionStatus === 'connected' ? '#26a69a' :
     connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? '#ffab00' : '#6a6a7a';
+
+  const hasDepth = dataSource === 'binance' && orderBook.bestBid > 0;
+
+  // Build top 10 bid/ask levels from order book
+  const topBids = hasDepth
+    ? Array.from(orderBook.bids.entries())
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, 10)
+    : [];
+  const topAsks = hasDepth
+    ? Array.from(orderBook.asks.entries())
+        .sort((a, b) => a[0] - b[0])
+        .slice(0, 10)
+    : [];
+
+  const imbalance = hasDepth && orderBook.totalAskSize > 0
+    ? orderBook.totalBidSize / orderBook.totalAskSize
+    : 0;
 
   return (
     <div style={styles.container}>
@@ -27,6 +45,60 @@ const SidePanel: React.FC = () => {
           <Row label="Last Trade" value={new Date(lastTradeTimestamp).toLocaleTimeString()} />
         )}
       </div>
+
+      {/* DOM-lite: Order Book */}
+      {hasDepth && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>ORDER BOOK</div>
+          <Row label="Best Bid" value={orderBook.bestBid.toFixed(1)} color="#26a69a" />
+          <Row label="Best Ask" value={orderBook.bestAsk.toFixed(1)} color="#ef5350" />
+          <Row label="Spread" value={orderBook.spread.toFixed(1)} />
+          <Row label="Bid Liq" value={orderBook.totalBidSize.toFixed(4)} color="#26a69a" />
+          <Row label="Ask Liq" value={orderBook.totalAskSize.toFixed(4)} color="#ef5350" />
+          <Row
+            label="Imbalance"
+            value={`${imbalance.toFixed(2)}x`}
+            color={imbalance > 1.5 ? '#26a69a' : imbalance < 0.67 ? '#ef5350' : '#8a8a9a'}
+          />
+
+          {/* Ask levels (reversed so best ask is at bottom) */}
+          <div style={styles.bookSection}>
+            {topAsks.reverse().map(([price, size]) => (
+              <div key={`ask-${price}`} style={styles.bookRow}>
+                <span style={styles.bookPriceAsk}>{price.toFixed(1)}</span>
+                <div style={styles.bookBarContainer}>
+                  <div style={{
+                    ...styles.bookBarAsk,
+                    width: `${Math.min(100, (size / (orderBook.totalAskSize / 10)) * 100)}%`,
+                  }} />
+                </div>
+                <span style={styles.bookSize}>{size.toFixed(4)}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Spread indicator */}
+          <div style={styles.spreadRow}>
+            <span style={styles.spreadText}>─── {orderBook.spread.toFixed(1)} ───</span>
+          </div>
+
+          {/* Bid levels */}
+          <div style={styles.bookSection}>
+            {topBids.map(([price, size]) => (
+              <div key={`bid-${price}`} style={styles.bookRow}>
+                <span style={styles.bookPriceBid}>{price.toFixed(1)}</span>
+                <div style={styles.bookBarContainer}>
+                  <div style={{
+                    ...styles.bookBarBid,
+                    width: `${Math.min(100, (size / (orderBook.totalBidSize / 10)) * 100)}%`,
+                  }} />
+                </div>
+                <span style={styles.bookSize}>{size.toFixed(4)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Session Stats */}
       <div style={styles.section}>
@@ -97,6 +169,16 @@ const styles: Record<string, React.CSSProperties> = {
   tradePrice: { color: '#8a8a9a', flex: 1, minWidth: '50px' },
   tradeNotional: { color: '#6a6a7a', fontSize: '8px', minWidth: '32px' },
   badge: { padding: '1px 3px', borderRadius: '2px', fontSize: '7px', fontWeight: 700 },
+  bookSection: { display: 'flex', flexDirection: 'column', gap: '1px', marginTop: '2px' },
+  bookRow: { display: 'flex', alignItems: 'center', gap: '4px', fontSize: '8px', fontFamily: 'monospace' },
+  bookPriceBid: { color: '#26a69a', width: '50px', textAlign: 'right' },
+  bookPriceAsk: { color: '#ef5350', width: '50px', textAlign: 'right' },
+  bookBarContainer: { flex: 1, height: '6px', background: '#1a1a25', borderRadius: '1px', overflow: 'hidden' },
+  bookBarBid: { height: '100%', background: 'rgba(38, 166, 154, 0.4)', borderRadius: '1px' },
+  bookBarAsk: { height: '100%', background: 'rgba(239, 83, 80, 0.4)', borderRadius: '1px' },
+  bookSize: { color: '#8a8a9a', width: '40px', textAlign: 'right' },
+  spreadRow: { display: 'flex', justifyContent: 'center', padding: '2px 0' },
+  spreadText: { fontSize: '8px', color: '#4a4a5a', fontFamily: 'monospace' },
 };
 
 const rowStyles: Record<string, React.CSSProperties> = {

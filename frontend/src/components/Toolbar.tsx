@@ -40,13 +40,17 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
 const Toolbar: React.FC = () => {
   const {
     timeframe, setTimeframe, isPaused, setPaused, currentPrice,
-    dataSource, setDataSource, connectionStatus, reconnect,
+    dataSource, setDataSource, connectionStatus, depthConnectionStatus, reconnect,
     tickSize, setTickSize,
     showBigTrades, setShowBigTrades, showVolumeProfile, setShowVolumeProfile,
     showCVD, setShowCVD, showDelta, setShowDelta,
+    showHeatmap, setShowHeatmap, heatmapDepthLevels, setHeatmapDepthLevels,
+    heatmapIntensity, setHeatmapIntensity, heatmapTickSize, setHeatmapTickSize,
     bigTradeFilter, setBigTradeFilter, bigTradeThresholds, setBigTradeThresholds,
     zoomIn, zoomOut, resetView, panLeft, panRight,
   } = useMarketStore();
+
+  const hasDepth = dataSource === 'binance';
 
   return (
     <div style={styles.container}>
@@ -59,6 +63,11 @@ const Toolbar: React.FC = () => {
         <span style={{ ...styles.status, color: STATUS_COLORS[connectionStatus] }}>
           {STATUS_LABELS[connectionStatus]}
         </span>
+        {hasDepth && (
+          <span style={{ ...styles.status, color: STATUS_COLORS[depthConnectionStatus], marginLeft: '4px' }}>
+            BOOK:{depthConnectionStatus === 'connected' ? 'ON' : 'OFF'}
+          </span>
+        )}
       </div>
 
       {/* Data Source Selector */}
@@ -140,6 +149,39 @@ const Toolbar: React.FC = () => {
         </select>
       </div>
 
+      {/* Heatmap Controls */}
+      {hasDepth && (
+        <div style={styles.section}>
+          <label style={styles.toggle}>
+            <input type="checkbox" checked={showHeatmap} onChange={(e) => setShowHeatmap(e.target.checked)} />
+            <span>🔥Map</span>
+          </label>
+          <select value={heatmapDepthLevels} onChange={(e) => setHeatmapDepthLevels(Number(e.target.value))} style={styles.select}>
+            <option value={10}>10L</option>
+            <option value={25}>25L</option>
+            <option value={50}>50L</option>
+            <option value={100}>100L</option>
+          </select>
+          <select value={heatmapTickSize} onChange={(e) => setHeatmapTickSize(Number(e.target.value))} style={styles.select}>
+            <option value={1}>$1</option>
+            <option value={5}>$5</option>
+            <option value={10}>$10</option>
+            <option value={25}>$25</option>
+            <option value={50}>$50</option>
+          </select>
+          <input
+            type="range"
+            min={0.1}
+            max={1}
+            step={0.1}
+            value={heatmapIntensity}
+            onChange={(e) => setHeatmapIntensity(Number(e.target.value))}
+            style={styles.slider}
+            title={`Intensity: ${heatmapIntensity.toFixed(1)}`}
+          />
+        </div>
+      )}
+
       {/* Toggles */}
       <div style={styles.section}>
         <label style={styles.toggle}>
@@ -194,6 +236,9 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     background: '#1a1a25', color: '#e0e0e0', border: '1px solid #2a2a3a',
     borderRadius: '3px', padding: '1px 3px', fontSize: '9px',
+  },
+  slider: {
+    width: '50px', height: '4px', accentColor: '#7c4dff',
   },
 };
 

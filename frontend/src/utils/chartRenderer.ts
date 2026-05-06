@@ -1,4 +1,5 @@
 import { FootprintCandle, BigTrade, VolumeProfile, ChartViewport } from '../types';
+import { HeatmapCell } from '../types/connector';
 
 const COLORS = {
   bg: '#0a0a0f',
@@ -38,11 +39,15 @@ export function renderChart(
   candles: FootprintCandle[],
   bigTrades: BigTrade[],
   volumeProfile: VolumeProfile | null,
+  heatmapData: HeatmapCell[],
+  heatmapMaxSize: number,
   viewport: ChartViewport,
   currentPrice: number,
   options: {
     showBigTrades: boolean;
     showVolumeProfile: boolean;
+    showHeatmap: boolean;
+    heatmapIntensity: number;
     bigTradeFilter: string;
     panelHeights: { delta: number; cvd: number };
   }
@@ -62,6 +67,9 @@ export function renderChart(
   ctx.fillRect(0, 0, width, height);
 
   renderGrid(ctx, width, mainHeight, priceLow, priceHigh, startTime, endTime, priceToY, timeToX);
+  if (options.showHeatmap && heatmapData.length > 0) {
+    renderHeatmap(ctx, width, mainHeight, heatmapData, heatmapMaxSize, viewport, priceToY, options.heatmapIntensity);
+  }
   renderVolumeProfilePanel(ctx, width, mainHeight, volumeProfile, priceToY, viewport, options.showVolumeProfile);
   renderCandles(ctx, candles, viewport, priceToY, timeToX, mainHeight, width);
   renderBigTradeBubbles(ctx, bigTrades, viewport, priceToY, timeToX, mainHeight, options);
@@ -121,6 +129,70 @@ function renderGrid(
     ctx.stroke();
     const d = new Date(t);
     ctx.fillText(`${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`, x, height + 12);
+  }
+}
+
+function renderHeatmap(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cells: HeatmapCell[],
+  maxSize: number,
+  viewport: ChartViewport,
+  priceToY: (p: number) => number,
+  intensity: number
+) {
+  const { priceLow, priceHigh } = viewport;
+  const priceRange = priceHigh - priceLow;
+
+  // Calculate cell height based on price range and tick size
+  const sampleCell = cells[0];
+  if (!sampleCell) return;
+
+  // Estimate tick size from cell spacing
+  const sortedPrices = cells.map(c => c.price).sort((a, b) => a - b);
+  let tickSize = 10;
+  for (let i = 1; i < sortedPrices.length; i++) {
+    const diff = sortedPrices[i] - sortedPrices[i - 1];
+    if (diff > 0) { tickSize = diff; break; }
+  }
+
+  const cellHeightPx = Math.max(1, (tickSize / priceRange) * height);
+  const barMaxWidth = width * 0.4;  // Heatmap takes max 40% of chart width
+
+  for (const cell of cells) {
+    if (cell.price < priceLow || cell.price > priceHigh) continue;
+
+    const y = priceToY(cell.price);
+    const barWidth = cell.intensity * barMaxWidth * intensity;
+
+    // Color: green for bids, red for asks
+    const alpha = 0.1 + cell.intensity * 0.5 * intensity;
+    if (cell.side === 'bid') {
+      ctx.fillStyle = `rgba(38, 166, 154, ${alpha})`;
+    } else {
+      ctx.fillStyle = `rgba(239, 83, 80, ${alpha})`;
+    }
+
+    // Draw from edge: bids from left, asks from right
+    if (cell.side === 'bid') {
+      ctx.fillRect(0, y - cellHeightPx / 2, barWidth, cellHeightPx);
+    } else {
+      ctx.fillRect(width - barWidth, y - cellHeightPx / 2, barWidth, cellHeightPx);
+    }
+
+    // Draw size label for large levels
+    if (cell.intensity > 0.3 && cellHeightPx > 8) {
+      ctx.font = '8px monospace';
+      ctx.fillStyle = cell.side === 'bid' ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)';
+      if (cell.side === 'bid') {
+        ctx.textAlign = 'left';
+        ctx.fillText(cell.size.toFixed(3), 4, y + 3);
+      } else {
+        ctx.textAlign = 'right';
+        ctx.fillText(cell.size.toFixed(3), width - 4, y + 3);
+      }
+    }
   }
 }
 

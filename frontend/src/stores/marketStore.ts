@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { Trade, FootprintCandle, VolumeProfile, BigTrade, SessionStats, Timeframe, ChartViewport } from '../types';
-import { DataSource, ConnectionStatus, NormalizedTrade } from '../types/connector';
+import { DataSource, ConnectionStatus, NormalizedTrade, NormalizedBookUpdate, HeatmapCell } from '../types/connector';
 import { MarketDataGenerator, aggregateIntoFootprints, calculateVolumeProfile, detectBigTrades, calculateSessionStats } from '../utils/dataGenerator';
 import { BinanceFuturesConnector } from '../connectors/binance';
 import { HyperliquidConnector } from '../connectors/hyperliquid';
-import type { MarketDataConnector } from '../types/connector';
+import { BinanceDepthConnector } from '../connectors/binanceDepth';
+import type { MarketDataConnector, DepthConnector } from '../types/connector';
 
 const MAX_TRADES = 50000;
 const MAX_CANDLES = 2000;
@@ -13,6 +14,17 @@ export const TIMEFRAME_MS: Record<Timeframe, number> = {
   '1s': 1000, '5s': 5000, '15s': 15000, '30s': 30000,
   '1m': 60000, '5m': 300000, '15m': 900000,
 };
+
+interface OrderBookState {
+  bids: Map<number, number>;  // price -> size
+  asks: Map<number, number>;  // price -> size
+  bestBid: number;
+  bestAsk: number;
+  spread: number;
+  lastUpdated: number;
+  totalBidSize: number;
+  totalAskSize: number;
+}
 
 interface MarketState {
   // Data
@@ -23,6 +35,11 @@ interface MarketState {
   sessionStats: SessionStats;
   cvdHistory: { timestamp: number; value: number }[];
   currentPrice: number;
+
+  // Order book
+  orderBook: OrderBookState;
+  heatmapData: HeatmapCell[];
+  heatmapMaxSize: number;
 
   // Settings
   timeframe: Timeframe;
@@ -35,9 +52,16 @@ interface MarketState {
   showDelta: boolean;
   bigTradeFilter: 'all' | 'medium' | 'large' | 'extreme';
 
+  // Heatmap settings
+  showHeatmap: boolean;
+  heatmapDepthLevels: number;
+  heatmapIntensity: number;  // 0-1
+  heatmapTickSize: number;
+
   // Connection state
   isConnected: boolean;
   connectionStatus: ConnectionStatus;
+  depthConnectionStatus: ConnectionStatus;
   exchangeName: string;
   lastTradeTimestamp: number;
   tradesPerSecond: number;
@@ -45,6 +69,7 @@ interface MarketState {
 
   // Internal
   connector: MarketDataConnector | null;
+  depthConnector: DepthConnector | null;
   generator: MarketDataGenerator | null;
   viewport: ChartViewport;
   tradeTimestamps: number[];
@@ -68,6 +93,10 @@ interface MarketState {
   setShowDelta: (v: boolean) => void;
   setBigTradeFilter: (f: 'all' | 'medium' | 'large' | 'extreme') => void;
   setBigTradeThresholds: (t: { medium: number; large: number; extreme: number }) => void;
+  setShowHeatmap: (v: boolean) => void;
+  setHeatmapDepthLevels: (v: number) => void;
+  setHeatmapIntensity: (v: number) => void;
+  setHeatmapTickSize: (v: number) => void;
   reconnect: () => void;
 }
 
@@ -83,6 +112,17 @@ function normalizedToTrade(n: NormalizedTrade): Trade {
   };
 }
 
+const emptyOrderBook: OrderBookState = {
+  bids: new Map(),
+  asks: new Map(),
+  bestBid: 0,
+  bestAsk: 0,
+  spread: 0,
+  lastUpdated: 0,
+  totalBidSize: 0,
+  totalAskSize: 0,
+};
+
 export const useMarketStore = create<MarketState>((set, get) => ({
   trades: [],
   candles: [],
@@ -91,6 +131,9 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   sessionStats: { totalVolume: 0, totalBuyVolume: 0, totalSellVolume: 0, netDelta: 0, highPrice: 0, lowPrice: 0, tradeCount: 0, vwap: 0, bigTradeCount: 0 },
   cvdHistory: [],
   currentPrice: 0,
+  orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+  heatmapData: [],
+  heatmapMaxSize: 1,
   timeframe: '5s',
   dataSource: 'demo',
   tickSize: 10,
@@ -100,24 +143,27 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   showCVD: true,
   showDelta: true,
   bigTradeFilter: 'all',
+  showHeatmap: true,
+  heatmapDepthLevels: 50,
+  heatmapIntensity: 0.7,
+  heatmapTickSize: 10,
   isConnected: false,
   connectionStatus: 'disconnected',
+  depthConnectionStatus: 'disconnected',
   exchangeName: 'Demo',
   lastTradeTimestamp: 0,
   tradesPerSecond: 0,
   isPaused: false,
   connector: null,
+  depthConnector: null,
   generator: null,
   viewport: { startTime: 0, endTime: 0, priceLow: 0, priceHigh: 0, candleWidthPx: 12, pricePerPixel: 2 },
   tradeTimestamps: [],
 
   setDataSource: (source: DataSource) => {
     const state = get();
-    // Disconnect existing
-    if (state.connector) {
-      state.connector.disconnect();
-    }
-    // Clear data
+    if (state.connector) state.connector.disconnect();
+    if (state.depthConnector) state.depthConnector.disconnect();
     set({
       trades: [],
       candles: [],
@@ -126,16 +172,19 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       sessionStats: { totalVolume: 0, totalBuyVolume: 0, totalSellVolume: 0, netDelta: 0, highPrice: 0, lowPrice: 0, tradeCount: 0, vwap: 0, bigTradeCount: 0 },
       cvdHistory: [],
       currentPrice: 0,
+      orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+      heatmapData: [],
       dataSource: source,
       connector: null,
+      depthConnector: null,
       generator: null,
       isConnected: false,
       connectionStatus: 'disconnected',
+      depthConnectionStatus: 'disconnected',
       exchangeName: source === 'demo' ? 'Demo' : source === 'binance' ? 'Binance Futures' : 'Hyperliquid',
       lastTradeTimestamp: 0,
       tradesPerSecond: 0,
     });
-    // Re-init with new source
     get().init();
   },
 
@@ -146,7 +195,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     if (dataSource === 'demo') {
       initDemo(set, get);
     } else if (dataSource === 'binance') {
-      initConnector(set, get, new BinanceFuturesConnector());
+      initBinanceWithDepth(set, get);
     } else if (dataSource === 'hyperliquid') {
       initConnector(set, get, new HyperliquidConnector());
     }
@@ -155,7 +204,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   tick: () => {
     const state = get();
     if (state.dataSource !== 'demo' || !state.generator || state.isPaused) return;
-
     const batchSize = 3 + Math.floor(Math.random() * 8);
     const newTrades = state.generator.generateBatch(batchSize);
     processNewTrades(newTrades, set, get);
@@ -169,9 +217,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   },
 
   setTickSize: (ts) => set({ tickSize: ts }),
-
   setPaused: (p) => set({ isPaused: p }),
-
   setViewport: (v) => set((s) => ({ viewport: { ...s.viewport, ...v } })),
 
   resetView: () => {
@@ -226,13 +272,21 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   setShowDelta: (v) => set({ showDelta: v }),
   setBigTradeFilter: (f) => set({ bigTradeFilter: f }),
   setBigTradeThresholds: (t) => set({ bigTradeThresholds: t }),
+  setShowHeatmap: (v) => set({ showHeatmap: v }),
+  setHeatmapDepthLevels: (v) => set({ heatmapDepthLevels: v }),
+  setHeatmapIntensity: (v) => set({ heatmapIntensity: v }),
+  setHeatmapTickSize: (v) => set({ heatmapTickSize: v }),
 
   reconnect: () => {
     const state = get();
-    if (state.connector) {
-      state.connector.disconnect();
-    }
-    set({ trades: [], candles: [], isConnected: false, connectionStatus: 'disconnected' });
+    if (state.connector) state.connector.disconnect();
+    if (state.depthConnector) state.depthConnector.disconnect();
+    set({
+      trades: [], candles: [], isConnected: false, connectionStatus: 'disconnected',
+      depthConnectionStatus: 'disconnected',
+      orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+      heatmapData: [],
+    });
     get().init();
   },
 }));
@@ -290,29 +344,152 @@ function initDemo(set: any, get: () => MarketState) {
   });
 }
 
-function initConnector(set: any, get: () => MarketState, connector: MarketDataConnector) {
-  set({
-    connector,
-    exchangeName: connector.getName(),
-    connectionStatus: 'connecting',
+function initBinanceWithDepth(set: any, get: () => MarketState) {
+  // Initialize aggTrade connector
+  const tradeConnector = new BinanceFuturesConnector();
+  initConnector(set, get, tradeConnector);
+
+  // Initialize depth connector
+  const depthConnector = new BinanceDepthConnector();
+  set({ depthConnector, depthConnectionStatus: 'connecting' });
+
+  depthConnector.onStatusChange((status: ConnectionStatus) => {
+    set({ depthConnectionStatus: status });
   });
 
+  depthConnector.onBookUpdate((update: NormalizedBookUpdate) => {
+    const state = get();
+    if (state.isPaused) return;
+    processBookUpdate(update, set, get);
+  });
+
+  depthConnector.connect();
+}
+
+function initConnector(set: any, get: () => MarketState, connector: MarketDataConnector) {
+  set({ connector, exchangeName: connector.getName(), connectionStatus: 'connecting' });
+
   connector.onStatusChange((status: ConnectionStatus) => {
-    set({
-      connectionStatus: status,
-      isConnected: status === 'connected',
-    });
+    set({ connectionStatus: status, isConnected: status === 'connected' });
   });
 
   connector.onTrade((normalizedTrade: NormalizedTrade) => {
     const state = get();
     if (state.isPaused) return;
-
     const trade = normalizedToTrade(normalizedTrade);
     processNewTrades([trade], set, get);
   });
 
   connector.connect();
+}
+
+function processBookUpdate(update: NormalizedBookUpdate, set: any, get: () => MarketState) {
+  const state = get();
+  const ob = { ...state.orderBook };
+  ob.bids = new Map(ob.bids);
+  ob.asks = new Map(ob.asks);
+  ob.lastUpdated = update.timestamp;
+
+  // Apply bid updates
+  for (const [price, size] of update.bids) {
+    if (size === 0) ob.bids.delete(price);
+    else ob.bids.set(price, size);
+  }
+
+  // Apply ask updates
+  for (const [price, size] of update.asks) {
+    if (size === 0) ob.asks.delete(price);
+    else ob.asks.set(price, size);
+  }
+
+  // Find best bid/ask
+  let bestBid = 0, bestAsk = Infinity;
+  let totalBidSize = 0, totalAskSize = 0;
+
+  for (const [price, size] of ob.bids) {
+    totalBidSize += size;
+    if (price > bestBid) bestBid = price;
+  }
+  for (const [price, size] of ob.asks) {
+    totalAskSize += size;
+    if (price < bestAsk) bestAsk = price;
+  }
+
+  ob.bestBid = bestBid;
+  ob.bestAsk = bestAsk === Infinity ? 0 : bestAsk;
+  ob.spread = ob.bestAsk > 0 && ob.bestBid > 0 ? ob.bestAsk - ob.bestBid : 0;
+  ob.totalBidSize = totalBidSize;
+  ob.totalAskSize = totalAskSize;
+
+  // Build heatmap data
+  const heatmap = buildHeatmap(ob, state.heatmapDepthLevels, state.heatmapTickSize, state.currentPrice);
+
+  set({ orderBook: ob, heatmapData: heatmap.cells, heatmapMaxSize: heatmap.maxSize });
+}
+
+function buildHeatmap(
+  ob: OrderBookState,
+  maxLevels: number,
+  tickSize: number,
+  currentPrice: number
+): { cells: HeatmapCell[]; maxSize: number } {
+  const cells: HeatmapCell[] = [];
+  let maxSize = 0;
+
+  // Aggregate bids by tick size
+  const bidAgg = new Map<number, number>();
+  for (const [price, size] of ob.bids) {
+    const rounded = Math.floor(price / tickSize) * tickSize;
+    bidAgg.set(rounded, (bidAgg.get(rounded) || 0) + size);
+  }
+
+  // Aggregate asks by tick size
+  const askAgg = new Map<number, number>();
+  for (const [price, size] of ob.asks) {
+    const rounded = Math.ceil(price / tickSize) * tickSize;
+    askAgg.set(rounded, (askAgg.get(rounded) || 0) + size);
+  }
+
+  // Find max size for normalization
+  for (const size of bidAgg.values()) maxSize = Math.max(maxSize, size);
+  for (const size of askAgg.values()) maxSize = Math.max(maxSize, size);
+
+  // Build cells (limited by maxLevels from mid)
+  const mid = currentPrice || ((ob.bestBid + ob.bestAsk) / 2);
+
+  const sortedBids = Array.from(bidAgg.entries())
+    .filter(([p]) => p <= mid)
+    .sort((a, b) => b[0] - a[0])
+    .slice(0, maxLevels);
+
+  const sortedAsks = Array.from(askAgg.entries())
+    .filter(([p]) => p >= mid)
+    .sort((a, b) => a[0] - b[0])
+    .slice(0, maxLevels);
+
+  const now = ob.lastUpdated;
+
+  for (const [price, size] of sortedBids) {
+    cells.push({
+      price,
+      side: 'bid',
+      size,
+      intensity: maxSize > 0 ? size / maxSize : 0,
+      timestamp: now,
+    });
+  }
+
+  for (const [price, size] of sortedAsks) {
+    cells.push({
+      price,
+      side: 'ask',
+      size,
+      intensity: maxSize > 0 ? size / maxSize : 0,
+      timestamp: now,
+    });
+  }
+
+  return { cells, maxSize: maxSize || 1 };
 }
 
 function processNewTrades(newTrades: Trade[], set: any, get: () => MarketState) {
@@ -332,7 +509,6 @@ function processNewTrades(newTrades: Trade[], set: any, get: () => MarketState) 
     cvdHistory.push({ timestamp: c.timestamp, value: cvd });
   }
 
-  // Track trades per second
   const now = Date.now();
   const timestamps = [...state.tradeTimestamps, ...newTrades.map(t => t.timestamp)]
     .filter(t => now - t < 5000);

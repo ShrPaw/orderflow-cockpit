@@ -11,6 +11,7 @@ const ChartCanvas: React.FC = () => {
 
   const {
     candles, bigTrades, volumeProfile, viewport, currentPrice,
+    heatmapData, heatmapMaxSize, showHeatmap, heatmapIntensity,
     showBigTrades, showVolumeProfile, bigTradeFilter, showDelta, showCVD,
     setViewport, zoomIn, zoomOut,
   } = useMarketStore();
@@ -35,10 +36,22 @@ const ChartCanvas: React.FC = () => {
     const cvdPanelHeight = showCVD ? 80 : 0;
 
     renderChart(ctx, rect.width, rect.height, candles, bigTrades,
-      showVolumeProfile ? volumeProfile : null, viewport, currentPrice,
-      { showBigTrades, showVolumeProfile, bigTradeFilter, panelHeights: { delta: deltaPanelHeight, cvd: cvdPanelHeight } }
+      showVolumeProfile ? volumeProfile : null,
+      showHeatmap ? heatmapData : [],
+      heatmapMaxSize,
+      viewport, currentPrice,
+      {
+        showBigTrades,
+        showVolumeProfile,
+        showHeatmap,
+        heatmapIntensity,
+        bigTradeFilter,
+        panelHeights: { delta: deltaPanelHeight, cvd: cvdPanelHeight },
+      }
     );
-  }, [candles, bigTrades, volumeProfile, viewport, currentPrice, showBigTrades, showVolumeProfile, bigTradeFilter, showDelta, showCVD]);
+  }, [candles, bigTrades, volumeProfile, viewport, currentPrice,
+      heatmapData, heatmapMaxSize, showHeatmap, heatmapIntensity,
+      showBigTrades, showVolumeProfile, bigTradeFilter, showDelta, showCVD]);
 
   useEffect(() => {
     const animate = () => {
