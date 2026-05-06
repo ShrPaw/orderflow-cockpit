@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import { INSTRUMENTS } from '../types/market'
+import { fetchFuturesInstruments } from '../connectors/binanceTicker'
 import type { Instrument } from '../types/market'
 
 const CATEGORIES = ['major', 'alt', 'defi', 'meme'] as const
@@ -8,16 +9,37 @@ const CATEGORIES = ['major', 'alt', 'defi', 'meme'] as const
 export default function AssetSelector({ onClose }: { onClose: () => void }) {
   const currentSymbol = useMarketStore(s => s.symbol)
   const setSymbol = useMarketStore(s => s.setSymbol)
+  const instruments = useMarketStore(s => s.instruments)
+  const instrumentsLoading = useMarketStore(s => s.instrumentsLoading)
+  const setInstruments = useMarketStore(s => s.setInstruments)
+  const setInstrumentsLoading = useMarketStore(s => s.setInstrumentsLoading)
+
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState<string>('all')
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch instruments on mount if not already loaded
+  useEffect(() => {
+    if (instruments.length === 0 && !instrumentsLoading) {
+      setInstrumentsLoading(true)
+      fetchFuturesInstruments().then(fetched => {
+        if (fetched.length > 0) {
+          setInstruments(fetched)
+        } else {
+          // Fallback to static list
+          setInstruments(INSTRUMENTS)
+        }
+        setInstrumentsLoading(false)
+      })
+    }
+  }, [instruments.length, instrumentsLoading, setInstruments, setInstrumentsLoading])
 
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
   const filtered = useMemo(() => {
-    let list = INSTRUMENTS
+    let list = instruments.length > 0 ? instruments : INSTRUMENTS
     if (activeCategory !== 'all') {
       list = list.filter(i => i.category === activeCategory)
     }
@@ -28,10 +50,12 @@ export default function AssetSelector({ onClose }: { onClose: () => void }) {
       )
     }
     return list
-  }, [search, activeCategory])
+  }, [search, activeCategory, instruments])
 
   const select = (inst: Instrument) => {
-    setSymbol(inst.symbol)
+    if (inst.symbol !== currentSymbol) {
+      setSymbol(inst.symbol)
+    }
     onClose()
   }
 
@@ -39,7 +63,13 @@ export default function AssetSelector({ onClose }: { onClose: () => void }) {
     <div className="asset-selector-overlay" onClick={onClose}>
       <div className="asset-selector" onClick={e => e.stopPropagation()}>
         <div className="asset-selector-header">
-          <span className="asset-selector-title">Select Instrument</span>
+          <span className="asset-selector-title">
+            Select Instrument
+            {instrumentsLoading && <span className="asset-loading"> Loading…</span>}
+            {!instrumentsLoading && instruments.length > 0 && (
+              <span className="asset-count">{instruments.length} pairs</span>
+            )}
+          </span>
           <button className="asset-close" onClick={onClose}>✕</button>
         </div>
 
@@ -47,7 +77,7 @@ export default function AssetSelector({ onClose }: { onClose: () => void }) {
           <input
             ref={inputRef}
             className="asset-search"
-            placeholder="Search symbol..."
+            placeholder="Search symbol (e.g. BTC, ETH, SOL)…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             onKeyDown={e => {
@@ -83,8 +113,11 @@ export default function AssetSelector({ onClose }: { onClose: () => void }) {
               <span className="asset-cat">{inst.category}</span>
             </button>
           ))}
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !instrumentsLoading && (
             <div className="asset-empty">No matching instruments</div>
+          )}
+          {filtered.length === 0 && instrumentsLoading && (
+            <div className="asset-empty">Loading instruments from Binance…</div>
           )}
         </div>
       </div>

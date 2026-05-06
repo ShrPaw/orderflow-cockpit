@@ -1,47 +1,49 @@
 import type { Candle, VolumeLevel } from '../types/market'
 
-// ─── Modern Color System ───
+// ─── Color System — Midnight Slate ───
 const COL = {
-  bg: '#080c14',
-  grid: '#151b28',
-  gridMajor: '#1c2436',
-  gridText: '#4a5570',
-  gridTextBright: '#6a7a98',
-  candleUp: '#00d4aa',
-  candleDown: '#ff4d6a',
-  candleUpDim: 'rgba(0,212,170,0.35)',
-  candleDownDim: 'rgba(255,77,106,0.35)',
-  wickUp: 'rgba(0,212,170,0.6)',
-  wickDown: 'rgba(255,77,106,0.6)',
-  volumeUp: 'rgba(0,212,170,0.18)',
-  volumeDown: 'rgba(255,77,106,0.18)',
-  bubblePending: '#ffb020',
-  bubbleAccepted: '#00d4aa',
-  bubbleRejected: '#ff4d6a',
-  bubbleAbsorbed: '#38bdf8',
-  bubbleExhausted: '#525c72',
-  crosshair: 'rgba(148,163,184,0.25)',
-  crosshairLabel: '#1a2235',
-  poc: '#ffb020',
-  vwap: '#a78bfa',
-  footprintBuy: 'rgba(0,212,170,0.55)',
-  footprintSell: 'rgba(255,77,106,0.55)',
-  text: '#7a8ba8',
-  textBright: '#d0d8e8',
-  textDim: '#3a4560',
-  surface: '#0e1320',
-  surfaceElevated: '#141b2c',
-  border: '#1a2236',
-  borderLight: '#232d42',
-  accent: '#38bdf8',
-  accentDim: 'rgba(56,189,248,0.15)',
-  amber: '#ffb020',
-  amberDim: 'rgba(255,176,32,0.12)',
-  violet: '#a78bfa',
-  liveDot: '#00d4aa',
-  manualDot: '#ffb020',
-  priceLine: '#38bdf8',
-  priceLineBg: 'rgba(56,189,248,0.12)',
+  bg: '#06090f',
+  grid: '#121924',
+  gridMajor: '#1a2436',
+  gridText: '#4a5e78',
+  gridTextBright: '#6b8098',
+  candleUp: '#2dd4a0',
+  candleDown: '#ef6461',
+  candleUpDim: 'rgba(45,212,160,0.30)',
+  candleDownDim: 'rgba(239,100,97,0.30)',
+  wickUp: 'rgba(45,212,160,0.55)',
+  wickDown: 'rgba(239,100,97,0.55)',
+  volumeUp: 'rgba(45,212,160,0.14)',
+  volumeDown: 'rgba(239,100,97,0.14)',
+  bubblePending: '#e4a73b',
+  bubbleAccepted: '#2dd4a0',
+  bubbleRejected: '#ef6461',
+  bubbleAbsorbed: '#4fc3f7',
+  bubbleExhausted: '#4a5e78',
+  crosshair: 'rgba(148,163,184,0.18)',
+  crosshairLabel: '#141c28',
+  poc: '#e4a73b',
+  vwap: '#9c8fd8',
+  footprintBuy: 'rgba(45,212,160,0.50)',
+  footprintSell: 'rgba(239,100,97,0.50)',
+  text: '#6b7d96',
+  textBright: '#cdd6e4',
+  textDim: '#3d4f68',
+  surface: '#0c1019',
+  surfaceElevated: '#111723',
+  border: '#182030',
+  borderLight: '#1f2b40',
+  accent: '#4fc3f7',
+  accentDim: 'rgba(79,195,247,0.10)',
+  amber: '#e4a73b',
+  amberDim: 'rgba(228,167,59,0.10)',
+  violet: '#9c8fd8',
+  liveDot: '#2dd4a0',
+  manualDot: '#e4a73b',
+  priceLine: '#4fc3f7',
+  priceLineBg: 'rgba(79,195,247,0.10)',
+  axisBg: '#080d16',
+  axisHover: '#0e1520',
 }
 
 const BUBBLE_COLORS: Record<string, string> = {
@@ -59,11 +61,16 @@ export interface ViewState {
   priceCenter: number
   pricePerPixel: number
   followLive: boolean
+  // Drag state
   _dragging?: boolean
+  _dragZone?: 'chart' | 'priceAxis' | 'timeAxis'
   _dragAnchorIdx?: number
   _dragAnchorPrice?: number
+  _dragAnchorCandlesVisible?: number
   _dragStartX?: number
   _dragStartY?: number
+  // Zone hover (for cursor)
+  _hoverZone?: 'chart' | 'priceAxis' | 'timeAxis' | null
 }
 
 const MIN_CANDLES = 5
@@ -71,9 +78,23 @@ const MAX_CANDLES = 800
 const DEFAULT_CANDLES = 120
 const BUBBLE_MIN_R = 3
 const BUBBLE_MAX_R = 22
-const PRICE_SCALE_W = 80
-const TIME_AXIS_H = 26
+const PRICE_SCALE_W = 84
+const TIME_AXIS_H = 28
 const LEFT_MARGIN = 4
+
+// ─── Adaptive font sizing ───
+function getFontSizes(width: number, height: number) {
+  const area = width * height
+  const scale = Math.min(1.4, Math.max(0.85, Math.sqrt(area) / 900))
+  return {
+    axisLabel: Math.round(11 * scale),
+    axisLabelBright: Math.round(12 * scale),
+    crosshairPrice: Math.round(12 * scale),
+    crosshairTime: Math.round(11 * scale),
+    priceLineBadge: Math.round(11 * scale),
+    emptyState: Math.round(14 * scale),
+  }
+}
 
 export function createViewState(): ViewState {
   return {
@@ -83,6 +104,18 @@ export function createViewState(): ViewState {
     pricePerPixel: 0.05,
     followLive: true,
   }
+}
+
+// ─── Hit-zone detection ───
+export function detectZone(
+  x: number, y: number, width: number, height: number
+): 'chart' | 'priceAxis' | 'timeAxis' {
+  const chartH = height - TIME_AXIS_H
+  const priceScaleX = width - PRICE_SCALE_W
+
+  if (x >= priceScaleX) return 'priceAxis'
+  if (y >= chartH) return 'timeAxis'
+  return 'chart'
 }
 
 // ─── Coordinate helpers ───
@@ -144,6 +177,7 @@ export function renderChart(
 
   const allCandles = currentCandle ? [...candles, currentCandle] : candles
   const totalCandles = allCandles.length
+  const fonts = getFontSizes(width, height)
 
   // Background
   ctx.fillStyle = COL.bg
@@ -151,7 +185,7 @@ export function renderChart(
 
   if (totalCandles === 0) {
     ctx.fillStyle = COL.text
-    ctx.font = '14px "SF Mono", "Fira Code", monospace'
+    ctx.font = `${fonts.emptyState}px "SF Mono", "Fira Code", monospace`
     ctx.textAlign = 'center'
     ctx.fillText('Waiting for data…', width / 2, height / 2)
     ctx.restore()
@@ -176,7 +210,7 @@ export function renderChart(
   const c = makeCoords(width, height, view)
 
   // ─── Grid ───
-  drawGrid(ctx, c, view, width, height)
+  drawGrid(ctx, c, view, width, height, fonts)
 
   // ─── Volume profile overlay ───
   if (volumeProfile.length > 0) {
@@ -250,7 +284,7 @@ export function renderChart(
       }
     }
 
-    // Bubbles
+    // Bubbles (unchanged logic)
     if (candle.bubbles.length > 0 && c.bodyW > 3) {
       for (const bubble of candle.bubbles) {
         const by = c.priceToY(bubble.price)
@@ -292,7 +326,6 @@ export function renderChart(
   if (livePrice && livePrice > 0) {
     const priceY = c.priceToY(livePrice)
     if (priceY > 0 && priceY < c.chartH) {
-      // Dashed line across chart
       ctx.strokeStyle = COL.priceLine
       ctx.lineWidth = 0.8
       ctx.setLineDash([4, 3])
@@ -304,11 +337,14 @@ export function renderChart(
 
       // Price badge on scale
       const badgeW = PRICE_SCALE_W - 2
-      const badgeH = 18
+      const badgeH = 20
       ctx.fillStyle = COL.priceLine
-      ctx.fillRect(c.priceScaleX + 1, priceY - badgeH / 2, badgeW, badgeH)
+      const badgeY = priceY - badgeH / 2
+      ctx.beginPath()
+      roundRect(ctx, c.priceScaleX + 1, badgeY, badgeW, badgeH, 3)
+      ctx.fill()
       ctx.fillStyle = '#000'
-      ctx.font = 'bold 11px "SF Mono", monospace'
+      ctx.font = `bold ${fonts.priceLineBadge}px "SF Mono", monospace`
       ctx.textAlign = 'center'
       ctx.fillText(fmtPriceLabel(livePrice), c.priceScaleX + PRICE_SCALE_W / 2, priceY + 4)
     }
@@ -316,7 +352,6 @@ export function renderChart(
 
   // ─── Crosshair ───
   if (mousePos && mousePos.x > LEFT_MARGIN && mousePos.x < c.priceScaleX && mousePos.y < c.chartH) {
-    // Vertical line
     ctx.strokeStyle = COL.crosshair
     ctx.lineWidth = 0.5
     ctx.setLineDash([3, 3])
@@ -328,48 +363,38 @@ export function renderChart(
     ctx.stroke()
     ctx.setLineDash([])
 
-    // Price label on scale (bigger)
+    // Price label on scale
     const crossPrice = c.yToPrice(mousePos.y)
+    const clH = 22
     ctx.fillStyle = COL.crosshairLabel
-    ctx.fillRect(c.priceScaleX + 1, mousePos.y - 11, PRICE_SCALE_W - 2, 22)
+    ctx.fillRect(c.priceScaleX + 1, mousePos.y - clH / 2, PRICE_SCALE_W - 2, clH)
     ctx.fillStyle = COL.textBright
-    ctx.font = '12px "SF Mono", monospace'
+    ctx.font = `${fonts.crosshairPrice}px "SF Mono", monospace`
     ctx.textAlign = 'center'
     ctx.fillText(fmtPriceLabel(crossPrice), c.priceScaleX + PRICE_SCALE_W / 2, mousePos.y + 4)
 
-    // Time label on axis (bigger)
+    // Time label on axis
     const hoverIdx = Math.round(c.xToIndex(mousePos.x))
     if (hoverIdx >= 0 && hoverIdx < totalCandles) {
       const hoverCandle = allCandles[hoverIdx]
       const timeStr = new Date(hoverCandle.openTime).toLocaleTimeString('en-US', { hour12: false })
-      const labelW = 70
+      const labelW = 74
       ctx.fillStyle = COL.crosshairLabel
-      ctx.fillRect(mousePos.x - labelW / 2, c.chartH + 1, labelW, 18)
+      ctx.fillRect(mousePos.x - labelW / 2, c.chartH + 1, labelW, 20)
       ctx.fillStyle = COL.textBright
-      ctx.font = '11px "SF Mono", monospace'
+      ctx.font = `${fonts.crosshairTime}px "SF Mono", monospace`
       ctx.textAlign = 'center'
-      ctx.fillText(timeStr, mousePos.x, c.chartH + 14)
+      ctx.fillText(timeStr, mousePos.x, c.chartH + 15)
     }
   }
 
-  // ─── Price scale ───
-  ctx.fillStyle = COL.surface
-  ctx.fillRect(c.priceScaleX, 0, PRICE_SCALE_W, height)
-  ctx.strokeStyle = COL.border
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(c.priceScaleX, 0)
-  ctx.lineTo(c.priceScaleX, height)
-  ctx.stroke()
+  // ─── Price scale strip ───
+  drawPriceScale(ctx, c, view, width, height, fonts, mousePos)
 
-  // ─── Time axis separator ───
-  ctx.strokeStyle = COL.border
-  ctx.beginPath()
-  ctx.moveTo(0, c.chartH)
-  ctx.lineTo(width, c.chartH)
-  ctx.stroke()
+  // ─── Time axis strip ───
+  drawTimeAxis(ctx, c, view, width, height, fonts, totalCandles, mousePos)
 
-  // ─── Live indicator dot on time axis ───
+  // ─── Live indicator ───
   if (view.followLive && totalCandles > 0) {
     const lastX = c.indexToX(totalCandles - 1)
     if (lastX > LEFT_MARGIN && lastX < c.priceScaleX) {
@@ -377,7 +402,6 @@ export function renderChart(
       ctx.beginPath()
       ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 4, 0, Math.PI * 2)
       ctx.fill()
-      // Glow
       ctx.globalAlpha = 0.3
       ctx.beginPath()
       ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 8, 0, Math.PI * 2)
@@ -388,6 +412,143 @@ export function renderChart(
 
   ctx.restore()
   return { view }
+}
+
+// ─── Price Scale Strip ───
+function drawPriceScale(
+  ctx: CanvasRenderingContext2D,
+  c: ReturnType<typeof makeCoords>,
+  view: ViewState,
+  width: number,
+  height: number,
+  fonts: ReturnType<typeof getFontSizes>,
+  mousePos: { x: number; y: number } | null
+) {
+  const isHovered = mousePos && mousePos.x >= c.priceScaleX
+
+  // Background with subtle hover state
+  ctx.fillStyle = isHovered ? COL.axisHover : COL.axisBg
+  ctx.fillRect(c.priceScaleX, 0, PRICE_SCALE_W, height)
+
+  // Border
+  ctx.strokeStyle = isHovered ? COL.borderLight : COL.border
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(c.priceScaleX, 0)
+  ctx.lineTo(c.priceScaleX, height)
+  ctx.stroke()
+
+  // Price labels
+  const priceStep = estimatePriceStep(view.pricePerPixel, c.chartH)
+  const topPrice = c.yToPrice(0)
+  const botPrice = c.yToPrice(c.chartH)
+  const lo = Math.min(topPrice, botPrice)
+  const hi = Math.max(topPrice, botPrice)
+  const startPrice = Math.ceil(lo / priceStep) * priceStep
+
+  ctx.textAlign = 'center'
+  const labelX = c.priceScaleX + PRICE_SCALE_W / 2
+
+  for (let p = startPrice; p <= hi; p += priceStep) {
+    const y = c.priceToY(p)
+    if (y < 4 || y > c.chartH - 4) continue
+    const isMajor = Math.abs(p % (priceStep * 5)) < priceStep * 0.1
+
+    // Subtle label background for major levels
+    if (isMajor) {
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'
+      ctx.fillRect(c.priceScaleX + 2, y - 8, PRICE_SCALE_W - 4, 16)
+    }
+
+    ctx.fillStyle = isMajor ? COL.gridTextBright : COL.gridText
+    ctx.font = `${isMajor ? fonts.axisLabelBright : fonts.axisLabel}px "SF Mono", monospace`
+    ctx.fillText(fmtPriceLabel(p), labelX, y + 4)
+  }
+
+  // Drag hint text when hovered
+  if (isHovered && !view._dragging) {
+    ctx.fillStyle = 'rgba(56,189,248,0.25)'
+    ctx.font = `9px "SF Mono", monospace`
+    ctx.fillText('drag to scale', labelX, 14)
+  }
+}
+
+// ─── Time Axis Strip ───
+function drawTimeAxis(
+  ctx: CanvasRenderingContext2D,
+  c: ReturnType<typeof makeCoords>,
+  view: ViewState,
+  width: number,
+  height: number,
+  fonts: ReturnType<typeof getFontSizes>,
+  totalCandles: number,
+  mousePos: { x: number; y: number } | null
+) {
+  const isHovered = mousePos && mousePos.y >= c.chartH
+
+  // Background
+  ctx.fillStyle = isHovered ? COL.axisHover : COL.axisBg
+  ctx.fillRect(0, c.chartH, width, TIME_AXIS_H)
+
+  // Border
+  ctx.strokeStyle = isHovered ? COL.borderLight : COL.border
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(0, c.chartH)
+  ctx.lineTo(width, c.chartH)
+  ctx.stroke()
+
+  // Time grid + labels
+  const timeStep = Math.max(1, Math.round(view.candlesVisible / 8))
+  const allLen = Math.ceil(c.xToIndex(c.priceScaleX))
+  const firstIdx = Math.max(0, Math.floor(c.xToIndex(LEFT_MARGIN)))
+  const startTick = Math.ceil(firstIdx / timeStep) * timeStep
+
+  ctx.textAlign = 'center'
+
+  for (let idx = startTick; idx <= allLen; idx += timeStep) {
+    const x = c.indexToX(idx)
+    if (x < LEFT_MARGIN || x > c.priceScaleX) continue
+
+    // Vertical grid line
+    ctx.strokeStyle = COL.grid
+    ctx.lineWidth = 0.3
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, c.chartH)
+    ctx.stroke()
+
+    // Time label
+    if (idx >= 0 && idx < allLen) {
+      ctx.fillStyle = COL.gridText
+      ctx.font = `${fonts.axisLabel}px "SF Mono", monospace`
+      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
+      ctx.fillText(timeStr, x, c.chartH + TIME_AXIS_H - 6)
+    }
+  }
+
+  // Drag hint when hovered
+  if (isHovered && !view._dragging) {
+    ctx.fillStyle = 'rgba(56,189,248,0.25)'
+    ctx.font = `9px "SF Mono", monospace`
+    ctx.textAlign = 'center'
+    ctx.fillText('drag to scale', width / 2, c.chartH + 12)
+  }
+}
+
+// ─── Rounded rect helper ───
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
 }
 
 function getVisibleCandles(allCandles: Candle[], first: number, last: number): Candle[] {
@@ -412,9 +573,9 @@ function drawGrid(
   c: ReturnType<typeof makeCoords>,
   view: ViewState,
   width: number,
-  height: number
+  height: number,
+  fonts: ReturnType<typeof getFontSizes>
 ) {
-  // Horizontal price grid
   const priceStep = estimatePriceStep(view.pricePerPixel, c.chartH)
   const topPrice = c.yToPrice(0)
   const botPrice = c.yToPrice(c.chartH)
@@ -422,7 +583,6 @@ function drawGrid(
   const hi = Math.max(topPrice, botPrice)
   const startPrice = Math.ceil(lo / priceStep) * priceStep
 
-  ctx.font = '11px "SF Mono", monospace'
   ctx.textAlign = 'right'
 
   for (let p = startPrice; p <= hi; p += priceStep) {
@@ -435,35 +595,6 @@ function drawGrid(
     ctx.moveTo(LEFT_MARGIN, y)
     ctx.lineTo(c.priceScaleX, y)
     ctx.stroke()
-    ctx.fillStyle = isMajor ? COL.gridTextBright : COL.gridText
-    ctx.fillText(fmtPriceLabel(p), c.priceScaleX - 4, y + 4)
-  }
-
-  // Vertical time grid
-  const timeStep = Math.max(1, Math.round(view.candlesVisible / 8))
-  const allLen = Math.ceil(c.xToIndex(c.priceScaleX))
-  const firstIdx = Math.max(0, Math.floor(c.xToIndex(LEFT_MARGIN)))
-  const startTick = Math.ceil(firstIdx / timeStep) * timeStep
-
-  ctx.font = '10px "SF Mono", monospace'
-  ctx.textAlign = 'center'
-
-  for (let idx = startTick; idx <= allLen; idx += timeStep) {
-    const x = c.indexToX(idx)
-    if (x < LEFT_MARGIN || x > c.priceScaleX) continue
-    ctx.strokeStyle = COL.grid
-    ctx.lineWidth = 0.3
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, c.chartH)
-    ctx.stroke()
-
-    // Time label at bottom
-    if (idx >= 0 && idx < allLen) {
-      ctx.fillStyle = COL.gridText
-      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
-      ctx.fillText(timeStr, x, c.chartH + TIME_AXIS_H - 4)
-    }
   }
 }
 
@@ -486,7 +617,11 @@ function fmtPriceLabel(p: number): string {
   return p.toFixed(6)
 }
 
-// ─── Interaction: Zoom ───
+// ═══════════════════════════════════════════
+// INTERACTION HANDLERS
+// ═══════════════════════════════════════════
+
+// ─── Wheel Zoom (unchanged core, enhanced) ───
 export function handleWheel(
   e: React.WheelEvent,
   view: ViewState,
@@ -503,6 +638,7 @@ export function handleWheel(
 
   const overPriceScale = mousePos && mousePos.x > width - PRICE_SCALE_W
 
+  // Price-axis or shift: vertical zoom
   if (overPriceScale || e.shiftKey) {
     newView.pricePerPixel *= factor
     if (mousePos && mousePos.y > 0 && mousePos.y < height - TIME_AXIS_H) {
@@ -514,6 +650,7 @@ export function handleWheel(
     return newView
   }
 
+  // Ctrl: vertical zoom
   if (e.ctrlKey || e.metaKey) {
     newView.pricePerPixel *= factor
     if (mousePos && mousePos.y > 0 && mousePos.y < height - TIME_AXIS_H) {
@@ -525,6 +662,7 @@ export function handleWheel(
     return newView
   }
 
+  // Horizontal zoom — preserve focal point
   const oldVisible = view.candlesVisible
   newView.candlesVisible = Math.max(MIN_CANDLES, Math.min(MAX_CANDLES, Math.round(oldVisible * factor)))
 
@@ -547,23 +685,31 @@ export function handleWheel(
   return newView
 }
 
-// ─── Interaction: Drag (pan) ───
+// ─── Drag Start — zone-aware ───
 export function handleDragStart(
   e: React.MouseEvent,
   view: ViewState,
   width: number,
   height: number
 ): ViewState {
+  const rect = (e.target as HTMLElement).getBoundingClientRect()
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
+  const zone = detectZone(x, y, width, height)
+
   return {
     ...view,
     _dragging: true,
+    _dragZone: zone,
     _dragAnchorIdx: view.anchorIndex,
     _dragAnchorPrice: view.priceCenter,
+    _dragAnchorCandlesVisible: view.candlesVisible,
     _dragStartX: e.clientX,
     _dragStartY: e.clientY,
   }
 }
 
+// ─── Drag Move — zone-aware ───
 export function handleDragMove(
   e: React.MouseEvent,
   view: ViewState,
@@ -572,21 +718,79 @@ export function handleDragMove(
 ): ViewState {
   if (!view._dragging) return view
 
-  const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
-  const candleW = Math.max(2, chartW / view.candlesVisible)
   const dx = e.clientX - (view._dragStartX ?? e.clientX)
   const dy = e.clientY - (view._dragStartY ?? e.clientY)
+  const zone = view._dragZone || 'chart'
 
   const newView = { ...view }
-  newView.anchorIndex = (view._dragAnchorIdx ?? view.anchorIndex) - dx / candleW
-  newView.priceCenter = (view._dragAnchorPrice ?? view.priceCenter) + dy * view.pricePerPixel
-  newView.followLive = false
+
+  if (zone === 'priceAxis') {
+    // ─── Price-axis drag: vertical scaling ───
+    // Dragging up = compress (more price range visible)
+    // Dragging down = expand (less price range, candles taller)
+    const scaleSensitivity = 0.008
+    const scaleFactor = 1 + dy * scaleSensitivity
+    const oldPPP = view._dragAnchorPrice ?? view.pricePerPixel
+    newView.pricePerPixel = Math.max(0.000001, oldPPP * Math.max(0.1, scaleFactor))
+
+    // Keep the center price stable
+    newView.priceCenter = view.priceCenter
+    newView.anchorIndex = view._dragAnchorIdx ?? view.anchorIndex
+    newView.candlesVisible = view._dragAnchorCandlesVisible ?? view.candlesVisible
+    newView.followLive = false
+
+  } else if (zone === 'timeAxis') {
+    // ─── Time-axis drag: horizontal scaling ───
+    // Dragging right = compress (more candles visible, narrower)
+    // Dragging left = expand (fewer candles, wider)
+    const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
+    const oldVisible = view._dragAnchorCandlesVisible ?? view.candlesVisible
+    const scaleSensitivity = 0.005
+    const scaleFactor = Math.max(0.2, 1 + dx * scaleSensitivity)
+    newView.candlesVisible = Math.max(MIN_CANDLES, Math.min(MAX_CANDLES, Math.round(oldVisible * scaleFactor)))
+
+    // Adjust anchor to keep the focal point stable
+    const oldCandleW = Math.max(2, chartW / oldVisible)
+    const newCandleW = Math.max(2, chartW / newView.candlesVisible)
+    const anchorScreenX = view.followLive ? chartW * 0.85 : chartW * 0.5
+    // Use the center of the chart as focal point for time-axis scaling
+    const focalIdx = (view._dragAnchorIdx ?? view.anchorIndex)
+    const focalScreenX = anchorScreenX + (focalIdx - (view._dragAnchorIdx ?? view.anchorIndex)) * oldCandleW
+    const newAnchorScreenX = view.followLive ? chartW * 0.85 : chartW * 0.5
+    newView.anchorIndex = focalIdx - (focalScreenX - newAnchorScreenX) / newCandleW
+
+    newView.priceCenter = view.priceCenter
+    newView.followLive = false
+
+  } else {
+    // ─── Chart area drag: panning (unchanged behavior) ───
+    const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
+    const candleW = Math.max(2, chartW / view.candlesVisible)
+    newView.anchorIndex = (view._dragAnchorIdx ?? view.anchorIndex) - dx / candleW
+    newView.priceCenter = (view._dragAnchorPrice ?? view.priceCenter) + dy * view.pricePerPixel
+    newView.followLive = false
+  }
 
   return newView
 }
 
 export function handleDragEnd(view: ViewState): ViewState {
-  return { ...view, _dragging: false }
+  return { ...view, _dragging: false, _dragZone: undefined }
+}
+
+// ─── Hover zone detection (for cursor) ───
+export function getHoverCursor(
+  mousePos: { x: number; y: number } | null,
+  width: number,
+  height: number,
+  dragging: boolean
+): string {
+  if (dragging) return 'grabbing'
+  if (!mousePos) return 'crosshair'
+  const zone = detectZone(mousePos.x, mousePos.y, width, height)
+  if (zone === 'priceAxis') return 'ns-resize'
+  if (zone === 'timeAxis') return 'ew-resize'
+  return 'crosshair'
 }
 
 // ─── Actions ───
@@ -595,10 +799,7 @@ export function goLive(view: ViewState): ViewState {
 }
 
 export function resetView(view: ViewState): ViewState {
-  return {
-    ...createViewState(),
-    followLive: true,
-  }
+  return { ...createViewState(), followLive: true }
 }
 
 export function fitAllData(view: ViewState, totalCandles: number, width: number, height: number): ViewState {

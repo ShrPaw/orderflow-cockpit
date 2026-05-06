@@ -2,16 +2,16 @@ import { useRef, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 
 const BID_COLORS = [
-  'rgba(0,212,170,0.04)',
-  'rgba(0,212,170,0.12)',
-  'rgba(0,212,170,0.25)',
-  'rgba(0,212,170,0.5)',
+  'rgba(45,212,160,0.04)',
+  'rgba(45,212,160,0.12)',
+  'rgba(45,212,160,0.22)',
+  'rgba(45,212,160,0.45)',
 ]
 const ASK_COLORS = [
-  'rgba(255,77,106,0.04)',
-  'rgba(255,77,106,0.12)',
-  'rgba(255,77,106,0.25)',
-  'rgba(255,77,106,0.5)',
+  'rgba(239,100,97,0.04)',
+  'rgba(239,100,97,0.12)',
+  'rgba(239,100,97,0.22)',
+  'rgba(239,100,97,0.45)',
 ]
 
 export default function Heatmap() {
@@ -34,7 +34,7 @@ export default function Heatmap() {
     canvas.style.height = h + 'px'
     ctx.scale(dpr, dpr)
 
-    ctx.fillStyle = '#080c14'
+    ctx.fillStyle = '#06090f'
     ctx.fillRect(0, 0, w, h)
 
     const allLevels = [
@@ -43,7 +43,7 @@ export default function Heatmap() {
     ]
 
     if (allLevels.length === 0) {
-      ctx.fillStyle = '#3a4560'
+      ctx.fillStyle = '#3d4f68'
       ctx.font = '11px "SF Mono", monospace'
       ctx.textAlign = 'center'
       ctx.fillText('Waiting for depth data…', w / 2, h / 2)
@@ -76,7 +76,7 @@ export default function Heatmap() {
 
       // Price label
       if (i % 2 === 0) {
-        ctx.fillStyle = '#3a4560'
+        ctx.fillStyle = '#3d4f68'
         ctx.font = '9px "SF Mono", monospace'
         ctx.textAlign = 'left'
         ctx.fillText(level.price.toFixed(0), 4, y + barH - 3)
@@ -84,7 +84,7 @@ export default function Heatmap() {
 
       // Qty bar
       const qtyBarW = (intensity * 0.6) * w
-      const qtyColor = level.side === 'bid' ? 'rgba(0,212,170,0.15)' : 'rgba(255,77,106,0.15)'
+      const qtyColor = level.side === 'bid' ? 'rgba(45,212,160,0.12)' : 'rgba(239,100,97,0.12)'
       ctx.fillStyle = qtyColor
       ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
     }

@@ -121,7 +121,7 @@ export default function SidePanel() {
         </div>
         <div className="stat-row">
           <span className="label">Exhausted</span>
-          <span className="value" style={{ color: '#525c72' }}>{exhausted}</span>
+          <span className="value" style={{ color: '#4a5e78' }}>{exhausted}</span>
         </div>
       </div>
 

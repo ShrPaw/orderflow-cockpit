@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type {
   Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
-  Interval, AppMode, Ticker24h,
+  Interval, AppMode, Ticker24h, Instrument,
 } from '../types/market'
 import { INTERVAL_MS } from '../types/market'
 import {
@@ -44,6 +44,10 @@ interface MarketState {
   connectionError: string | null
   lastTradeTime: number
 
+  // ─── Dynamic instruments ───
+  instruments: Instrument[]
+  instrumentsLoading: boolean
+
   // Actions
   setMode: (mode: AppMode) => void
   setSymbol: (symbol: string) => void
@@ -59,6 +63,8 @@ interface MarketState {
   setTicker: (ticker: Ticker24h | null) => void
   updateLivePrice: (price: number, change: number, changePct: number) => void
   setConnectionError: (error: string | null) => void
+  setInstruments: (instruments: Instrument[]) => void
+  setInstrumentsLoading: (loading: boolean) => void
   reset: () => void
 }
 
@@ -68,7 +74,6 @@ const MAX_LARGE_TRADES = 100
 const MAX_HEATMAP = 3000
 const MAX_BUBBLES = 500
 
-// Stale data detection: 15s without a trade = likely disconnected
 const STALE_THRESHOLD = 15_000
 
 function getInitialState() {
@@ -76,6 +81,37 @@ function getInitialState() {
     mode: 'live' as AppMode,
     symbol: 'BTCUSDT',
     interval: '40s' as Interval,
+    connected: false,
+    depthConnected: false,
+    followLive: true,
+    candles: [] as Candle[],
+    currentCandle: null as Candle | null,
+    bids: [] as OrderLevel[],
+    asks: [] as OrderLevel[],
+    recentTrades: [] as Trade[],
+    largeTrades: [] as Trade[],
+    delta: 0,
+    cvd: 0,
+    totalVolume: 0,
+    buyVolume: 0,
+    sellVolume: 0,
+    bubbles: [] as Bubble[],
+    volumeProfile: [] as VolumeLevel[],
+    heatmapLevels: [] as HeatmapLevel[],
+    ticker: null as Ticker24h | null,
+    livePrice: 0,
+    liveChange: 0,
+    liveChangePct: 0,
+    connectionError: null as string | null,
+    lastTradeTime: 0,
+    instruments: [] as Instrument[],
+    instrumentsLoading: false,
+  }
+}
+
+// All data buffers that must be reset on symbol switch
+function getDataResetFields() {
+  return {
     connected: false,
     depthConnected: false,
     followLive: true,
@@ -107,11 +143,14 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   setMode: (mode) => set({ mode }),
   setSymbol: (symbol) => {
+    // Clean reset of ALL data buffers — no stale state leakage
     set({
-      ...getInitialState(),
+      ...getDataResetFields(),
       symbol,
       mode: get().mode,
-      // Keep live mode when switching symbols
+      interval: get().interval,
+      instruments: get().instruments,
+      instrumentsLoading: get().instrumentsLoading,
     })
   },
   setInterval: (interval) => {
@@ -135,7 +174,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     let currentCandle = state.currentCandle
 
     if (!currentCandle || currentCandle.openTime !== bucket) {
-      // Close previous candle
       if (currentCandle) {
         const closedBubbles = currentCandle.bubbles.map(b =>
           b.state === 'PENDING' ? { ...b, state: 'EXHAUSTED' as const, confidence: 0.4 } : b
@@ -149,7 +187,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
     currentCandle = processTradeIntoCandle(currentCandle, trade)
 
-    // Update bubble states
     currentCandle = {
       ...currentCandle,
       bubbles: currentCandle.bubbles.map(b =>
@@ -157,22 +194,18 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       ),
     }
 
-    // Recent trades
     const recentTrades = [trade, ...state.recentTrades].slice(0, MAX_RECENT_TRADES)
 
-    // Large trades
     const largeTrades = trade.notional > 5000
       ? [trade, ...state.largeTrades].slice(0, MAX_LARGE_TRADES)
       : state.largeTrades
 
-    // Global stats
     const totalVolume = state.totalVolume + trade.qty
     const buyVolume = state.buyVolume + (trade.side === 'buy' ? trade.qty : 0)
     const sellVolume = state.sellVolume + (trade.side === 'sell' ? trade.qty : 0)
     const delta = state.delta + (trade.side === 'buy' ? trade.qty : -trade.qty)
     const cvd = state.cvd + (trade.side === 'buy' ? trade.qty : -trade.qty)
 
-    // Global bubbles
     const allBubbles = [...state.bubbles, ...currentCandle.bubbles.filter(
       b => !state.bubbles.some(sb => sb.id === b.id)
     )].slice(-MAX_BUBBLES)
@@ -225,7 +258,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const state = get()
     if (!state.currentCandle) return
 
-    // Check for stale data
     if (state.mode === 'live' && state.connected && state.lastTradeTime > 0) {
       const stale = Date.now() - state.lastTradeTime > STALE_THRESHOLD
       if (stale && !state.connectionError) {
@@ -248,6 +280,8 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     liveChangePct: changePct,
   }),
   setConnectionError: (error) => set({ connectionError: error }),
+  setInstruments: (instruments) => set({ instruments }),
+  setInstrumentsLoading: (loading) => set({ instrumentsLoading: loading }),
 
   reset: () => set(getInitialState()),
 }))

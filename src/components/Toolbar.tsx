@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
 import { INSTRUMENTS } from '../types/market'
-import { fmtPrice, fmtNum } from '../utils/formatters'
+import { fmtPrice } from '../utils/formatters'
 import AssetSelector from './AssetSelector'
 
 const INTERVALS: Interval[] = ['10s', '20s', '40s', '1m', '3m', '5m']
@@ -18,6 +18,7 @@ export default function Toolbar() {
   const liveChange = useMarketStore(s => s.liveChange)
   const liveChangePct = useMarketStore(s => s.liveChangePct)
   const connectionError = useMarketStore(s => s.connectionError)
+  const instruments = useMarketStore(s => s.instruments)
 
   const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
@@ -25,8 +26,9 @@ export default function Toolbar() {
 
   const [showAssetSelector, setShowAssetSelector] = useState(false)
 
-  // Current instrument info
-  const instrument = INSTRUMENTS.find(i => i.symbol === symbol)
+  // Current instrument info — check dynamic list first, then static fallback
+  const allInstruments = instruments.length > 0 ? instruments : INSTRUMENTS
+  const instrument = allInstruments.find(i => i.symbol === symbol)
   const baseName = instrument?.base ?? symbol.replace('USDT', '')
 
   const onKey = useCallback((e: KeyboardEvent) => {

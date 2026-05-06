@@ -4,6 +4,7 @@ import {
   renderChart, createViewState, handleWheel,
   handleDragStart, handleDragMove, handleDragEnd,
   goLive, resetView, fitAllData, fitRecent,
+  getHoverCursor,
 } from '../utils/chartRenderer'
 import type { ViewState } from '../utils/chartRenderer'
 
@@ -139,7 +140,8 @@ export default function ChartCanvas() {
     setFollowLive(true)
   }, [setFollowLive])
 
-  const cursor = viewRef.current._dragging ? 'grabbing' : 'crosshair'
+  // Dynamic cursor based on zone
+  const cursor = getHoverCursor(mouseRef.current, size.width, size.height, !!viewRef.current._dragging)
 
   return (
     <div ref={containerRef} className="chart-container">
