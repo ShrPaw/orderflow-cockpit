@@ -1,11 +1,33 @@
 import React from 'react';
 import { useMarketStore } from '../stores/marketStore';
 
+const STATUS_COLORS: Record<string, string> = {
+  disconnected: '#6a6a7a',
+  connecting: '#ffab00',
+  buffering: '#ffab00',
+  snapshot_loading: '#ffab00',
+  synced: '#26a69a',
+  resyncing: '#ff6d00',
+  stale: '#ef5350',
+  error: '#ef5350',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  disconnected: 'OFF',
+  connecting: 'CONNECTING',
+  buffering: 'BUFFERING',
+  snapshot_loading: 'LOADING SNAPSHOT',
+  synced: 'SYNCED',
+  resyncing: 'RESYNCING',
+  stale: 'STALE',
+  error: 'ERROR',
+};
+
 const SidePanel: React.FC = () => {
   const {
     sessionStats, bigTrades, currentPrice, cvdHistory,
     dataSource, exchangeName, connectionStatus, tradesPerSecond, lastTradeTimestamp,
-    tickSize, orderBook, showHeatmap,
+    tickSize, orderBook, orderBookDiagnostics,
   } = useMarketStore();
   const lastCvd = cvdHistory.length > 0 ? cvdHistory[cvdHistory.length - 1].value : 0;
   const recentBigTrades = bigTrades.slice(-8).reverse();
@@ -13,21 +35,19 @@ const SidePanel: React.FC = () => {
   const statusColor = connectionStatus === 'connected' ? '#26a69a' :
     connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? '#ffab00' : '#6a6a7a';
 
-  const hasDepth = dataSource === 'binance' && orderBook.bestBid > 0;
+  const hasDepth = dataSource === 'binance';
+  const bookSynced = orderBookDiagnostics.status === 'synced';
+  const bookStatusColor = STATUS_COLORS[orderBookDiagnostics.status] || '#6a6a7a';
 
-  // Build top 10 bid/ask levels from order book
-  const topBids = hasDepth
-    ? Array.from(orderBook.bids.entries())
-        .sort((a, b) => b[0] - a[0])
-        .slice(0, 10)
+  // Build top 10 bid/ask levels
+  const topBids = bookSynced
+    ? Array.from(orderBook.bids.entries()).sort((a, b) => b[0] - a[0]).slice(0, 10)
     : [];
-  const topAsks = hasDepth
-    ? Array.from(orderBook.asks.entries())
-        .sort((a, b) => a[0] - b[0])
-        .slice(0, 10)
+  const topAsks = bookSynced
+    ? Array.from(orderBook.asks.entries()).sort((a, b) => a[0] - b[0]).slice(0, 10)
     : [];
 
-  const imbalance = hasDepth && orderBook.totalAskSize > 0
+  const imbalance = bookSynced && orderBook.totalAskSize > 0
     ? orderBook.totalBidSize / orderBook.totalAskSize
     : 0;
 
@@ -46,57 +66,77 @@ const SidePanel: React.FC = () => {
         )}
       </div>
 
-      {/* DOM-lite: Order Book */}
+      {/* Order Book Status */}
       {hasDepth && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>ORDER BOOK</div>
-          <Row label="Best Bid" value={orderBook.bestBid.toFixed(1)} color="#26a69a" />
-          <Row label="Best Ask" value={orderBook.bestAsk.toFixed(1)} color="#ef5350" />
-          <Row label="Spread" value={orderBook.spread.toFixed(1)} />
-          <Row label="Bid Liq" value={orderBook.totalBidSize.toFixed(4)} color="#26a69a" />
-          <Row label="Ask Liq" value={orderBook.totalAskSize.toFixed(4)} color="#ef5350" />
-          <Row
-            label="Imbalance"
-            value={`${imbalance.toFixed(2)}x`}
-            color={imbalance > 1.5 ? '#26a69a' : imbalance < 0.67 ? '#ef5350' : '#8a8a9a'}
-          />
+          <Row label="Book Status" value={STATUS_LABELS[orderBookDiagnostics.status] || orderBookDiagnostics.status} color={bookStatusColor} />
+          <Row label="Stream" value={orderBookDiagnostics.streamSpeed} />
+          <Row label="Last ID" value={String(orderBookDiagnostics.lastAppliedUpdateId)} />
+          <Row label="Seq Breaks" value={String(orderBookDiagnostics.sequenceBreakCount)} color={orderBookDiagnostics.sequenceBreakCount > 0 ? '#ef5350' : '#8a8a9a'} />
+          <Row label="Buffered" value={String(orderBookDiagnostics.bufferedEventCount)} />
+          {orderBookDiagnostics.bookAgeMs >= 0 && (
+            <Row label="Book Age" value={`${(orderBookDiagnostics.bookAgeMs / 1000).toFixed(1)}s`}
+              color={orderBookDiagnostics.bookAgeMs > 3000 ? '#ef5350' : '#8a8a9a'} />
+          )}
+          <Row label="Bid Levels" value={String(orderBookDiagnostics.bidLevelCount)} />
+          <Row label="Ask Levels" value={String(orderBookDiagnostics.askLevelCount)} />
 
-          {/* Ask levels (reversed so best ask is at bottom) */}
-          <div style={styles.bookSection}>
-            {topAsks.reverse().map(([price, size]) => (
-              <div key={`ask-${price}`} style={styles.bookRow}>
-                <span style={styles.bookPriceAsk}>{price.toFixed(1)}</span>
-                <div style={styles.bookBarContainer}>
-                  <div style={{
-                    ...styles.bookBarAsk,
-                    width: `${Math.min(100, (size / (orderBook.totalAskSize / 10)) * 100)}%`,
-                  }} />
-                </div>
-                <span style={styles.bookSize}>{size.toFixed(4)}</span>
+          {bookSynced ? (
+            <>
+              <div style={{ ...styles.sectionTitle, marginTop: '6px' }}>DEPTH</div>
+              <Row label="Best Bid" value={orderBook.bestBid.toFixed(1)} color="#26a69a" />
+              <Row label="Best Ask" value={orderBook.bestAsk.toFixed(1)} color="#ef5350" />
+              <Row label="Spread" value={orderBook.spread.toFixed(1)} />
+              <Row label="Bid Liq" value={orderBook.totalBidSize.toFixed(4)} color="#26a69a" />
+              <Row label="Ask Liq" value={orderBook.totalAskSize.toFixed(4)} color="#ef5350" />
+              <Row label="Imbalance" value={`${imbalance.toFixed(2)}x`}
+                color={imbalance > 1.5 ? '#26a69a' : imbalance < 0.67 ? '#ef5350' : '#8a8a9a'} />
+
+              {/* Ask levels */}
+              <div style={styles.bookSection}>
+                {topAsks.reverse().map(([price, size]) => (
+                  <div key={`ask-${price}`} style={styles.bookRow}>
+                    <span style={styles.bookPriceAsk}>{price.toFixed(1)}</span>
+                    <div style={styles.bookBarContainer}>
+                      <div style={{
+                        ...styles.bookBarAsk,
+                        width: `${Math.min(100, (size / (orderBook.totalAskSize / 10)) * 100)}%`,
+                      }} />
+                    </div>
+                    <span style={styles.bookSize}>{size.toFixed(4)}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
 
-          {/* Spread indicator */}
-          <div style={styles.spreadRow}>
-            <span style={styles.spreadText}>─── {orderBook.spread.toFixed(1)} ───</span>
-          </div>
-
-          {/* Bid levels */}
-          <div style={styles.bookSection}>
-            {topBids.map(([price, size]) => (
-              <div key={`bid-${price}`} style={styles.bookRow}>
-                <span style={styles.bookPriceBid}>{price.toFixed(1)}</span>
-                <div style={styles.bookBarContainer}>
-                  <div style={{
-                    ...styles.bookBarBid,
-                    width: `${Math.min(100, (size / (orderBook.totalBidSize / 10)) * 100)}%`,
-                  }} />
-                </div>
-                <span style={styles.bookSize}>{size.toFixed(4)}</span>
+              {/* Spread */}
+              <div style={styles.spreadRow}>
+                <span style={styles.spreadText}>─── {orderBook.spread.toFixed(1)} ───</span>
               </div>
-            ))}
-          </div>
+
+              {/* Bid levels */}
+              <div style={styles.bookSection}>
+                {topBids.map(([price, size]) => (
+                  <div key={`bid-${price}`} style={styles.bookRow}>
+                    <span style={styles.bookPriceBid}>{price.toFixed(1)}</span>
+                    <div style={styles.bookBarContainer}>
+                      <div style={{
+                        ...styles.bookBarBid,
+                        width: `${Math.min(100, (size / (orderBook.totalBidSize / 10)) * 100)}%`,
+                      }} />
+                    </div>
+                    <span style={styles.bookSize}>{size.toFixed(4)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div style={styles.syncingMessage}>
+              {orderBookDiagnostics.status === 'disconnected'
+                ? 'Connect to Binance for order book'
+                : `Order book ${STATUS_LABELS[orderBookDiagnostics.status]?.toLowerCase() || 'syncing'}...`}
+            </div>
+          )}
         </div>
       )}
 
@@ -107,11 +147,13 @@ const SidePanel: React.FC = () => {
         <Row label="Volume" value={sessionStats.totalVolume.toFixed(4)} />
         <Row label="Buy Vol" value={sessionStats.totalBuyVolume.toFixed(4)} color="#26a69a" />
         <Row label="Sell Vol" value={sessionStats.totalSellVolume.toFixed(4)} color="#ef5350" />
-        <Row label="Net Δ" value={`${sessionStats.netDelta >= 0 ? '+' : ''}${sessionStats.netDelta.toFixed(4)}`} color={sessionStats.netDelta >= 0 ? '#26a69a' : '#ef5350'} />
+        <Row label="Net Δ" value={`${sessionStats.netDelta >= 0 ? '+' : ''}${sessionStats.netDelta.toFixed(4)}`}
+          color={sessionStats.netDelta >= 0 ? '#26a69a' : '#ef5350'} />
         <Row label="VWAP" value={sessionStats.vwap.toFixed(1)} />
         <Row label="Range" value={`${sessionStats.lowPrice.toFixed(1)} - ${sessionStats.highPrice.toFixed(1)}`} />
         <Row label="Big Trades" value={sessionStats.bigTradeCount.toString()} />
-        <Row label="CVD" value={`${lastCvd >= 0 ? '+' : ''}${lastCvd.toFixed(0)}`} color={lastCvd >= 0 ? '#26a69a' : '#ef5350'} />
+        <Row label="CVD" value={`${lastCvd >= 0 ? '+' : ''}${lastCvd.toFixed(0)}`}
+          color={lastCvd >= 0 ? '#26a69a' : '#ef5350'} />
       </div>
 
       {/* Large Trades */}
@@ -179,6 +221,7 @@ const styles: Record<string, React.CSSProperties> = {
   bookSize: { color: '#8a8a9a', width: '40px', textAlign: 'right' },
   spreadRow: { display: 'flex', justifyContent: 'center', padding: '2px 0' },
   spreadText: { fontSize: '8px', color: '#4a4a5a', fontFamily: 'monospace' },
+  syncingMessage: { fontSize: '9px', color: '#ffab00', fontStyle: 'italic', padding: '4px 0' },
 };
 
 const rowStyles: Record<string, React.CSSProperties> = {

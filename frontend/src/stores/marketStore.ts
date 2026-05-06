@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { Trade, FootprintCandle, VolumeProfile, BigTrade, SessionStats, Timeframe, ChartViewport } from '../types';
-import { DataSource, ConnectionStatus, NormalizedTrade, NormalizedBookUpdate, HeatmapCell } from '../types/connector';
+import {
+  DataSource, ConnectionStatus, NormalizedTrade, NormalizedBookUpdate,
+  DepthSnapshot, HeatmapCell, OrderBookStatus, OrderBookDiagnostics,
+} from '../types/connector';
 import { MarketDataGenerator, aggregateIntoFootprints, calculateVolumeProfile, detectBigTrades, calculateSessionStats } from '../utils/dataGenerator';
 import { BinanceFuturesConnector } from '../connectors/binance';
 import { HyperliquidConnector } from '../connectors/hyperliquid';
@@ -16,8 +19,8 @@ export const TIMEFRAME_MS: Record<Timeframe, number> = {
 };
 
 interface OrderBookState {
-  bids: Map<number, number>;  // price -> size
-  asks: Map<number, number>;  // price -> size
+  bids: Map<number, number>;
+  asks: Map<number, number>;
   bestBid: number;
   bestAsk: number;
   spread: number;
@@ -25,6 +28,20 @@ interface OrderBookState {
   totalBidSize: number;
   totalAskSize: number;
 }
+
+const defaultDiagnostics: OrderBookDiagnostics = {
+  status: 'disconnected',
+  lastUpdateId: 0,
+  lastAppliedUpdateId: 0,
+  prevFinalUpdateId: 0,
+  bufferedEventCount: 0,
+  sequenceBreakCount: 0,
+  lastDepthEventTime: 0,
+  bookAgeMs: -1,
+  bidLevelCount: 0,
+  askLevelCount: 0,
+  streamSpeed: '100ms',
+};
 
 interface MarketState {
   // Data
@@ -38,6 +55,7 @@ interface MarketState {
 
   // Order book
   orderBook: OrderBookState;
+  orderBookDiagnostics: OrderBookDiagnostics;
   heatmapData: HeatmapCell[];
   heatmapMaxSize: number;
 
@@ -55,7 +73,7 @@ interface MarketState {
   // Heatmap settings
   showHeatmap: boolean;
   heatmapDepthLevels: number;
-  heatmapIntensity: number;  // 0-1
+  heatmapIntensity: number;
   heatmapTickSize: number;
 
   // Connection state
@@ -97,6 +115,7 @@ interface MarketState {
   setHeatmapDepthLevels: (v: number) => void;
   setHeatmapIntensity: (v: number) => void;
   setHeatmapTickSize: (v: number) => void;
+  setStreamSpeed: (speed: '100ms' | '500ms' | 'default') => void;
   reconnect: () => void;
 }
 
@@ -132,6 +151,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   cvdHistory: [],
   currentPrice: 0,
   orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+  orderBookDiagnostics: { ...defaultDiagnostics },
   heatmapData: [],
   heatmapMaxSize: 1,
   timeframe: '5s',
@@ -173,6 +193,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       cvdHistory: [],
       currentPrice: 0,
       orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+      orderBookDiagnostics: { ...defaultDiagnostics },
       heatmapData: [],
       dataSource: source,
       connector: null,
@@ -277,6 +298,16 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   setHeatmapIntensity: (v) => set({ heatmapIntensity: v }),
   setHeatmapTickSize: (v) => set({ heatmapTickSize: v }),
 
+  setStreamSpeed: (speed) => {
+    const state = get();
+    if (state.depthConnector) {
+      (state.depthConnector as BinanceDepthConnector).setStreamSpeed(speed);
+    }
+    set((s) => ({
+      orderBookDiagnostics: { ...s.orderBookDiagnostics, streamSpeed: speed },
+    }));
+  },
+
   reconnect: () => {
     const state = get();
     if (state.connector) state.connector.disconnect();
@@ -285,6 +316,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       trades: [], candles: [], isConnected: false, connectionStatus: 'disconnected',
       depthConnectionStatus: 'disconnected',
       orderBook: { ...emptyOrderBook, bids: new Map(), asks: new Map() },
+      orderBookDiagnostics: { ...defaultDiagnostics },
       heatmapData: [],
     });
     get().init();
@@ -357,6 +389,66 @@ function initBinanceWithDepth(set: any, get: () => MarketState) {
     set({ depthConnectionStatus: status });
   });
 
+  depthConnector.onDiagnostics((diag: Partial<OrderBookDiagnostics>) => {
+    set((s: any) => ({
+      orderBookDiagnostics: { ...s.orderBookDiagnostics, ...diag },
+    }));
+  });
+
+  // Handle snapshot: clear book and rebuild from snapshot
+  depthConnector.onSnapshot((snapshot: DepthSnapshot) => {
+    const ob: OrderBookState = {
+      bids: new Map(),
+      asks: new Map(),
+      bestBid: 0,
+      bestAsk: 0,
+      spread: 0,
+      lastUpdated: Date.now(),
+      totalBidSize: 0,
+      totalAskSize: 0,
+    };
+
+    // Initialize from snapshot
+    for (const [p, q] of snapshot.bids) {
+      const price = parseFloat(p);
+      const qty = parseFloat(q);
+      if (qty > 0) ob.bids.set(price, qty);
+    }
+    for (const [p, q] of snapshot.asks) {
+      const price = parseFloat(p);
+      const qty = parseFloat(q);
+      if (qty > 0) ob.asks.set(price, qty);
+    }
+
+    // Calculate best bid/ask
+    let bestBid = 0, bestAsk = Infinity, totalBid = 0, totalAsk = 0;
+    for (const [price, size] of ob.bids) {
+      totalBid += size;
+      if (price > bestBid) bestBid = price;
+    }
+    for (const [price, size] of ob.asks) {
+      totalAsk += size;
+      if (price < bestAsk) bestAsk = price;
+    }
+    ob.bestBid = bestBid;
+    ob.bestAsk = bestAsk === Infinity ? 0 : bestAsk;
+    ob.spread = ob.bestAsk > 0 && ob.bestBid > 0 ? ob.bestAsk - ob.bestBid : 0;
+    ob.totalBidSize = totalBid;
+    ob.totalAskSize = totalAsk;
+
+    set({
+      orderBook: ob,
+      heatmapData: [],
+      heatmapMaxSize: 1,
+      orderBookDiagnostics: {
+        ...get().orderBookDiagnostics,
+        bidLevelCount: ob.bids.size,
+        askLevelCount: ob.asks.size,
+      },
+    });
+  });
+
+  // Handle incremental updates
   depthConnector.onBookUpdate((update: NormalizedBookUpdate) => {
     const state = get();
     if (state.isPaused) return;
@@ -390,13 +482,13 @@ function processBookUpdate(update: NormalizedBookUpdate, set: any, get: () => Ma
   ob.asks = new Map(ob.asks);
   ob.lastUpdated = update.timestamp;
 
-  // Apply bid updates
+  // Apply bid updates (absolute quantities, not deltas)
   for (const [price, size] of update.bids) {
     if (size === 0) ob.bids.delete(price);
     else ob.bids.set(price, size);
   }
 
-  // Apply ask updates
+  // Apply ask updates (absolute quantities, not deltas)
   for (const [price, size] of update.asks) {
     if (size === 0) ob.asks.delete(price);
     else ob.asks.set(price, size);
@@ -421,10 +513,28 @@ function processBookUpdate(update: NormalizedBookUpdate, set: any, get: () => Ma
   ob.totalBidSize = totalBidSize;
   ob.totalAskSize = totalAskSize;
 
-  // Build heatmap data
-  const heatmap = buildHeatmap(ob, state.heatmapDepthLevels, state.heatmapTickSize, state.currentPrice);
+  // Build heatmap only if synced
+  const bookStatus = get().orderBookDiagnostics.status;
+  let heatmapData = state.heatmapData;
+  let heatmapMaxSize = state.heatmapMaxSize;
 
-  set({ orderBook: ob, heatmapData: heatmap.cells, heatmapMaxSize: heatmap.maxSize });
+  if (bookStatus === 'synced') {
+    const heatmap = buildHeatmap(ob, state.heatmapDepthLevels, state.heatmapTickSize, state.currentPrice);
+    heatmapData = heatmap.cells;
+    heatmapMaxSize = heatmap.maxSize;
+  }
+
+  set({
+    orderBook: ob,
+    heatmapData,
+    heatmapMaxSize,
+    orderBookDiagnostics: {
+      ...get().orderBookDiagnostics,
+      bidLevelCount: ob.bids.size,
+      askLevelCount: ob.asks.size,
+      lastAppliedUpdateId: update.updateId,
+    },
+  });
 }
 
 function buildHeatmap(
@@ -436,25 +546,21 @@ function buildHeatmap(
   const cells: HeatmapCell[] = [];
   let maxSize = 0;
 
-  // Aggregate bids by tick size
   const bidAgg = new Map<number, number>();
   for (const [price, size] of ob.bids) {
     const rounded = Math.floor(price / tickSize) * tickSize;
     bidAgg.set(rounded, (bidAgg.get(rounded) || 0) + size);
   }
 
-  // Aggregate asks by tick size
   const askAgg = new Map<number, number>();
   for (const [price, size] of ob.asks) {
     const rounded = Math.ceil(price / tickSize) * tickSize;
     askAgg.set(rounded, (askAgg.get(rounded) || 0) + size);
   }
 
-  // Find max size for normalization
   for (const size of bidAgg.values()) maxSize = Math.max(maxSize, size);
   for (const size of askAgg.values()) maxSize = Math.max(maxSize, size);
 
-  // Build cells (limited by maxLevels from mid)
   const mid = currentPrice || ((ob.bestBid + ob.bestAsk) / 2);
 
   const sortedBids = Array.from(bidAgg.entries())
@@ -470,23 +576,11 @@ function buildHeatmap(
   const now = ob.lastUpdated;
 
   for (const [price, size] of sortedBids) {
-    cells.push({
-      price,
-      side: 'bid',
-      size,
-      intensity: maxSize > 0 ? size / maxSize : 0,
-      timestamp: now,
-    });
+    cells.push({ price, side: 'bid', size, intensity: maxSize > 0 ? size / maxSize : 0, timestamp: now });
   }
 
   for (const [price, size] of sortedAsks) {
-    cells.push({
-      price,
-      side: 'ask',
-      size,
-      intensity: maxSize > 0 ? size / maxSize : 0,
-      timestamp: now,
-    });
+    cells.push({ price, side: 'ask', size, intensity: maxSize > 0 ? size / maxSize : 0, timestamp: now });
   }
 
   return { cells, maxSize: maxSize || 1 };

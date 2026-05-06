@@ -37,11 +37,22 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
   error: '✕ ERROR',
 };
 
+const BOOK_STATUS_COLORS: Record<string, string> = {
+  disconnected: '#6a6a7a',
+  connecting: '#ffab00',
+  buffering: '#ffab00',
+  snapshot_loading: '#ffab00',
+  synced: '#26a69a',
+  resyncing: '#ff6d00',
+  stale: '#ef5350',
+  error: '#ef5350',
+};
+
 const Toolbar: React.FC = () => {
   const {
     timeframe, setTimeframe, isPaused, setPaused, currentPrice,
     dataSource, setDataSource, connectionStatus, depthConnectionStatus, reconnect,
-    tickSize, setTickSize,
+    tickSize, setTickSize, orderBookDiagnostics, setStreamSpeed,
     showBigTrades, setShowBigTrades, showVolumeProfile, setShowVolumeProfile,
     showCVD, setShowCVD, showDelta, setShowDelta,
     showHeatmap, setShowHeatmap, heatmapDepthLevels, setHeatmapDepthLevels,
@@ -51,6 +62,8 @@ const Toolbar: React.FC = () => {
   } = useMarketStore();
 
   const hasDepth = dataSource === 'binance';
+  const bookStatus = orderBookDiagnostics.status;
+  const bookColor = BOOK_STATUS_COLORS[bookStatus] || '#6a6a7a';
 
   return (
     <div style={styles.container}>
@@ -64,8 +77,8 @@ const Toolbar: React.FC = () => {
           {STATUS_LABELS[connectionStatus]}
         </span>
         {hasDepth && (
-          <span style={{ ...styles.status, color: STATUS_COLORS[depthConnectionStatus], marginLeft: '4px' }}>
-            BOOK:{depthConnectionStatus === 'connected' ? 'ON' : 'OFF'}
+          <span style={{ ...styles.status, color: bookColor, marginLeft: '4px' }}>
+            BOOK:{bookStatus === 'synced' ? 'SYNCED' : bookStatus.toUpperCase()}
           </span>
         )}
       </div>
@@ -90,6 +103,22 @@ const Toolbar: React.FC = () => {
           <button onClick={reconnect} style={{ ...styles.toolButton, color: '#ef5350' }}>↻</button>
         )}
       </div>
+
+      {/* Stream Speed (Binance only) */}
+      {hasDepth && (
+        <div style={styles.section}>
+          <span style={styles.label}>Speed</span>
+          <select
+            value={orderBookDiagnostics.streamSpeed}
+            onChange={(e) => setStreamSpeed(e.target.value as '100ms' | '500ms' | 'default')}
+            style={styles.select}
+          >
+            <option value="100ms">100ms</option>
+            <option value="500ms">500ms</option>
+            <option value="default">default</option>
+          </select>
+        </div>
+      )}
 
       {/* Timeframe Selector */}
       <div style={styles.section}>
