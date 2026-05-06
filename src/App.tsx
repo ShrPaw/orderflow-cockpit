@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useMarketStore } from './stores/marketStore'
-import { connectBinanceAggTrade } from './connectors/binanceAggTrade'
-import { connectBinanceDepth } from './connectors/binanceDepth'
+import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
+import { connectBinanceDepth, getDepthDiagnostics } from './connectors/binanceDepth'
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
 import ChartCanvas from './components/ChartCanvas'
@@ -23,6 +23,7 @@ export default function App() {
   const setDepth = useMarketStore(s => s.setDepth)
   const setConnected = useMarketStore(s => s.setConnected)
   const setDepthConnected = useMarketStore(s => s.setDepthConnected)
+  const setTickerConnected = useMarketStore(s => s.setTickerConnected)
   const rebuildVolumeProfile = useMarketStore(s => s.rebuildVolumeProfile)
   const addHeatmapSnapshot = useMarketStore(s => s.addHeatmapSnapshot)
   const updateBubbles = useMarketStore(s => s.updateBubbles)
@@ -35,6 +36,7 @@ export default function App() {
   const cleanupTicker = useRef<(() => void) | null>(null)
   const demoInterval = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickerInterval = useRef<ReturnType<typeof setInterval> | null>(null)
+  const diagInterval = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Live mode connections
   useEffect(() => {
@@ -50,6 +52,10 @@ export default function App() {
       clearInterval(tickerInterval.current)
       tickerInterval.current = null
     }
+    if (diagInterval.current) {
+      clearInterval(diagInterval.current)
+      diagInterval.current = null
+    }
 
     if (mode === 'live') {
       // Fetch 24h ticker immediately
@@ -57,13 +63,21 @@ export default function App() {
         if (ticker) {
           setTicker(ticker)
           updateLivePrice(ticker.price, ticker.change, ticker.changePct)
+          setTickerConnected(true)
         }
-      })
+      }).catch(() => setTickerConnected(false))
 
       // Refresh ticker every 10s
       tickerInterval.current = setInterval(async () => {
-        const ticker = await fetchTicker24h(symbol)
-        if (ticker) setTicker(ticker)
+        try {
+          const ticker = await fetchTicker24h(symbol)
+          if (ticker) {
+            setTicker(ticker)
+            setTickerConnected(true)
+          }
+        } catch {
+          setTickerConnected(false)
+        }
       }, 10_000)
 
       // Connect mini ticker for live price updates
@@ -71,14 +85,14 @@ export default function App() {
         updateLivePrice(price, change, changePct)
       })
 
-      // Connect aggTrade
+      // Connect trade stream (@trade replaces dead @aggTrade)
       cleanupTrade.current = connectBinanceAggTrade(
         symbol,
         (trade) => processTrade(trade),
         (connected) => {
           setConnected(connected)
           if (!connected) {
-            setConnectionError('aggTrade stream disconnected')
+            setConnectionError('Trade stream disconnected')
           } else {
             setConnectionError(null)
           }
@@ -89,12 +103,29 @@ export default function App() {
       cleanupDepth.current = connectBinanceDepth(
         symbol,
         (bids, asks) => setDepth(bids, asks),
-        (connected) => setDepthConnected(connected)
+        (connected) => {
+          setDepthConnected(connected)
+          if (!connected) {
+            setConnectionError('Depth stream disconnected')
+          }
+        }
       )
+
+      // Periodic diagnostic log
+      diagInterval.current = setInterval(() => {
+        const td = getTradeDiagnostics()
+        const dd = getDepthDiagnostics()
+        console.table({
+          'Trade Stream': { url: td.url, opened: td.opened, messages: td.messageCount, parseErrors: td.parseErrors, lastMsg: td.lastMessageTime ? new Date(td.lastMessageTime).toLocaleTimeString() : 'never' },
+          'Depth Stream': { url: dd.url, opened: dd.opened, messages: dd.messageCount, parseErrors: dd.parseErrors, bidLevels: dd.bidLevels, askLevels: dd.askLevels, lastMsg: dd.lastMessageTime ? new Date(dd.lastMessageTime).toLocaleTimeString() : 'never' },
+        })
+      }, 15_000)
+
     } else {
       // Demo mode
       setConnected(true)
       setDepthConnected(true)
+      setTickerConnected(true)
       resetDemoPrice()
 
       demoInterval.current = setInterval(() => {
@@ -112,6 +143,7 @@ export default function App() {
         clearInterval(depthInterval)
         setConnected(false)
         setDepthConnected(false)
+        setTickerConnected(false)
       }
     }
 
@@ -120,8 +152,9 @@ export default function App() {
       cleanupDepth.current?.()
       cleanupTicker.current?.()
       if (tickerInterval.current) clearInterval(tickerInterval.current)
+      if (diagInterval.current) clearInterval(diagInterval.current)
     }
-  }, [mode, symbol, processTrade, setDepth, setConnected, setDepthConnected, setTicker, updateLivePrice, setConnectionError])
+  }, [mode, symbol, processTrade, setDepth, setConnected, setDepthConnected, setTickerConnected, setTicker, updateLivePrice, setConnectionError])
 
   // Periodic volume profile rebuild
   useEffect(() => {

@@ -14,6 +14,7 @@ interface MarketState {
   interval: Interval
   connected: boolean
   depthConnected: boolean
+  tickerConnected: boolean
   followLive: boolean
 
   candles: Candle[]
@@ -54,6 +55,7 @@ interface MarketState {
   setInterval: (interval: Interval) => void
   setConnected: (connected: boolean) => void
   setDepthConnected: (depthConnected: boolean) => void
+  setTickerConnected: (tickerConnected: boolean) => void
   setFollowLive: (follow: boolean) => void
   processTrade: (trade: Trade) => void
   setDepth: (bids: OrderLevel[], asks: OrderLevel[]) => void
@@ -83,6 +85,7 @@ function getInitialState() {
     interval: '40s' as Interval,
     connected: false,
     depthConnected: false,
+    tickerConnected: false,
     followLive: true,
     candles: [] as Candle[],
     currentCandle: null as Candle | null,
@@ -114,6 +117,7 @@ function getDataResetFields() {
   return {
     connected: false,
     depthConnected: false,
+    tickerConnected: false,
     followLive: true,
     candles: [] as Candle[],
     currentCandle: null as Candle | null,
@@ -164,6 +168,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     set(update as any)
   },
   setDepthConnected: (depthConnected) => set({ depthConnected }),
+  setTickerConnected: (tickerConnected) => set({ tickerConnected }),
   setFollowLive: (followLive) => set({ followLive }),
 
   processTrade: (trade) => {

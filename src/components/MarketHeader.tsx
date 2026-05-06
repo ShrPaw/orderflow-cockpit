@@ -9,9 +9,13 @@ export default function MarketHeader() {
   const ticker = useMarketStore(s => s.ticker)
   const mode = useMarketStore(s => s.mode)
   const connected = useMarketStore(s => s.connected)
+  const depthConnected = useMarketStore(s => s.depthConnected)
+  const tickerConnected = useMarketStore(s => s.tickerConnected)
   const connectionError = useMarketStore(s => s.connectionError)
 
   if (mode === 'demo') return null
+
+  const allConnected = connected && depthConnected && tickerConnected
 
   const isUp = liveChange >= 0
 
@@ -53,13 +57,13 @@ export default function MarketHeader() {
       </div>
 
       <div className="mh-status">
-        {!connected && mode === 'live' && (
+        {!allConnected && mode === 'live' && (
           <div className="mh-conn-badge disconnected">
             <span className="mh-conn-dot" />
             {connectionError || 'Connecting...'}
           </div>
         )}
-        {connected && mode === 'live' && (
+        {allConnected && mode === 'live' && (
           <div className="mh-conn-badge connected">
             <span className="mh-conn-dot" />
             Connected

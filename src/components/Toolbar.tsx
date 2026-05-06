@@ -13,6 +13,7 @@ export default function Toolbar() {
   const interval = useMarketStore(s => s.interval)
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
+  const tickerConnected = useMarketStore(s => s.tickerConnected)
   const followLive = useMarketStore(s => s.followLive)
   const livePrice = useMarketStore(s => s.livePrice)
   const liveChange = useMarketStore(s => s.liveChange)
@@ -106,8 +107,12 @@ export default function Toolbar() {
 
           <div className="connection-dots">
             <span
+              className={`conn-dot ${tickerConnected ? 'ok' : 'fail'}`}
+              title={tickerConnected ? 'Ticker connected' : 'Ticker disconnected'}
+            />
+            <span
               className={`conn-dot ${connected ? 'ok' : 'fail'}`}
-              title={connected ? 'aggTrade connected' : 'aggTrade disconnected'}
+              title={connected ? 'Trade stream connected' : 'Trade stream disconnected'}
             />
             <span
               className={`conn-dot ${depthConnected ? 'ok' : 'fail'}`}

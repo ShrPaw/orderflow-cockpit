@@ -4,36 +4,42 @@ export default function ConnectionStatus() {
   const mode = useMarketStore(s => s.mode)
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
+  const tickerConnected = useMarketStore(s => s.tickerConnected)
   const connectionError = useMarketStore(s => s.connectionError)
   const setMode = useMarketStore(s => s.setMode)
 
-  // In live mode, show connection error bar if not connected
   if (mode === 'live') {
+    const allConnected = connected && depthConnected && tickerConnected
+
     if (connectionError) {
       return (
         <div className="conn-bar error">
           <span className="conn-bar-icon">⚠</span>
           <span className="conn-bar-text">{connectionError}</span>
+          <span className="conn-bar-detail">
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}
+          </span>
           <button className="conn-bar-action" onClick={() => {
-            // Force reconnection by toggling mode
             setMode('demo')
             setTimeout(() => setMode('live'), 100)
           }}>Reconnect</button>
         </div>
       )
     }
-    if (!connected) {
+    if (!allConnected) {
       return (
         <div className="conn-bar connecting">
           <span className="conn-bar-spinner" />
           <span className="conn-bar-text">Connecting to Binance Futures...</span>
+          <span className="conn-bar-detail">
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}
+          </span>
         </div>
       )
     }
-    return null // Connected, no banner needed
+    return null
   }
 
-  // Demo mode banner
   return (
     <div className="conn-bar demo">
       <span className="conn-bar-icon">◉</span>
