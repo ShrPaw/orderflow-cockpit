@@ -1,0 +1,204 @@
+import { create } from 'zustand'
+import type {
+  Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
+  Interval, AppMode,
+} from '../types/market'
+import { INTERVAL_MS } from '../types/market'
+import {
+  newCandle, processTradeIntoCandle, classifyBubble, computeVolumeProfile,
+} from '../utils/aggregation'
+
+interface MarketState {
+  mode: AppMode
+  symbol: string
+  interval: Interval
+  connected: boolean
+  depthConnected: boolean
+  followLive: boolean
+
+  candles: Candle[]
+  currentCandle: Candle | null
+
+  bids: OrderLevel[]
+  asks: OrderLevel[]
+
+  recentTrades: Trade[]
+  largeTrades: Trade[]
+
+  delta: number
+  cvd: number
+  totalVolume: number
+  buyVolume: number
+  sellVolume: number
+
+  bubbles: Bubble[]
+
+  volumeProfile: VolumeLevel[]
+  heatmapLevels: HeatmapLevel[]
+
+  // Actions
+  setMode: (mode: AppMode) => void
+  setSymbol: (symbol: string) => void
+  setInterval: (interval: Interval) => void
+  setConnected: (connected: boolean) => void
+  setDepthConnected: (connected: boolean) => void
+  setFollowLive: (follow: boolean) => void
+  processTrade: (trade: Trade) => void
+  setDepth: (bids: OrderLevel[], asks: OrderLevel[]) => void
+  rebuildVolumeProfile: () => void
+  addHeatmapSnapshot: () => void
+  updateBubbles: () => void
+  reset: () => void
+}
+
+const MAX_CANDLES = 500
+const MAX_RECENT_TRADES = 200
+const MAX_LARGE_TRADES = 100
+const MAX_HEATMAP = 3000
+const MAX_BUBBLES = 500
+
+function getInitialState() {
+  return {
+    mode: 'demo' as AppMode,
+    symbol: 'BTCUSDT',
+    interval: '40s' as Interval,
+    connected: false,
+    depthConnected: false,
+    followLive: true,
+    candles: [] as Candle[],
+    currentCandle: null as Candle | null,
+    bids: [] as OrderLevel[],
+    asks: [] as OrderLevel[],
+    recentTrades: [] as Trade[],
+    largeTrades: [] as Trade[],
+    delta: 0,
+    cvd: 0,
+    totalVolume: 0,
+    buyVolume: 0,
+    sellVolume: 0,
+    bubbles: [] as Bubble[],
+    volumeProfile: [] as VolumeLevel[],
+    heatmapLevels: [] as HeatmapLevel[],
+  }
+}
+
+export const useMarketStore = create<MarketState>((set, get) => ({
+  ...getInitialState(),
+
+  setMode: (mode) => set({ mode }),
+  setSymbol: (symbol) => {
+    set({ ...getInitialState(), symbol, mode: get().mode })
+  },
+  setInterval: (interval) => {
+    set({ interval, candles: [], currentCandle: null, bubbles: [] })
+  },
+  setConnected: (connected) => set({ connected }),
+  setDepthConnected: (depthConnected) => set({ depthConnected }),
+  setFollowLive: (followLive) => set({ followLive }),
+
+  processTrade: (trade) => {
+    const state = get()
+    const intervalMs = INTERVAL_MS[state.interval]
+    const bucket = Math.floor(trade.time / intervalMs) * intervalMs
+
+    let currentCandle = state.currentCandle
+
+    if (!currentCandle || currentCandle.openTime !== bucket) {
+      // Close previous candle
+      if (currentCandle) {
+        const closedBubbles = currentCandle.bubbles.map(b =>
+          b.state === 'PENDING' ? { ...b, state: 'EXHAUSTED' as const, confidence: 0.4 } : b
+        )
+        const closed = { ...currentCandle, bubbles: closedBubbles }
+        const candles = [...state.candles, closed].slice(-MAX_CANDLES)
+        set({ candles })
+      }
+      currentCandle = newCandle(bucket, trade.price)
+    }
+
+    currentCandle = processTradeIntoCandle(currentCandle, trade)
+
+    // Update bubble states
+    currentCandle = {
+      ...currentCandle,
+      bubbles: currentCandle.bubbles.map(b =>
+        classifyBubble(b, currentCandle!.close, currentCandle!.high, currentCandle!.low)
+      ),
+    }
+
+    // Recent trades
+    const recentTrades = [trade, ...state.recentTrades].slice(0, MAX_RECENT_TRADES)
+
+    // Large trades
+    const largeTrades = trade.notional > 5000
+      ? [trade, ...state.largeTrades].slice(0, MAX_LARGE_TRADES)
+      : state.largeTrades
+
+    // Global stats
+    const totalVolume = state.totalVolume + trade.qty
+    const buyVolume = state.buyVolume + (trade.side === 'buy' ? trade.qty : 0)
+    const sellVolume = state.sellVolume + (trade.side === 'sell' ? trade.qty : 0)
+    const delta = state.delta + (trade.side === 'buy' ? trade.qty : -trade.qty)
+    const cvd = state.cvd + (trade.side === 'buy' ? trade.qty : -trade.qty)
+
+    // Global bubbles
+    const allBubbles = [...state.bubbles, ...currentCandle.bubbles.filter(
+      b => !state.bubbles.some(sb => sb.id === b.id)
+    )].slice(-MAX_BUBBLES)
+
+    set({
+      currentCandle,
+      recentTrades,
+      largeTrades,
+      totalVolume,
+      buyVolume,
+      sellVolume,
+      delta,
+      cvd,
+      bubbles: allBubbles,
+    })
+  },
+
+  setDepth: (bids, asks) => set({ bids, asks }),
+
+  rebuildVolumeProfile: () => {
+    const state = get()
+    const allCandles = state.currentCandle
+      ? [...state.candles, state.currentCandle]
+      : state.candles
+    const profile = computeVolumeProfile(allCandles)
+    set({ volumeProfile: profile as VolumeLevel[] })
+  },
+
+  addHeatmapSnapshot: () => {
+    const state = get()
+    if (state.bids.length === 0 && state.asks.length === 0) return
+
+    const now = Date.now()
+    const snapshot: HeatmapLevel[] = []
+
+    for (const bid of state.bids.slice(0, 10)) {
+      snapshot.push({ time: now, price: bid.price, volume: bid.qty, bidVolume: bid.qty, askVolume: 0 })
+    }
+    for (const ask of state.asks.slice(0, 10)) {
+      snapshot.push({ time: now, price: ask.price, volume: ask.qty, bidVolume: 0, askVolume: ask.qty })
+    }
+
+    const heatmapLevels = [...state.heatmapLevels, ...snapshot].slice(-MAX_HEATMAP)
+    set({ heatmapLevels })
+  },
+
+  updateBubbles: () => {
+    const state = get()
+    if (!state.currentCandle) return
+
+    const updated = state.currentCandle.bubbles.map(b =>
+      classifyBubble(b, state.currentCandle!.close, state.currentCandle!.high, state.currentCandle!.low)
+    )
+    set({
+      currentCandle: { ...state.currentCandle, bubbles: updated },
+    })
+  },
+
+  reset: () => set(getInitialState()),
+}))
