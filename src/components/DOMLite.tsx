@@ -26,7 +26,7 @@ export default function DOMLite() {
   return (
     <div className="dom-lite">
       <div className="dom-header">
-        <span className="dom-title">DOM-Lite</span>
+        <span className="dom-title">Order Book</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
 
@@ -56,7 +56,7 @@ export default function DOMLite() {
 
       <div className="dom-imbalance">
         <span className={imbalance > 0 ? 'green' : imbalance < 0 ? 'red' : ''}>
-          Imbalance: {imbalance > 0 ? '+' : ''}{imbalance.toFixed(1)}%
+          {imbalance > 0 ? '▲' : imbalance < 0 ? '▼' : '—'} {Math.abs(imbalance).toFixed(1)}%
         </span>
         <span className="dom-side-hint">
           {imbalance > 15 ? 'Bid heavy' : imbalance < -15 ? 'Ask heavy' : 'Balanced'}

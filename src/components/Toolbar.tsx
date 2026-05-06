@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
 
@@ -27,6 +27,46 @@ export default function Toolbar() {
   const onKey = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') onSymbolSubmit()
   }, [onSymbolSubmit])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
+      const api = (window as any).__chartApi
+      if (!api) return
+      switch (e.key) {
+        case 'Home':
+          e.preventDefault()
+          api.goLive()
+          break
+        case 'r':
+        case 'R':
+          e.preventDefault()
+          api.resetView()
+          break
+        case 'f':
+        case 'F':
+          e.preventDefault()
+          api.fitRecent()
+          break
+        case 'a':
+        case 'A':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault()
+            api.fitAll()
+          }
+          break
+        case '0':
+          e.preventDefault()
+          api.resetView()
+          break
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  const chartApi = (window as any).__chartApi
 
   return (
     <div className="toolbar">
@@ -60,23 +100,52 @@ export default function Toolbar() {
         </div>
       </div>
 
+      <div className="toolbar-center">
+        <div className={`view-mode-indicator ${followLive ? 'live' : 'manual'}`}>
+          <span className="view-dot" />
+          <span className="view-label">{followLive ? 'LIVE' : 'HISTORY'}</span>
+        </div>
+      </div>
+
       <div className="toolbar-right">
-        <button
-          className={`toggle-btn ${followLive ? 'active' : ''}`}
-          onClick={() => {
-            const next = !followLive
-            setFollowLive(next)
-          }}
-          title="Follow live candle (double-click chart)"
-        >
-          ◉ Live
-        </button>
+        <div className="nav-controls">
+          <button
+            className={`nav-btn ${followLive ? 'active' : ''}`}
+            onClick={() => chartApi?.goLive()}
+            title="Return to live edge (Home)"
+          >
+            ◉ Live
+          </button>
+          <button
+            className="nav-btn"
+            onClick={() => chartApi?.fitRecent()}
+            title="Fit recent 250 candles (F)"
+          >
+            ⊞ Recent
+          </button>
+          <button
+            className="nav-btn"
+            onClick={() => chartApi?.fitAll()}
+            title="Fit all history (A)"
+          >
+            ⊞ All
+          </button>
+          <button
+            className="nav-btn"
+            onClick={() => chartApi?.resetView()}
+            title="Reset view (R / 0)"
+          >
+            ↺ Reset
+          </button>
+        </div>
+
+        <div className="toolbar-divider" />
 
         <button
           className={`toggle-btn ${mode === 'demo' ? 'active' : ''}`}
           onClick={() => setMode(mode === 'demo' ? 'live' : 'demo')}
         >
-          {mode === 'demo' ? '▶ Switch to Live' : '◀ Switch to Demo'}
+          {mode === 'demo' ? '▶ Live' : '◉ Demo'}
         </button>
       </div>
     </div>

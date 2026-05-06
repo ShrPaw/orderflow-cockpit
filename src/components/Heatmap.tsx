@@ -1,12 +1,21 @@
 import { useRef, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 
-const COLORS_BID = ['rgba(34,197,94,0.05)', 'rgba(34,197,94,0.2)', 'rgba(34,197,94,0.5)', 'rgba(34,197,94,0.8)']
-const COLORS_ASK = ['rgba(239,68,68,0.05)', 'rgba(239,68,68,0.2)', 'rgba(239,68,68,0.5)', 'rgba(239,68,68,0.8)']
+const BID_COLORS = [
+  'rgba(0,212,170,0.04)',
+  'rgba(0,212,170,0.12)',
+  'rgba(0,212,170,0.25)',
+  'rgba(0,212,170,0.5)',
+]
+const ASK_COLORS = [
+  'rgba(255,77,106,0.04)',
+  'rgba(255,77,106,0.12)',
+  'rgba(255,77,106,0.25)',
+  'rgba(255,77,106,0.5)',
+]
 
 export default function Heatmap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const heatmapLevels = useMarketStore(s => s.heatmapLevels)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
 
@@ -25,53 +34,65 @@ export default function Heatmap() {
     canvas.style.height = h + 'px'
     ctx.scale(dpr, dpr)
 
-    ctx.fillStyle = '#0a0e17'
+    ctx.fillStyle = '#080c14'
     ctx.fillRect(0, 0, w, h)
 
-    if (heatmapLevels.length === 0 && bids.length === 0) {
-      ctx.fillStyle = '#3d4a5e'
-      ctx.font = '11px monospace'
+    const allLevels = [
+      ...bids.slice(0, 10).map(b => ({ ...b, side: 'bid' as const })),
+      ...asks.slice(0, 10).map(a => ({ ...a, side: 'ask' as const })),
+    ]
+
+    if (allLevels.length === 0) {
+      ctx.fillStyle = '#3a4560'
+      ctx.font = '11px "SF Mono", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText('Waiting for depth data...', w / 2, h / 2)
+      ctx.fillText('Waiting for depth data…', w / 2, h / 2)
       return
     }
-
-    // Use current depth snapshot as heatmap
-    const allLevels = [...bids.slice(0, 10).map(b => ({ ...b, side: 'bid' as const })),
-                       ...asks.slice(0, 10).map(a => ({ ...a, side: 'ask' as const }))]
-
-    if (allLevels.length === 0) return
 
     const prices = allLevels.map(l => l.price)
     const minPrice = Math.min(...prices)
     const maxPrice = Math.max(...prices)
     const priceRange = maxPrice - minPrice || 1
-
     const maxQty = Math.max(...allLevels.map(l => l.qty))
-    const barH = Math.max(2, h / allLevels.length)
+    const barH = Math.max(3, h / allLevels.length)
 
     for (let i = 0; i < allLevels.length; i++) {
       const level = allLevels[i]
       const y = h - ((level.price - minPrice) / priceRange) * h - barH
-      const intensity = level.qty / maxQty
+      const intensity = Math.min(1, level.qty / maxQty)
       const colorIdx = Math.min(3, Math.floor(intensity * 4))
 
-      ctx.fillStyle = level.side === 'bid' ? COLORS_BID[colorIdx] : COLORS_ASK[colorIdx]
+      ctx.fillStyle = level.side === 'bid' ? BID_COLORS[colorIdx] : ASK_COLORS[colorIdx]
       ctx.fillRect(0, y, w, barH)
 
-      // Label
+      // Subtle border between levels
+      ctx.strokeStyle = 'rgba(255,255,255,0.02)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(0, y + barH)
+      ctx.lineTo(w, y + barH)
+      ctx.stroke()
+
+      // Price label
       if (i % 2 === 0) {
-        ctx.fillStyle = '#3d4a5e'
-        ctx.font = '9px monospace'
+        ctx.fillStyle = '#3a4560'
+        ctx.font = '9px "SF Mono", monospace'
         ctx.textAlign = 'left'
-        ctx.fillText(level.price.toFixed(0), 4, y + barH - 2)
+        ctx.fillText(level.price.toFixed(0), 4, y + barH - 3)
       }
+
+      // Qty bar
+      const qtyBarW = (intensity * 0.6) * w
+      const qtyColor = level.side === 'bid' ? 'rgba(0,212,170,0.15)' : 'rgba(255,77,106,0.15)'
+      ctx.fillStyle = qtyColor
+      ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
     }
-  }, [heatmapLevels, bids, asks])
+  }, [bids, asks])
 
   return (
     <div className="heatmap-container">
-      <div className="heatmap-header">Liquidity Heatmap</div>
+      <div className="heatmap-header">Liquidity Depth</div>
       <div className="heatmap-canvas-wrap">
         <canvas ref={canvasRef} />
       </div>

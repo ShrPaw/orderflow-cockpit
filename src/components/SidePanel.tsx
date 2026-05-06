@@ -1,5 +1,6 @@
+import { useMemo } from 'react'
 import { useMarketStore } from '../stores/marketStore'
-import { fmtNum, fmtPrice, fmtPct } from '../utils/formatters'
+import { fmtNum, fmtPrice } from '../utils/formatters'
 
 export default function SidePanel() {
   const delta = useMarketStore(s => s.delta)
@@ -12,36 +13,55 @@ export default function SidePanel() {
   const bubbles = useMarketStore(s => s.bubbles)
 
   const buyPct = totalVolume > 0 ? (buyVolume / totalVolume) * 100 : 50
-  const sellPct = 100 - buyPct
 
   const accepted = bubbles.filter(b => b.state === 'ACCEPTED').length
   const rejected = bubbles.filter(b => b.state === 'REJECTED').length
   const absorbed = bubbles.filter(b => b.state === 'ABSORBED').length
   const pending = bubbles.filter(b => b.state === 'PENDING').length
+  const exhausted = bubbles.filter(b => b.state === 'EXHAUSTED').length
 
   const candle = currentCandle
-  const footprintEntries = candle
-    ? Object.entries(candle.priceMap)
-        .map(([p, l]) => ({ price: parseFloat(p), ...l }))
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 8)
-    : []
+
+  const footprintEntries = useMemo(() => {
+    if (!candle) return []
+    return Object.entries(candle.priceMap)
+      .map(([p, l]) => ({ price: parseFloat(p), ...l }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 6)
+  }, [candle])
+
+  const vwap = useMemo(() => {
+    if (!candle || candle.volume === 0) return null
+    // Simple VWAP approximation from priceMap
+    let num = 0, den = 0
+    for (const [p, l] of Object.entries(candle.priceMap)) {
+      const price = parseFloat(p)
+      num += price * l.total
+      den += l.total
+    }
+    return den > 0 ? num / den : null
+  }, [candle])
 
   return (
     <div className="side-panel">
+      {/* Delta / CVD */}
       <div className="panel-section">
-        <div className="panel-title">Delta / CVD</div>
+        <div className="panel-title">Delta & CVD</div>
         <div className="stat-row">
           <span className="label">Delta</span>
-          <span className={`value ${delta >= 0 ? 'green' : 'red'}`}>{fmtNum(delta)}</span>
+          <span className={`value ${delta >= 0 ? 'green' : 'red'}`}>
+            {delta >= 0 ? '+' : ''}{fmtNum(delta)}
+          </span>
         </div>
         <div className="stat-row">
           <span className="label">CVD</span>
-          <span className={`value ${cvd >= 0 ? 'green' : 'red'}`}>{fmtNum(cvd)}</span>
+          <span className={`value ${cvd >= 0 ? 'green' : 'red'}`}>
+            {cvd >= 0 ? '+' : ''}{fmtNum(cvd)}
+          </span>
         </div>
         <div className="volume-bar">
           <div className="buy-bar" style={{ width: `${buyPct}%` }} />
-          <div className="sell-bar" style={{ width: `${sellPct}%` }} />
+          <div className="sell-bar" style={{ width: `${100 - buyPct}%` }} />
         </div>
         <div className="stat-row small">
           <span>Buy {fmtNum(buyVolume)}</span>
@@ -49,10 +69,11 @@ export default function SidePanel() {
         </div>
       </div>
 
+      {/* Volume & Activity */}
       <div className="panel-section">
-        <div className="panel-title">Volume</div>
+        <div className="panel-title">Volume & Activity</div>
         <div className="stat-row">
-          <span className="label">Total</span>
+          <span className="label">Total Volume</span>
           <span className="value">{fmtNum(totalVolume)}</span>
         </div>
         {candle && (
@@ -65,12 +86,23 @@ export default function SidePanel() {
               <span className="label">Trades</span>
               <span className="value">{candle.tradeCount}</span>
             </div>
+            <div className="stat-row">
+              <span className="label">Large Prints</span>
+              <span className="value yellow">{candle.largeTradeCount}</span>
+            </div>
           </>
+        )}
+        {vwap !== null && (
+          <div className="stat-row">
+            <span className="label">VWAP</span>
+            <span className="value purple">{fmtPrice(vwap)}</span>
+          </div>
         )}
       </div>
 
+      {/* Bubble State Machine */}
       <div className="panel-section">
-        <div className="panel-title">Bubbles</div>
+        <div className="panel-title">Bubble States</div>
         <div className="stat-row">
           <span className="label">Pending</span>
           <span className="value yellow">{pending}</span>
@@ -87,12 +119,17 @@ export default function SidePanel() {
           <span className="label">Absorbed</span>
           <span className="value cyan">{absorbed}</span>
         </div>
+        <div className="stat-row">
+          <span className="label">Exhausted</span>
+          <span className="value" style={{ color: '#525c72' }}>{exhausted}</span>
+        </div>
       </div>
 
+      {/* Large Trades */}
       <div className="panel-section">
         <div className="panel-title">Large Trades</div>
         <div className="trade-list">
-          {largeTrades.slice(0, 10).map(t => (
+          {largeTrades.slice(0, 8).map(t => (
             <div key={t.id} className={`trade-row ${t.side}`}>
               <span className="trade-price">{fmtPrice(t.price)}</span>
               <span className="trade-qty">{t.qty.toFixed(4)}</span>
@@ -103,14 +140,21 @@ export default function SidePanel() {
         </div>
       </div>
 
+      {/* Top Footprint Levels */}
       <div className="panel-section">
-        <div className="panel-title">Top Footprint Levels</div>
+        <div className="panel-title">Top Footprint</div>
         {footprintEntries.map(l => (
           <div key={l.price} className="fp-row">
             <span className="fp-price">{fmtPrice(l.price)}</span>
             <div className="fp-bar-wrap">
-              <div className="fp-buy" style={{ width: `${l.total > 0 ? (l.buy / l.total) * 100 : 50}%` }} />
-              <div className="fp-sell" style={{ width: `${l.total > 0 ? (l.sell / l.total) * 100 : 50}%` }} />
+              <div
+                className="fp-buy"
+                style={{ width: `${l.total > 0 ? (l.buy / l.total) * 100 : 50}%` }}
+              />
+              <div
+                className="fp-sell"
+                style={{ width: `${l.total > 0 ? (l.sell / l.total) * 100 : 50}%` }}
+              />
             </div>
             <span className="fp-total">{fmtNum(l.total)}</span>
           </div>

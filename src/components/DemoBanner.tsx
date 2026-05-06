@@ -8,7 +8,7 @@ export default function DemoBanner() {
 
   return (
     <div className="demo-banner">
-      <span>DEMO MODE — Simulated data</span>
+      <span>◉ DEMO MODE — Simulated market data</span>
       <button onClick={() => setMode('live')}>Switch to Live</button>
     </div>
   )
