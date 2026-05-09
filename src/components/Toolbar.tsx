@@ -1,13 +1,19 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
+import type { ChartEngine } from '../App'
 import { INSTRUMENTS } from '../types/market'
 import { fmtPrice } from '../utils/formatters'
 import AssetSelector from './AssetSelector'
 
 const INTERVALS: Interval[] = ['10s', '20s', '40s', '1m', '3m', '5m']
 
-export default function Toolbar() {
+interface ToolbarProps {
+  chartEngine: ChartEngine
+  onChartEngineChange: (engine: ChartEngine) => void
+}
+
+export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarProps) {
   const mode = useMarketStore(s => s.mode)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
@@ -166,6 +172,18 @@ export default function Toolbar() {
               onClick={() => chartApi?.resetView()}
               title="Reset view (R / 0)"
             >↺ Reset</button>
+          </div>
+
+          {/* Chart Engine Toggle */}
+          <div className="chart-engine-toggle" title="Switch chart engine">
+            <button
+              className={`engine-btn ${chartEngine === 'legacy' ? 'active' : ''}`}
+              onClick={() => onChartEngineChange('legacy')}
+            >Legacy</button>
+            <button
+              className={`engine-btn ${chartEngine === 'lightweight' ? 'active' : ''}`}
+              onClick={() => onChartEngineChange('lightweight')}
+            >LW Exp</button>
           </div>
         </div>
       </div>

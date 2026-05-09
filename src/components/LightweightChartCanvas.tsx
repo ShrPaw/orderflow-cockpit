@@ -57,6 +57,27 @@ import {
   adaptSingleVolume,
 } from '../utils/lightweightChartAdapters'
 
+// ─── Round-number price levels (simple non-invasive overlay) ───
+function getRoundLevels(price: number): number[] {
+  if (price <= 0) return []
+  // Determine step based on price magnitude
+  let step: number
+  if (price > 50000) step = 1000
+  else if (price > 10000) step = 500
+  else if (price > 1000) step = 100
+  else if (price > 100) step = 50
+  else if (price > 10) step = 5
+  else step = 1
+
+  const levels: number[] = []
+  const center = Math.round(price / step) * step
+  for (let i = -5; i <= 5; i++) {
+    const level = center + i * step
+    if (level > 0) levels.push(level)
+  }
+  return levels
+}
+
 // ─── Theme constants matching the Cockpit midnight-slate palette ───
 const THEME = {
   bg: '#06090f',
@@ -81,6 +102,7 @@ export default function LightweightChartCanvas() {
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> | null>(null)
+  const roundLevelLinesRef = useRef<Array<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>>>([])
   const lastCandleTimeRef = useRef<number>(0)
 
   // Store selectors
@@ -202,6 +224,7 @@ export default function LightweightChartCanvas() {
       candleSeriesRef.current = null
       volumeSeriesRef.current = null
       priceLineRef.current = null
+      roundLevelLinesRef.current = []
       lastCandleTimeRef.current = 0
     }
   }, []) // Create chart once on mount
@@ -314,6 +337,39 @@ export default function LightweightChartCanvas() {
     }
   }, [livePrice, currentCandle])
 
+  // ─── Round-number price levels ───
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current
+    if (!candleSeries || !livePrice || livePrice <= 0) return
+
+    // Remove old round level lines
+    for (const line of roundLevelLinesRef.current) {
+      try { candleSeries.removePriceLine(line) } catch { /* already removed */ }
+    }
+    roundLevelLinesRef.current = []
+
+    // Add round-number levels near current price
+    const levels = getRoundLevels(livePrice)
+    for (const level of levels) {
+      const line = candleSeries.createPriceLine({
+        price: level,
+        color: 'rgba(100,130,170,0.12)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: false,
+        title: '',
+      })
+      roundLevelLinesRef.current.push(line)
+    }
+
+    return () => {
+      for (const line of roundLevelLinesRef.current) {
+        try { candleSeries.removePriceLine(line) } catch { /* ok */ }
+      }
+      roundLevelLinesRef.current = []
+    }
+  }, [livePrice])
+
   // ─── Track user scroll to toggle followLive ───
   useEffect(() => {
     const chart = chartRef.current
@@ -334,6 +390,25 @@ export default function LightweightChartCanvas() {
   }, [setFollowLive])
 
   return (
-    <div ref={containerRef} className="chart-container" />
+    <div ref={containerRef} className="chart-container" style={{ position: 'relative' }}>
+      <div style={{
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        zIndex: 10,
+        padding: '3px 8px',
+        background: 'rgba(228,167,59,0.08)',
+        border: '1px solid rgba(228,167,59,0.15)',
+        borderRadius: 4,
+        fontSize: 9,
+        fontWeight: 600,
+        letterSpacing: '0.4px',
+        color: '#e4a73b',
+        pointerEvents: 'none',
+        userSelect: 'none',
+      }}>
+        ⚠ EXPERIMENTAL — orderflow overlays not fully migrated yet
+      </div>
+    </div>
   )
 }

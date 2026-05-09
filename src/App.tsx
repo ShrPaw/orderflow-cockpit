@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMarketStore } from './stores/marketStore'
 import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
 import { connectBinanceDepth, getDepthDiagnostics } from './connectors/binanceDepth'
@@ -8,11 +8,10 @@ import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connecto
 import ChartCanvas from './components/ChartCanvas'
 import LightweightChartCanvas from './components/LightweightChartCanvas'
 
-// Toggle: true = Lightweight Charts engine, false = legacy canvas renderer
-// ⚠️  Lightweight Charts is EXPERIMENTAL — does not yet support orderflow overlays
+// Chart engine toggle — 'legacy' is default, 'lightweight' is experimental
+// Lightweight Charts does not yet support orderflow overlays
 // (round levels, orderbook liquidity, rejection coloring, bubbles, heatmap, etc.)
-// Keep false until Cockpit-specific overlays are implemented.
-const USE_LIGHTWEIGHT_CHART = false
+export type ChartEngine = 'legacy' | 'lightweight'
 import Toolbar from './components/Toolbar'
 import SidePanel from './components/SidePanel'
 import DOMLite from './components/DOMLite'
@@ -23,6 +22,7 @@ import MarketHeader from './components/MarketHeader'
 import './App.css'
 
 export default function App() {
+  const [chartEngine, setChartEngine] = useState<ChartEngine>('legacy')
   const mode = useMarketStore(s => s.mode)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
@@ -188,11 +188,11 @@ export default function App() {
   return (
     <div className="app">
       <ConnectionStatus />
-      <Toolbar />
+      <Toolbar chartEngine={chartEngine} onChartEngineChange={setChartEngine} />
       <MarketHeader />
       <div className="main-area">
         <div className="chart-panel">
-          {USE_LIGHTWEIGHT_CHART ? <LightweightChartCanvas /> : <ChartCanvas />}
+          {chartEngine === 'lightweight' ? <LightweightChartCanvas /> : <ChartCanvas />}
         </div>
         <div className="right-panels">
           <SidePanel />
