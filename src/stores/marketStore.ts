@@ -71,7 +71,7 @@ interface MarketState {
   reset: () => void
 }
 
-const MAX_CANDLES = 500
+const MAX_CANDLES = 1500
 const MAX_RECENT_TRADES = 200
 const MAX_LARGE_TRADES = 100
 const MAX_HEATMAP = 3000

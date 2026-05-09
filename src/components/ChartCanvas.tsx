@@ -22,6 +22,13 @@ export default function ChartCanvas() {
   const followLive = useMarketStore(s => s.followLive)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
   const livePrice = useMarketStore(s => s.livePrice)
+  const symbol = useMarketStore(s => s.symbol)
+
+  // Reset view state on symbol switch
+  useEffect(() => {
+    viewRef.current = createViewState()
+    setFollowLive(true)
+  }, [symbol, setFollowLive])
 
   // Sync followLive from store → view
   useEffect(() => {

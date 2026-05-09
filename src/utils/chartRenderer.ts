@@ -74,7 +74,7 @@ export interface ViewState {
 }
 
 const MIN_CANDLES = 5
-const MAX_CANDLES = 800
+const MAX_CANDLES = 1500
 const DEFAULT_CANDLES = 120
 const BUBBLE_MIN_R = 3
 const BUBBLE_MAX_R = 22
@@ -804,20 +804,26 @@ export function resetView(view: ViewState): ViewState {
 
 export function fitAllData(view: ViewState, totalCandles: number, width: number, height: number): ViewState {
   if (totalCandles === 0) return view
+  // Don't try to show more candles than can be readable.
+  // With a minimum candle width of ~3px, we can show about width/3 candles.
+  // Cap at a reasonable amount so candles stay readable.
+  const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
+  const maxReadable = Math.max(MIN_CANDLES, Math.floor(chartW / 3))
+  const visible = Math.min(totalCandles, maxReadable, MAX_CANDLES)
   return {
     ...view,
     anchorIndex: totalCandles - 1,
-    candlesVisible: Math.max(MIN_CANDLES, Math.min(MAX_CANDLES, totalCandles + 20)),
+    candlesVisible: visible,
     followLive: false,
   }
 }
 
 export function fitRecent(view: ViewState, totalCandles: number): ViewState {
-  const recentCount = Math.min(250, totalCandles)
+  const recentCount = Math.min(200, totalCandles)
   return {
     ...view,
     anchorIndex: totalCandles - 1,
-    candlesVisible: recentCount + 20,
+    candlesVisible: Math.max(MIN_CANDLES, recentCount),
     followLive: true,
   }
 }

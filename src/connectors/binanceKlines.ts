@@ -30,7 +30,7 @@ const FAPI_BASE = 'https://fapi.binance.com'
 export async function fetchHistoricalKlines(
   symbol: string,
   interval: string,
-  limit = 500,
+  limit = 1000,
 ): Promise<Candle[]> {
   // Map app interval to Binance kline interval
   const klineInterval = mapToKlineInterval(interval)

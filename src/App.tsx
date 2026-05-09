@@ -68,7 +68,7 @@ export default function App() {
 
     if (mode === 'live') {
       // Fetch historical candles first, then connect live streams
-      fetchHistoricalKlines(symbol, interval, 500).then(historical => {
+      fetchHistoricalKlines(symbol, interval, 1000).then(historical => {
         if (historical.length > 0) {
           loadHistoricalCandles(historical)
           console.log(`[Klines] Loaded ${historical.length} historical candles for ${symbol}`)
