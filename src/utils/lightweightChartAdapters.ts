@@ -1,6 +1,8 @@
 /**
  * lightweightChartAdapters.ts
  *
+ * ⚠️  EXPERIMENTAL — used by LightweightChartCanvas (not production default).
+ *
  * Converts the app's Candle[] into Lightweight Charts format.
  * - Does NOT mutate original store objects.
  * - Validates timestamps (ms → seconds).

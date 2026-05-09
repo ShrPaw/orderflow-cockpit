@@ -67,6 +67,7 @@ interface MarketState {
   setConnectionError: (error: string | null) => void
   setInstruments: (instruments: Instrument[]) => void
   setInstrumentsLoading: (loading: boolean) => void
+  loadHistoricalCandles: (candles: Candle[]) => void
   reset: () => void
 }
 
@@ -287,6 +288,21 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   setConnectionError: (error) => set({ connectionError: error }),
   setInstruments: (instruments) => set({ instruments }),
   setInstrumentsLoading: (loading) => set({ instrumentsLoading: loading }),
+
+  loadHistoricalCandles: (historicalCandles) => {
+    const state = get()
+    // Merge with existing candles, deduplicate by openTime, sort ascending
+    const existing = state.candles
+    const merged = new Map<number, Candle>()
+    for (const c of existing) merged.set(c.openTime, c)
+    for (const c of historicalCandles) {
+      // Only add if we don't already have a candle at this time
+      // (live data takes priority over historical)
+      if (!merged.has(c.openTime)) merged.set(c.openTime, c)
+    }
+    const sorted = Array.from(merged.values()).sort((a, b) => a.openTime - b.openTime)
+    set({ candles: sorted.slice(-MAX_CANDLES) })
+  },
 
   reset: () => set(getInitialState()),
 }))

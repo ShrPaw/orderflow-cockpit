@@ -3,12 +3,16 @@ import { useMarketStore } from './stores/marketStore'
 import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
 import { connectBinanceDepth, getDepthDiagnostics } from './connectors/binanceDepth'
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
+import { fetchHistoricalKlines } from './connectors/binanceKlines'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
 import ChartCanvas from './components/ChartCanvas'
 import LightweightChartCanvas from './components/LightweightChartCanvas'
 
 // Toggle: true = Lightweight Charts engine, false = legacy canvas renderer
-const USE_LIGHTWEIGHT_CHART = true
+// ⚠️  Lightweight Charts is EXPERIMENTAL — does not yet support orderflow overlays
+// (round levels, orderbook liquidity, rejection coloring, bubbles, heatmap, etc.)
+// Keep false until Cockpit-specific overlays are implemented.
+const USE_LIGHTWEIGHT_CHART = false
 import Toolbar from './components/Toolbar'
 import SidePanel from './components/SidePanel'
 import DOMLite from './components/DOMLite'
@@ -34,6 +38,7 @@ export default function App() {
   const setTicker = useMarketStore(s => s.setTicker)
   const updateLivePrice = useMarketStore(s => s.updateLivePrice)
   const setConnectionError = useMarketStore(s => s.setConnectionError)
+  const loadHistoricalCandles = useMarketStore(s => s.loadHistoricalCandles)
 
   const cleanupTrade = useRef<(() => void) | null>(null)
   const cleanupDepth = useRef<(() => void) | null>(null)
@@ -62,6 +67,16 @@ export default function App() {
     }
 
     if (mode === 'live') {
+      // Fetch historical candles first, then connect live streams
+      fetchHistoricalKlines(symbol, interval, 500).then(historical => {
+        if (historical.length > 0) {
+          loadHistoricalCandles(historical)
+          console.log(`[Klines] Loaded ${historical.length} historical candles for ${symbol}`)
+        }
+      }).catch(err => {
+        console.warn('[Klines] Historical load failed:', err)
+      })
+
       // Fetch 24h ticker immediately
       fetchTicker24h(symbol).then(ticker => {
         if (ticker) {
@@ -158,7 +173,7 @@ export default function App() {
       if (tickerInterval.current) clearInterval(tickerInterval.current)
       if (diagInterval.current) clearInterval(diagInterval.current)
     }
-  }, [mode, symbol, processTrade, setDepth, setConnected, setDepthConnected, setTickerConnected, setTicker, updateLivePrice, setConnectionError])
+  }, [mode, symbol, interval, processTrade, setDepth, setConnected, setDepthConnected, setTickerConnected, setTicker, updateLivePrice, setConnectionError, loadHistoricalCandles])
 
   // Periodic volume profile rebuild
   useEffect(() => {

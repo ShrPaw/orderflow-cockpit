@@ -1,12 +1,29 @@
 /**
  * LightweightChartCanvas.tsx
  *
- * Drop-in replacement for ChartCanvas.tsx using TradingView Lightweight Charts v5.
- * Renders candlesticks + volume histogram from the existing market store.
+ * ⚠️  EXPERIMENTAL — NOT production default yet.
  *
- * Phase 1: Core chart engine only.
- * Future overlays (big trade bubbles, liquidation zones, heatmap, drawing tools)
- * should be added as separate layers on top of this component.
+ * This component uses TradingView Lightweight Charts v5 as the chart engine.
+ * It is currently behind a feature toggle (USE_LIGHTWEIGHT_CHART = false in App.tsx).
+ *
+ * Before making this the default, it must support Cockpit-specific overlays:
+ * - round-level overlays (key price levels from orderbook)
+ * - orderbook liquidity levels
+ * - rejection/resistance coloring
+ * - support/resistance conversion state
+ * - big trade bubbles (large order flow events)
+ * - absorption markers
+ * - heatmap synchronization with orderbook depth
+ * - volume profile / price-level context from footprint data
+ * - drawing tools (trendlines, rectangles, alert lines)
+ *
+ * Currently only renders basic candlesticks + volume histogram.
+ * Does NOT display orderflow-specific context that defines the Cockpit product.
+ *
+ * To test: set USE_LIGHTWEIGHT_CHART = true in App.tsx
+ *
+ * Phase 1: Core chart engine only (done)
+ * Phase 2: Orderflow overlays (not started)
  *
  * TODO: rectangle liquidity zones
  * TODO: trendline drawing
@@ -16,6 +33,8 @@
  * TODO: big trade bubbles
  * TODO: heatmap custom series
  * TODO: volume profile overlay
+ * TODO: round-level overlays from orderbook
+ * TODO: rejection/resistance coloring
  */
 
 import { useRef, useEffect } from 'react'
