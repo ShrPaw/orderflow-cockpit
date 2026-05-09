@@ -183,7 +183,8 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
             <button
               className={`engine-btn ${chartEngine === 'lightweight' ? 'active' : ''}`}
               onClick={() => onChartEngineChange('lightweight')}
-            >LW Exp</button>
+              title="Experimental chart engine — orderflow overlays not fully migrated yet"
+            >Lightweight ⚠</button>
           </div>
         </div>
       </div>

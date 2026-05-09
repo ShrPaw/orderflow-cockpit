@@ -4,14 +4,14 @@
  * Fetches historical candles from Binance USDT-M Futures REST API.
  * Converts them into the app's Candle shape.
  *
- * Klines do not provide bid/ask volume split, so:
- * - buyVolume = 0
- * - sellVolume = 0
- * - delta = 0
- * - priceMap = {}
- * - bubbles = []
+ * Binance Futures klines include takerBuyBaseVolume and numberOfTrades,
+ * so we CAN populate buyVolume, sellVolume, delta, and tradeCount
+ * from historical data.
  *
- * These are filled in later as live trades arrive.
+ * priceMap remains empty — klines do not provide price-level footprint.
+ * bubbles remains empty — no large-trade classification from klines.
+ *
+ * Live trades continue to fill in priceMap and bubbles from the trade stream.
  */
 
 import type { Candle } from '../types/market'
@@ -83,9 +83,16 @@ function parseKline(k: unknown[]): Candle | null {
     const volume = parseFloat(k[5] as string)
     const closeTime = Number(k[6])
     const trades = Number(k[8])
+    const takerBuyBaseVol = parseFloat(k[9] as string)
 
     if (!isFinite(open) || !isFinite(high) || !isFinite(low) || !isFinite(close)) return null
     if (openTime <= 0 || volume < 0) return null
+
+    // Binance Futures klines provide takerBuyBaseVolume (field 9)
+    // which gives us the buy/sell split for historical candles.
+    const buyVolume = isFinite(takerBuyBaseVol) ? takerBuyBaseVol : 0
+    const sellVolume = volume - buyVolume
+    const delta = buyVolume - sellVolume
 
     return {
       openTime,
@@ -95,15 +102,15 @@ function parseKline(k: unknown[]): Candle | null {
       low,
       close,
       volume,
-      buyVolume: 0,   // klines don't provide bid/ask split
-      sellVolume: 0,
-      delta: 0,
+      buyVolume,
+      sellVolume,
+      delta,
       tradeCount: trades,
       maxTradeSize: 0,
       largeTradeCount: 0,
       bubbleCount: 0,
-      priceMap: {},
-      bubbles: [],
+      priceMap: {},   // klines don't provide price-level footprint
+      bubbles: [],    // no bubble classification from klines
     }
   } catch {
     return null

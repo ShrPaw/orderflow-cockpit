@@ -103,6 +103,13 @@ export default function SidePanel() {
       {/* Bubble State Machine */}
       <div className="panel-section">
         <div className="panel-title">Bubble States</div>
+        <div className="bubble-legend">
+          <span className="legend-item"><span className="dot yellow" /> Pending — large trade, waiting for response</span>
+          <span className="legend-item"><span className="dot green" /> Accepted — price followed the trade</span>
+          <span className="legend-item"><span className="dot red" /> Rejected — price moved against it</span>
+          <span className="legend-item"><span className="dot cyan" /> Absorbed — price barely moved</span>
+          <span className="legend-item"><span className="dot gray" /> Exhausted — no meaningful response</span>
+        </div>
         <div className="stat-row">
           <span className="label">Pending</span>
           <span className="value yellow">{pending}</span>

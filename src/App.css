@@ -511,6 +511,34 @@
 .stat-row .value.cyan { color: var(--accent); }
 .stat-row .value.purple { color: var(--purple); }
 
+.bubble-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bubble-legend .legend-item {
+  font-size: 10px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.4;
+}
+.bubble-legend .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.bubble-legend .dot.yellow { background: var(--yellow); }
+.bubble-legend .dot.green { background: var(--green); }
+.bubble-legend .dot.red { background: var(--red); }
+.bubble-legend .dot.cyan { background: var(--accent); }
+.bubble-legend .dot.gray { background: #4a5e78; }
+
 .volume-bar {
   height: 4px;
   display: flex;

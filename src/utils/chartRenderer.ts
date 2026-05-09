@@ -263,8 +263,8 @@ export function renderChart(
       ctx.fillRect(x, bodyTop, c.bodyW, bodyH)
     }
 
-    // Footprint cells
-    if (c.bodyW > 10) {
+    // Footprint cells — hide below readable zoom (8px body minimum)
+    if (c.bodyW > 8) {
       const entries = Object.entries(candle.priceMap)
       if (entries.length > 0) {
         const maxLevel = Math.max(1, ...entries.map(([, l]) => l.total))
