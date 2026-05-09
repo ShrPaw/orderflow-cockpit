@@ -1,4 +1,4 @@
-import type { Candle, VolumeLevel } from '../types/market'
+import type { Candle, VolumeLevel, OrderLevel } from '../types/market'
 
 // ─── Color System — Midnight Slate ───
 const COL = {
@@ -66,6 +66,7 @@ export interface ViewState {
   _dragZone?: 'chart' | 'priceAxis' | 'timeAxis'
   _dragAnchorIdx?: number
   _dragAnchorPrice?: number
+  _dragAnchorPPP?: number
   _dragAnchorCandlesVisible?: number
   _dragStartX?: number
   _dragStartY?: number
@@ -131,11 +132,16 @@ function makeCoords(width: number, height: number, view: ViewState) {
     : chartW * 0.5
 
   const priceToY = (price: number): number => {
-    return chartH / 2 - (price - view.priceCenter) / view.pricePerPixel
+    const y = chartH / 2 - (price - view.priceCenter) / view.pricePerPixel
+    // Guard against extreme values that would corrupt rendering
+    if (!isFinite(y)) return -99999
+    return y
   }
 
   const yToPrice = (y: number): number => {
-    return view.priceCenter - (y - chartH / 2) * view.pricePerPixel
+    const p = view.priceCenter - (y - chartH / 2) * view.pricePerPixel
+    if (!isFinite(p)) return 0
+    return p
   }
 
   const candlesFromAnchor = anchorScreenX / candleW
@@ -170,7 +176,9 @@ export function renderChart(
   view: ViewState,
   volumeProfile: VolumeLevel[],
   mousePos: { x: number; y: number } | null,
-  livePrice?: number
+  livePrice?: number,
+  bids?: OrderLevel[],
+  asks?: OrderLevel[]
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -209,8 +217,17 @@ export function renderChart(
 
   const c = makeCoords(width, height, view)
 
-  // ─── Grid ───
+  // ─── Grid (drawn in clipped area) ───
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(LEFT_MARGIN, 0, c.chartW, c.chartH)
+  ctx.clip()
   drawGrid(ctx, c, view, width, height, fonts)
+
+  // ─── Orderbook Liquidity Levels ───
+  if (livePrice && livePrice > 0 && bids && asks && bids.length > 0 && asks.length > 0) {
+    drawLiquidityLevels(ctx, c, livePrice, bids, asks)
+  }
 
   // ─── Volume profile overlay ───
   if (volumeProfile.length > 0) {
@@ -240,9 +257,10 @@ export function renderChart(
     const col = isUp ? COL.candleUp : COL.candleDown
     const wickCol = isUp ? COL.wickUp : COL.wickDown
 
-    // Wick
+    // Wick — skip if coordinates are invalid
     const wickTop = c.priceToY(candle.high)
     const wickBot = c.priceToY(candle.low)
+    if (!isFinite(wickTop) || !isFinite(wickBot)) continue
     ctx.strokeStyle = wickCol
     ctx.lineWidth = Math.max(0.5, Math.min(1.5, c.bodyW * 0.06))
     ctx.beginPath()
@@ -271,9 +289,9 @@ export function renderChart(
         for (const [priceStr, level] of entries) {
           const price = parseFloat(priceStr)
           const ly = c.priceToY(price)
-          if (ly < -5 || ly > c.chartH + 5) continue
+          if (!isFinite(ly) || ly < -5 || ly > c.chartH + 5) continue
           const ratio = level.total / maxLevel
-          const cellW = Math.max(2, (c.bodyW - 2) * ratio)
+          const cellW = Math.max(2, Math.min(c.bodyW - 2, (c.bodyW - 2) * ratio))
           const buyRatio = level.total > 0 ? level.buy / level.total : 0.5
           const alpha = 0.12 + ratio * 0.4
           ctx.fillStyle = buyRatio > 0.5
@@ -284,30 +302,80 @@ export function renderChart(
       }
     }
 
-    // Bubbles (unchanged logic)
+    // Bubbles — semi-transparent, state-differentiated, side-distinguishable
+    // Adaptive: reduce detail at small zoom, cap density
     if (candle.bubbles.length > 0 && c.bodyW > 3) {
-      for (const bubble of candle.bubbles) {
+      // Sort so larger bubbles render behind (smaller ones on top)
+      const sorted = [...candle.bubbles].sort((a, b) => b.notional - a.notional)
+      // Cap visible bubbles to avoid overlapping blobs
+      const maxVisible = c.bodyW < 6 ? 2 : c.bodyW < 12 ? 4 : 8
+      const visible = sorted.slice(0, maxVisible)
+
+      // Zoom-adaptive opacity scaling
+      const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
+
+      for (const bubble of visible) {
         const by = c.priceToY(bubble.price)
-        if (by < -20 || by > c.chartH + 20) continue
+        if (!isFinite(by) || by < -20 || by > c.chartH + 20) continue
         const notionalScale = Math.min(1, Math.log10(Math.max(1, bubble.notional)) / 6)
         const r = Math.max(BUBBLE_MIN_R, Math.min(BUBBLE_MAX_R, BUBBLE_MIN_R + notionalScale * (BUBBLE_MAX_R - BUBBLE_MIN_R)))
         const bCol = BUBBLE_COLORS[bubble.state] || COL.bubbleExhausted
 
+        // Response strength affects stroke intensity (not predictive confidence)
+        const strength = bubble.confidence
+        const baseFillAlpha = bubble.state === 'ABSORBED' ? 0.08
+          : bubble.state === 'EXHAUSTED' ? 0.10
+          : bubble.state === 'PENDING' ? 0.18
+          : bubble.state === 'REJECTED' ? 0.20
+          : 0.15  // ACCEPTED
+        const fillAlpha = baseFillAlpha * zoomAlphaScale
+
+        const strokeAlpha = Math.min(1, (0.3 + strength * 0.6) * zoomAlphaScale)
+        const lineWidth = bubble.state === 'REJECTED' ? 2.0
+          : bubble.state === 'ABSORBED' ? 2.5
+          : bubble.state === 'PENDING' ? 1.0
+          : 1.5
+
         ctx.beginPath()
         ctx.arc(cx, by, r, 0, Math.PI * 2)
 
-        if (bubble.state === 'REJECTED') {
-          ctx.strokeStyle = bCol
-          ctx.lineWidth = 1.5
-          ctx.stroke()
+        // Fill — always semi-transparent so candles show through
+        ctx.globalAlpha = fillAlpha
+        ctx.fillStyle = bCol
+        ctx.fill()
+        ctx.globalAlpha = 1
+
+        // Stroke — state-specific style
+        ctx.strokeStyle = bCol
+        ctx.globalAlpha = strokeAlpha
+        ctx.lineWidth = lineWidth
+
+        if (bubble.state === 'PENDING') {
+          ctx.setLineDash([3, 2])
         } else {
-          ctx.globalAlpha = bubble.state === 'PENDING' ? 0.75 : 0.5
-          ctx.fillStyle = bCol
-          ctx.fill()
-          ctx.globalAlpha = 1
+          ctx.setLineDash([])
+        }
+        ctx.stroke()
+        ctx.setLineDash([])
+        ctx.globalAlpha = 1
+
+        // Side indicator — small directional tick (buy=up, sell=down)
+        // Only show at readable zoom
+        if (r >= 5 && c.bodyW >= 6) {
+          const tickLen = Math.min(4, r * 0.4)
           ctx.strokeStyle = bCol
-          ctx.lineWidth = 0.8
+          ctx.globalAlpha = 0.6
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          if (bubble.side === 'buy') {
+            ctx.moveTo(cx, by - r - 1)
+            ctx.lineTo(cx, by - r - 1 - tickLen)
+          } else {
+            ctx.moveTo(cx, by + r + 1)
+            ctx.lineTo(cx, by + r + 1 + tickLen)
+          }
           ctx.stroke()
+          ctx.globalAlpha = 1
         }
       }
     }
@@ -322,10 +390,10 @@ export function renderChart(
     }
   }
 
-  // ─── Live Price Line ───
+  // ─── Live Price Line (clipped to plot area) ───
   if (livePrice && livePrice > 0) {
     const priceY = c.priceToY(livePrice)
-    if (priceY > 0 && priceY < c.chartH) {
+    if (priceY > -10 && priceY < c.chartH + 10) {
       ctx.strokeStyle = COL.priceLine
       ctx.lineWidth = 0.8
       ctx.setLineDash([4, 3])
@@ -334,23 +402,11 @@ export function renderChart(
       ctx.lineTo(c.priceScaleX, priceY)
       ctx.stroke()
       ctx.setLineDash([])
-
-      // Price badge on scale
-      const badgeW = PRICE_SCALE_W - 2
-      const badgeH = 20
-      ctx.fillStyle = COL.priceLine
-      const badgeY = priceY - badgeH / 2
-      ctx.beginPath()
-      roundRect(ctx, c.priceScaleX + 1, badgeY, badgeW, badgeH, 3)
-      ctx.fill()
-      ctx.fillStyle = '#000'
-      ctx.font = `bold ${fonts.priceLineBadge}px "SF Mono", monospace`
-      ctx.textAlign = 'center'
-      ctx.fillText(fmtPriceLabel(livePrice), c.priceScaleX + PRICE_SCALE_W / 2, priceY + 4)
     }
   }
 
-  // ─── Crosshair ───
+
+  // Crosshair lines (inside clip area)
   if (mousePos && mousePos.x > LEFT_MARGIN && mousePos.x < c.priceScaleX && mousePos.y < c.chartH) {
     ctx.strokeStyle = COL.crosshair
     ctx.lineWidth = 0.5
@@ -362,7 +418,14 @@ export function renderChart(
     ctx.lineTo(c.priceScaleX, mousePos.y)
     ctx.stroke()
     ctx.setLineDash([])
+  }
 
+  // End of clipped plot area
+  ctx.restore()
+
+
+  // ─── Crosshair labels (on price scale and time axis, outside clip) ───
+  if (mousePos && mousePos.x > LEFT_MARGIN && mousePos.x < c.priceScaleX && mousePos.y < c.chartH) {
     // Price label on scale
     const crossPrice = c.yToPrice(mousePos.y)
     const clH = 22
@@ -598,6 +661,74 @@ function drawGrid(
   }
 }
 
+// ─── Orderbook Liquidity Levels ───
+function drawLiquidityLevels(
+  ctx: CanvasRenderingContext2D,
+  c: ReturnType<typeof makeCoords>,
+  livePrice: number,
+  bids: OrderLevel[],
+  asks: OrderLevel[],
+) {
+  // Only show levels near current price (within ~2% range)
+  const topPrice = c.yToPrice(0)
+  const botPrice = c.yToPrice(c.chartH)
+  const visibleRange = Math.abs(topPrice - botPrice)
+  const rangeThreshold = Math.min(livePrice * 0.02, visibleRange * 0.3)
+
+  // Top 3 strongest bid levels (below price)
+  const nearbyBids = bids
+    .filter(b => b.price < livePrice && (livePrice - b.price) < rangeThreshold)
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 3)
+
+  // Top 3 strongest ask levels (above price)
+  const nearbyAsks = asks
+    .filter(a => a.price > livePrice && (a.price - livePrice) < rangeThreshold)
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 3)
+
+  const maxQty = Math.max(1, ...nearbyBids.map(b => b.qty), ...nearbyAsks.map(a => a.qty))
+
+  // Draw bid liquidity as subtle green/cyan bands
+  for (const bid of nearbyBids) {
+    const y = c.priceToY(bid.price)
+    if (!isFinite(y) || y < 0 || y > c.chartH) continue
+    const strength = bid.qty / maxQty
+    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
+    const alpha = 0.06 + strength * 0.12
+
+    ctx.fillStyle = `rgba(45,212,160,${alpha})`
+    ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
+
+    // Subtle label if readable
+    if (c.chartW > 200) {
+      ctx.fillStyle = `rgba(45,212,160,${alpha + 0.15})`
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText('BID', LEFT_MARGIN + 4, y - bandH / 2 - 2)
+    }
+  }
+
+  // Draw ask liquidity as subtle red/amber bands
+  for (const ask of nearbyAsks) {
+    const y = c.priceToY(ask.price)
+    if (!isFinite(y) || y < 0 || y > c.chartH) continue
+    const strength = ask.qty / maxQty
+    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
+    const alpha = 0.06 + strength * 0.12
+
+    ctx.fillStyle = `rgba(239,100,97,${alpha})`
+    ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
+
+    if (c.chartW > 200) {
+      ctx.fillStyle = `rgba(239,100,97,${alpha + 0.15})`
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText('ASK', LEFT_MARGIN + 4, y + bandH / 2 + 9)
+    }
+  }
+}
+
 function estimatePriceStep(ppp: number, height: number): number {
   const targetRange = height * ppp
   const steps = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
@@ -703,6 +834,7 @@ export function handleDragStart(
     _dragZone: zone,
     _dragAnchorIdx: view.anchorIndex,
     _dragAnchorPrice: view.priceCenter,
+    _dragAnchorPPP: view.pricePerPixel,
     _dragAnchorCandlesVisible: view.candlesVisible,
     _dragStartX: e.clientX,
     _dragStartY: e.clientY,
@@ -728,12 +860,14 @@ export function handleDragMove(
     // ─── Price-axis drag: vertical scaling ───
     // Dragging up = compress (more price range visible)
     // Dragging down = expand (less price range, candles taller)
+    // BUGFIX: Use the ANCHORED ppp from drag start, not the live one.
+    // Using live ppp causes cumulative drift that corrupts the chart.
     const scaleSensitivity = 0.008
     const scaleFactor = 1 + dy * scaleSensitivity
-    const oldPPP = view._dragAnchorPrice ?? view.pricePerPixel
-    newView.pricePerPixel = Math.max(0.000001, oldPPP * Math.max(0.1, scaleFactor))
+    const anchorPPP = view._dragAnchorPPP ?? view.pricePerPixel
+    newView.pricePerPixel = Math.max(0.000001, anchorPPP * Math.max(0.1, scaleFactor))
 
-    // Keep the center price stable
+    // Keep the center price stable — don't recalculate from mouse
     newView.priceCenter = view.priceCenter
     newView.anchorIndex = view._dragAnchorIdx ?? view.anchorIndex
     newView.candlesVisible = view._dragAnchorCandlesVisible ?? view.candlesVisible
