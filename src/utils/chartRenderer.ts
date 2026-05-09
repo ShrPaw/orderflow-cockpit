@@ -281,24 +281,61 @@ export function renderChart(
       ctx.fillRect(x, bodyTop, c.bodyW, bodyH)
     }
 
-    // Footprint cells — hide below readable zoom (8px body minimum)
-    if (c.bodyW > 8) {
+    // Footprint cells — per-candle clipped, strict visibility thresholds
+    // Only draw when candle is wide enough AND scale is readable
+    if (c.bodyW >= 18) {
       const entries = Object.entries(candle.priceMap)
       if (entries.length > 0) {
-        const maxLevel = Math.max(1, ...entries.map(([, l]) => l.total))
-        for (const [priceStr, level] of entries) {
-          const price = parseFloat(priceStr)
-          const ly = c.priceToY(price)
-          if (!isFinite(ly) || ly < -5 || ly > c.chartH + 5) continue
+        // Cap visible bins to prevent density explosion on wide price scales
+        const maxBins = c.bodyW >= 35 ? 40 : 20
+        // Sort by total volume to show most significant levels first
+        const sorted = entries
+          .map(([p, l]) => ({ price: parseFloat(p), ...l }))
+          .filter(e => isFinite(e.price))
+          .sort((a, b) => b.total - a.total)
+          .slice(0, maxBins)
+
+        const maxLevel = Math.max(1, ...sorted.map(l => l.total))
+
+        // Per-candle clip: confine all footprint cells to this candle's body
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(x + 1, 0, c.bodyW - 2, c.chartH)
+        ctx.clip()
+
+        for (const level of sorted) {
+          const ly = c.priceToY(level.price)
+          if (!isFinite(ly) || ly < -10 || ly > c.chartH + 10) continue
+
           const ratio = level.total / maxLevel
           const cellW = Math.max(2, Math.min(c.bodyW - 2, (c.bodyW - 2) * ratio))
           const buyRatio = level.total > 0 ? level.buy / level.total : 0.5
           const alpha = 0.12 + ratio * 0.4
+
+          // Cell fill
           ctx.fillStyle = buyRatio > 0.5
-            ? `rgba(0,212,170,${alpha})`
-            : `rgba(255,77,106,${alpha})`
+            ? `rgba(0,212,160,${alpha})`
+            : `rgba(239,100,97,${alpha})`
           ctx.fillRect(x + 1, ly - 2, cellW, 4)
+
+          // Text labels — only when cells are large enough to be readable
+          // AND volume is non-trivial
+          if (c.bodyW >= 35 && level.total > 0) {
+            const cellH = Math.max(4, c.chartH / sorted.length)
+            if (cellH >= 7) {
+              const fontSize = Math.max(8, Math.min(10, cellH * 0.7))
+              ctx.font = `${fontSize}px "SF Mono", monospace`
+              ctx.textAlign = 'left'
+              ctx.fillStyle = buyRatio > 0.5
+                ? `rgba(45,212,160,${Math.min(0.8, alpha + 0.3)})`
+                : `rgba(239,100,97,${Math.min(0.8, alpha + 0.3)})`
+              const label = level.delta >= 0 ? `+${fmtCompact(level.delta)}` : `${fmtCompact(level.delta)}`
+              ctx.fillText(label, x + 3, ly + 3)
+            }
+          }
         }
+
+        ctx.restore() // end per-candle clip
       }
     }
 
@@ -746,6 +783,14 @@ function fmtPriceLabel(p: number): string {
   if (Math.abs(p) >= 1) return p.toFixed(2)
   if (Math.abs(p) >= 0.01) return p.toFixed(4)
   return p.toFixed(6)
+}
+
+function fmtCompact(n: number): string {
+  const abs = Math.abs(n)
+  if (abs >= 1000) return (n / 1000).toFixed(1) + 'k'
+  if (abs >= 100) return n.toFixed(0)
+  if (abs >= 1) return n.toFixed(1)
+  return n.toFixed(2)
 }
 
 // ═══════════════════════════════════════════
