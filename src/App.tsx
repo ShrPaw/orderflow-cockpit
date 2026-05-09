@@ -5,6 +5,10 @@ import { connectBinanceDepth, getDepthDiagnostics } from './connectors/binanceDe
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
 import ChartCanvas from './components/ChartCanvas'
+import LightweightChartCanvas from './components/LightweightChartCanvas'
+
+// Toggle: true = Lightweight Charts engine, false = legacy canvas renderer
+const USE_LIGHTWEIGHT_CHART = true
 import Toolbar from './components/Toolbar'
 import SidePanel from './components/SidePanel'
 import DOMLite from './components/DOMLite'
@@ -173,7 +177,7 @@ export default function App() {
       <MarketHeader />
       <div className="main-area">
         <div className="chart-panel">
-          <ChartCanvas />
+          {USE_LIGHTWEIGHT_CHART ? <LightweightChartCanvas /> : <ChartCanvas />}
         </div>
         <div className="right-panels">
           <SidePanel />
