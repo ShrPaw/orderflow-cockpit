@@ -110,12 +110,18 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
   }
 
   // Layer 1: Liquidity levels — uses best available book, dimmed for non-HEALTHY
-  if (frame.livePrice > 0 && frame.bids.length > 0 && frame.asks.length > 0) {
+  // SKIP entirely during transitional states (CONNECTING/BUFFERING/SNAPSHOT_LOADING/SYNCING)
+  // — bids/asks in store may be stale from previous connection, not validated
+  const isTransitionalState = frame.orderBookHealth === 'CONNECTING'
+    || frame.orderBookHealth === 'BUFFERING'
+    || frame.orderBookHealth === 'SNAPSHOT_LOADING'
+    || frame.orderBookHealth === 'SYNCING'
+  if (!isTransitionalState && frame.livePrice > 0 && frame.bids.length > 0 && frame.asks.length > 0) {
     drawLiquidityLevels(rc, zoomAlphaScale)
   }
 
-  // Layer 1.5: Spread line
-  if (frame.bids.length > 0 && frame.asks.length > 0) {
+  // Layer 1.5: Spread line — skip during transitional states
+  if (!isTransitionalState && frame.bids.length > 0 && frame.asks.length > 0) {
     drawSpreadLine(rc)
   }
 

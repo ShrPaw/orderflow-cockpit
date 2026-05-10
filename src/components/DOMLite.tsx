@@ -10,7 +10,11 @@ export default function DOMLite() {
   const isHealthy = orderBookHealth === 'HEALTHY'
   const isDegraded = orderBookHealth === 'DEGRADED'
   const isUsable = isHealthy || isDegraded
-  const showWarning = !isUsable || depthStale
+  const isTransitional = orderBookHealth === 'CONNECTING'
+    || orderBookHealth === 'BUFFERING'
+    || orderBookHealth === 'SNAPSHOT_LOADING'
+    || orderBookHealth === 'SYNCING'
+  const showWarning = !isUsable || depthStale || isTransitional
 
   const bestBid = bids[0]?.price ?? 0
   const bestAsk = asks[0]?.price ?? 0
@@ -50,12 +54,14 @@ export default function DOMLite() {
       </div>
 
       {showWarning && (
-        <div style={{ padding: '4px 8px', fontSize: 9, color: isDegraded ? '#ef6461' : '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+        <div style={{ padding: '4px 8px', fontSize: 9, color: isDegraded ? '#ef6461' : isTransitional ? '#4fc3f7' : '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
           {isDegraded
             ? 'DEGRADED TOP-20 BOOK — strict sync unavailable'
-            : !isUsable
-              ? 'Liquidity overlays paused — book not synchronized'
-              : 'Depth data stale — resyncing…'}
+            : isTransitional
+              ? `Book ${orderBookHealth.toLowerCase().replace('_', ' ')} — waiting for validated data`
+              : !isUsable
+                ? 'Liquidity overlays paused — book not synchronized'
+                : 'Depth data stale — resyncing…'}
         </div>
       )}
 

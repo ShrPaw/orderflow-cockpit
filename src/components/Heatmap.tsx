@@ -32,7 +32,12 @@ export default function Heatmap() {
   const isHealthy = orderBookHealth === 'HEALTHY'
   const isDegraded = orderBookHealth === 'DEGRADED'
   const isUsable = isHealthy || isDegraded
-  const showWarning = !isUsable || depthStale
+  // Transitional states: no validated book data, stale bids/asks from previous connection
+  const isTransitional = orderBookHealth === 'CONNECTING'
+    || orderBookHealth === 'BUFFERING'
+    || orderBookHealth === 'SNAPSHOT_LOADING'
+    || orderBookHealth === 'SYNCING'
+  const showWarning = !isUsable || depthStale || isTransitional
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -57,6 +62,19 @@ export default function Heatmap() {
       ...bids.slice(0, 10).map(b => ({ ...b, side: 'bid' as const })),
       ...asks.slice(0, 10).map(a => ({ ...a, side: 'ask' as const })),
     ]
+
+    // During transitional states, don't draw stale liquidity data
+    if (isTransitional) {
+      ctx.fillStyle = '#3d4f68'
+      ctx.font = '11px "SF Mono", monospace'
+      ctx.textAlign = 'center'
+      const msg = orderBookHealth === 'BUFFERING' ? 'Book buffering…'
+        : orderBookHealth === 'SNAPSHOT_LOADING' ? 'Snapshot loading…'
+        : orderBookHealth === 'SYNCING' ? 'Book syncing…'
+        : 'Connecting…'
+      ctx.fillText(msg, w / 2, h / 2)
+      return
+    }
 
     if (allLevels.length === 0) {
       ctx.fillStyle = '#3d4f68'
