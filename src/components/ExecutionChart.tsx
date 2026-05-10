@@ -41,8 +41,10 @@ import { getAllLevels } from '../utils/levelMemory'
 import {
   drawExecutionOverlay,
   drawBubbleTooltip,
+  drawClusterTooltip,
   drawLiveBadge,
   findClosestBubble,
+  findClosestCluster,
 } from '../utils/executionOverlayRenderer'
 import { timePriceToPixel } from '../utils/lightweightCoordinateAdapter'
 
@@ -401,14 +403,20 @@ export default function ExecutionChart() {
         // Draw tooltip if mouse is hovering
         const mouse = mouseRef.current
         if (mouse) {
-          const bubble = findClosestBubble(mouse.x, mouse.y, frame, chart, candleSeries)
-          if (bubble) {
-            ctx.save()
-            ctx.setTransform(1, 0, 0, 1, 0, 0)
-            ctx.scale(dpr, dpr)
-            drawBubbleTooltip(ctx, bubble, mouse.x, mouse.y, width, height)
-            ctx.restore()
+          ctx.save()
+          ctx.setTransform(1, 0, 0, 1, 0, 0)
+          ctx.scale(dpr, dpr)
+          // Check clusters first (larger hit area, higher priority)
+          const cluster = findClosestCluster(mouse.x, mouse.y, frame, chart, candleSeries)
+          if (cluster) {
+            drawClusterTooltip(ctx, cluster, mouse.x, mouse.y, width, height)
+          } else {
+            const bubble = findClosestBubble(mouse.x, mouse.y, frame, chart, candleSeries)
+            if (bubble) {
+              drawBubbleTooltip(ctx, bubble, mouse.x, mouse.y, width, height)
+            }
           }
+          ctx.restore()
         }
 
         // Store goLive rect for click detection

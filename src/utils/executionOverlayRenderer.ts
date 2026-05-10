@@ -75,6 +75,11 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
     drawLiquidityLevels(rc, zoomAlphaScale)
   }
 
+  // Layer 1.5: Spread line
+  if (frame.bids.length > 0 && frame.asks.length > 0) {
+    drawSpreadLine(rc)
+  }
+
   // Layer 2: Level memory
   if (frame.levelRecords.length > 0) {
     drawLevelMemory(rc)
@@ -103,59 +108,125 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
 // ═══════════════════════════════════════════
 
 function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void {
-  const { ctx, width, height, candleSeries, frame } = rc
-  const { livePrice, bids, asks } = frame
+  const { ctx, width, height, chart, candleSeries, frame } = rc
+  const { livePrice, bids, asks, orderBookHealth } = frame
 
+  // Compute visible price range for proximity filtering
+  const visibleRange = chart.timeScale().getVisibleLogicalRange()
+  let rangeThreshold = livePrice * 0.02 // default 2%
+  if (visibleRange) {
+    // Use a fraction of the visible price range
+    const topY = 0
+    const botY = height
+    // Estimate visible price range from chart height
+    const pricePerPixel = (livePrice * 0.001) // rough estimate
+    rangeThreshold = Math.min(livePrice * 0.02, height * pricePerPixel * 0.3)
+  }
+
+  // Filter to nearby levels, then take top 5 by quantity
   const nearbyBids = bids
-    .filter(b => b.price < livePrice)
+    .filter(b => b.price < livePrice && (livePrice - b.price) < rangeThreshold)
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
+
+  // If range filter is too strict (few results), fall back to global top 5
+  const effectiveBids = nearbyBids.length >= 3 ? nearbyBids
+    : bids.filter(b => b.price < livePrice).sort((a, b) => b.qty - a.qty).slice(0, 5)
 
   const nearbyAsks = asks
-    .filter(a => a.price > livePrice)
+    .filter(a => a.price > livePrice && (a.price - livePrice) < rangeThreshold)
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
-  const maxQty = Math.max(1, ...nearbyBids.map(b => b.qty), ...nearbyAsks.map(a => a.qty))
+  const effectiveAsks = nearbyAsks.length >= 3 ? nearbyAsks
+    : asks.filter(a => a.price > livePrice).sort((a, b) => b.qty - a.qty).slice(0, 5)
+
+  const maxQty = Math.max(1, ...effectiveBids.map(b => b.qty), ...effectiveAsks.map(a => a.qty))
+
+  // Dimming for non-HEALTHY states
+  const isHealthy = orderBookHealth === 'HEALTHY'
+  const stateDimFactor = isHealthy ? 1.0
+    : orderBookHealth === 'DEGRADED' ? 0.7
+    : orderBookHealth === 'RESYNCING' ? 0.4
+    : orderBookHealth === 'STALE' ? 0.25
+    : 0.3
 
   ctx.save()
 
-  for (const bid of nearbyBids) {
+  for (const bid of effectiveBids) {
     const y = priceToY(bid.price, candleSeries)
     if (y === null || y < 0 || y > height) continue
 
     const strength = bid.qty / maxQty
-    const bandH = Math.max(1, Math.min(4, 1 + strength * 3))
-    const alpha = 0.04 + strength * 0.10
+    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
+    const alpha = (0.08 + strength * 0.18) * stateDimFactor
 
     ctx.fillStyle = `rgba(45,212,160,${alpha})`
     ctx.fillRect(0, y - bandH / 2, width, bandH)
 
+    // Quantity label — show when chart is wide enough
     if (width > 250) {
-      ctx.fillStyle = `rgba(45,212,160,${alpha + 0.12})`
-      ctx.font = '9px "SF Mono", monospace'
+      const qtyLabel = fmtCompactQty(bid.qty)
+      ctx.fillStyle = `rgba(45,212,160,${Math.min(0.85, alpha + 0.3)})`
+      ctx.font = '10px "SF Mono", monospace'
       ctx.textAlign = 'left'
-      ctx.fillText('BID LIQ', 4, y - bandH / 2 - 2)
+      ctx.fillText(`BID ${qtyLabel}`, 6, y + 3)
     }
   }
 
-  for (const ask of nearbyAsks) {
+  for (const ask of effectiveAsks) {
     const y = priceToY(ask.price, candleSeries)
     if (y === null || y < 0 || y > height) continue
 
     const strength = ask.qty / maxQty
-    const bandH = Math.max(1, Math.min(4, 1 + strength * 3))
-    const alpha = 0.04 + strength * 0.10
+    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
+    const alpha = (0.08 + strength * 0.18) * stateDimFactor
 
     ctx.fillStyle = `rgba(239,100,97,${alpha})`
     ctx.fillRect(0, y - bandH / 2, width, bandH)
 
     if (width > 250) {
-      ctx.fillStyle = `rgba(239,100,97,${alpha + 0.12})`
-      ctx.font = '9px "SF Mono", monospace'
+      const qtyLabel = fmtCompactQty(ask.qty)
+      ctx.fillStyle = `rgba(239,100,97,${Math.min(0.85, alpha + 0.3)})`
+      ctx.font = '10px "SF Mono", monospace'
       ctx.textAlign = 'left'
-      ctx.fillText('ASK LIQ', 4, y + bandH / 2 + 9)
+      ctx.fillText(`ASK ${qtyLabel}`, 6, y + 3)
     }
+  }
+
+  ctx.restore()
+}
+
+// ─── Spread Line ───
+function drawSpreadLine(rc: OverlayRenderContext): void {
+  const { ctx, width, height, candleSeries, frame } = rc
+  const { bids, asks } = frame
+  if (bids.length === 0 || asks.length === 0) return
+
+  const bestBid = bids[0].price
+  const bestAsk = asks[0].price
+  const midPrice = (bestBid + bestAsk) / 2
+  const spreadPct = bestBid > 0 ? ((bestAsk - bestBid) / bestBid * 100) : 0
+
+  const y = priceToY(midPrice, candleSeries)
+  if (y === null || y < 0 || y > height) return
+
+  ctx.save()
+  ctx.strokeStyle = 'rgba(79,195,247,0.20)'
+  ctx.lineWidth = 1
+  ctx.setLineDash([2, 4])
+  ctx.beginPath()
+  ctx.moveTo(0, y)
+  ctx.lineTo(width, y)
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // Spread label
+  if (width > 300) {
+    ctx.fillStyle = 'rgba(79,195,247,0.45)'
+    ctx.font = '9px "SF Mono", monospace'
+    ctx.textAlign = 'right'
+    ctx.fillText(`SPREAD ${spreadPct.toFixed(3)}%`, width - 60, y - 4)
   }
 
   ctx.restore()
@@ -323,6 +394,15 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
 
   const mode = displayMode || 'CLUSTERED'
 
+  // Compute per-candle notional percentiles for proper bubble sizing
+  const allNotionals = allBubbles.map(b => b.notional).sort((a, b) => a - b)
+  const getPercentile = (val: number): number => {
+    if (allNotionals.length === 0) return 0.5
+    let count = 0
+    for (const n of allNotionals) { if (n <= val) count++ }
+    return count / allNotionals.length
+  }
+
   // Compute cluster data
   const renderableClusters = (mode === 'CLUSTERED' || mode === 'HYBRID') && clusters.length > 0
     ? getRenderableClusters(clusters, now)
@@ -337,7 +417,8 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
   if (mode === 'RAW') {
     const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
     for (const bubble of renderable) {
-      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale)
+      const pctl = getPercentile(bubble.notional)
+      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale, pctl)
     }
   } else if (mode === 'HYBRID') {
     // Clusters first
@@ -348,7 +429,8 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
     const freshRaw = getRenderableBubbles(allBubbles, now, intervalMs)
       .filter(b => !allClusteredBubbleIds.has(b.id) && (now - b.timestamp) < 10_000)
     for (const bubble of freshRaw) {
-      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale * 0.4)
+      const pctl = getPercentile(bubble.notional)
+      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale * 0.4, pctl)
     }
   } else {
     // CLUSTERED — clusters only
@@ -368,13 +450,14 @@ function drawSingleBubble(
   candleSeries: ISeriesApi<'Candlestick'>,
   now: number,
   intervalMs: number,
-  zoomAlphaScale: number
+  zoomAlphaScale: number,
+  notionalPercentile: number = 0.5
 ): void {
   const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
   if (!coords) return
   const { x, y } = coords
 
-  const style = getBubbleVisualStyle(bubble, now, intervalMs, zoomAlphaScale)
+  const style = getBubbleVisualStyle(bubble, now, intervalMs, zoomAlphaScale, notionalPercentile)
   if (style.radius < 1) return
   if (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01) return
 
@@ -735,6 +818,90 @@ export function findClosestBubble(
   return closest
 }
 
+/**
+ * Find the closest cluster to a mouse position for tooltip display.
+ */
+export function findClosestCluster(
+  mouseX: number,
+  mouseY: number,
+  frame: OverlayFrame,
+  chart: IChartApi,
+  candleSeries: ISeriesApi<'Candlestick'>
+): AuctionCluster | null {
+  let closest: AuctionCluster | null = null
+  let closestDist = 40 // slightly larger hit area for clusters
+
+  for (const cluster of frame.clusters) {
+    const coords = timePriceToPixel(cluster.endTs, cluster.vwapPrice, chart, candleSeries)
+    if (!coords) continue
+    const dist = Math.hypot(coords.x - mouseX, coords.y - mouseY)
+    if (dist < closestDist) {
+      closestDist = dist
+      closest = cluster
+    }
+  }
+
+  return closest
+}
+
+/**
+ * Draw tooltip for a cluster.
+ */
+export function drawClusterTooltip(
+  ctx: CanvasRenderingContext2D,
+  cluster: AuctionCluster,
+  mouseX: number,
+  mouseY: number,
+  width: number,
+  height: number
+): void {
+  const side = cluster.side === 'buy' ? 'BUY' : 'SELL'
+  const state = cluster.state
+  const notional = cluster.cumulativeNotional >= 1000
+    ? `$${(cluster.cumulativeNotional / 1000).toFixed(1)}k`
+    : `$${cluster.cumulativeNotional.toFixed(0)}`
+  const age = Date.now() - cluster.startTs
+  const ageStr = age < 60000 ? `${(age / 1000).toFixed(0)}s`
+    : age < 3600000 ? `${(age / 60000).toFixed(0)}m`
+    : `${(age / 3600000).toFixed(1)}h`
+
+  const lines = [
+    `CLUSTER ${side} ${state} · ${notional}`,
+    `${cluster.tradeCount} trades · ${cluster.cumulativeVolume.toFixed(4)} vol`,
+    `VWAP ${fmtPrice(cluster.vwapPrice)} · age ${ageStr}`,
+    `flow: ${cluster.flowType} · absorb: ${(cluster.absorptionScore * 100).toFixed(0)}%`,
+  ]
+
+  ctx.font = '10px "SF Mono", monospace'
+  const lineH = 14
+  const padX = 8
+  const padY = 6
+  const maxW = Math.max(...lines.map(l => ctx.measureText(l).width))
+  const tipW = maxW + padX * 2
+  const tipH = lines.length * lineH + padY * 2
+
+  let tipX = mouseX + 16
+  let tipY = mouseY - tipH / 2
+  if (tipX + tipW > width) tipX = mouseX - tipW - 16
+  if (tipY < 0) tipY = 4
+  if (tipY + tipH > height) tipY = height - tipH - 4
+
+  ctx.fillStyle = 'rgba(12,16,25,0.92)'
+  ctx.strokeStyle = 'rgba(100,130,170,0.25)'
+  ctx.lineWidth = 1
+  roundRect(ctx, tipX, tipY, tipW, tipH, 4)
+  ctx.fill()
+  ctx.stroke()
+
+  ctx.textAlign = 'left'
+  for (let li = 0; li < lines.length; li++) {
+    ctx.fillStyle = li === 0
+      ? (cluster.side === 'buy' ? COL.candleUp : COL.candleDown)
+      : COL.textBright
+    ctx.fillText(lines[li], tipX + padX, tipY + padY + (li + 1) * lineH - 3)
+  }
+}
+
 // ═══════════════════════════════════════════
 // UTILITIES
 // ═══════════════════════════════════════════
@@ -760,6 +927,15 @@ function fmtCompact(n: number): string {
   if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
   if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + 'k'
   return n.toFixed(0)
+}
+
+function fmtCompactQty(qty: number): string {
+  if (qty >= 1_000_000) return (qty / 1_000_000).toFixed(1) + 'M'
+  if (qty >= 1_000) return (qty / 1_000).toFixed(1) + 'k'
+  if (qty >= 100) return qty.toFixed(0)
+  if (qty >= 10) return qty.toFixed(1)
+  if (qty >= 1) return qty.toFixed(2)
+  return qty.toFixed(4)
 }
 
 function fmtPrice(price: number): string {

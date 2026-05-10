@@ -91,6 +91,24 @@ The app connects to Binance Futures public WebSocket streams. No exchange accoun
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
+## Post-Fusion Regression Recovery
+
+The project migrated from a dual-chart architecture (custom Canvas2D chart + Lightweight Charts experimental) to a single fused chart: TradingView Lightweight Charts as the base engine with a Canvas2D overlay for all orderflow layers.
+
+During this migration, several orderflow features regressed or were lost. These have been restored:
+
+- **Bubble percentile sizing** — per-candle notional percentile scaling for proper visual differentiation of trade sizes
+- **Heatmap range filtering** — proximity-based level selection (2% range threshold) instead of global top-N
+- **Heatmap quantity labels** — actual quantities displayed (e.g., "BID 1.2k") instead of generic labels
+- **Heatmap state dimming** — visual degradation for non-HEALTHY order book states (DEGRADED, RESYNCING, STALE)
+- **Cluster tooltips** — hover over auction clusters to see trade count, VWAP, flow type, absorption score
+- **Spread line** — mid-price reference line with spread percentage label
+- **State badges** — honest order book health indicators (DEGRADED TOP-20, RESYNCING, STALE)
+
+The single-chart architecture is preserved: Lightweight Charts handles candles, time/price scales, zoom/pan, and crosshair. The Canvas2D overlay handles bubbles, heatmap, footprint, tooltips, level memory, and state badges.
+
+See [docs/ORDERFLOW_FEATURE_RECOVERY_MATRIX.md](docs/ORDERFLOW_FEATURE_RECOVERY_MATRIX.md) for the full feature recovery matrix.
+
 ## License
 
 Private project — not for redistribution.
