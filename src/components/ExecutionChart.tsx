@@ -11,14 +11,23 @@
  *   │  crosshair, scroll-to-real-time)    │
  *   ├─────────────────────────────────────┤
  *   │  Overlay Canvas (heatmap, bubbles,  │
- *   │  footprint, tooltip, state badges,  │
- *   │  GO LIVE) — pointer-events: none    │
+ *   │  footprint, tooltip, state badges)  │
+ *   │  pointer-events: none               │
+ *   ├─────────────────────────────────────┤
+ *   │  GO LIVE button (HTML, small,       │
+ *   │  pointer-events: auto only here)    │
  *   └─────────────────────────────────────┘
  *
  * Data flow: Zustand store → refs (no React re-render per tick) → RAF loop
+ *
+ * INTERACTION MODEL:
+ * Lightweight Charts owns ALL chart interactions (zoom, pan, crosshair, drag).
+ * Overlay canvas is purely visual — pointer-events: none.
+ * Mouse tracking for tooltips uses container mousemove (passive).
+ * GO LIVE is a small HTML button, not a canvas hitbox.
  */
 
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -76,7 +85,6 @@ export default function ExecutionChart() {
   const lastPriceLineValueRef = useRef<number>(0)
   const lastCandleTimeRef = useRef<number>(0)
   const rafRef = useRef<number>(0)
-  const goLiveRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
   const mouseRef = useRef<{ x: number; y: number } | null>(null)
   const sizeRef = useRef({ width: 800, height: 600 })
 
@@ -91,6 +99,9 @@ export default function ExecutionChart() {
   const orderBookHealthRef = useRef<OrderBookHealth>('DISCONNECTED')
   const followLiveRef = useRef(true)
   const symbolRef = useRef('BTCUSDT')
+
+  // ─── GO LIVE visibility (show when user has panned away) ───
+  const [showGoLive, setShowGoLive] = useState(false)
 
   // Store selectors (only for things that trigger React effects)
   const symbol = useMarketStore(s => s.symbol)
@@ -238,18 +249,35 @@ export default function ExecutionChart() {
     }
     ;(window as any).__chartApi = api
 
-    // ─── Track scroll to toggle followLive ───
+    // ─── Track scroll to toggle followLive and show/hide GO LIVE ───
     const scrollHandler = () => {
       const ts = chart.timeScale()
       const scrollPos = ts.scrollPosition()
       if (scrollPos < -20) {
         setFollowLive(false)
+        setShowGoLive(true)
+      } else {
+        setShowGoLive(false)
       }
     }
     chart.timeScale().subscribeVisibleLogicalRangeChange(scrollHandler)
 
+    // ─── Mouse tracking for tooltip (passive, on container) ───
+    // This does NOT block Lightweight Charts — it just reads mouse position
+    const handleMouseMove = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect()
+      mouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    }
+    const handleMouseLeave = () => {
+      mouseRef.current = null
+    }
+    container.addEventListener('mousemove', handleMouseMove, { passive: true })
+    container.addEventListener('mouseleave', handleMouseLeave, { passive: true })
+
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(scrollHandler)
+      container.removeEventListener('mousemove', handleMouseMove)
+      container.removeEventListener('mouseleave', handleMouseLeave)
       observer.disconnect()
       delete (window as any).__chartApi
       chart.remove()
@@ -402,7 +430,6 @@ export default function ExecutionChart() {
           ctx.save()
           ctx.setTransform(1, 0, 0, 1, 0, 0)
           ctx.scale(dpr, dpr)
-          // Check clusters first (larger hit area, higher priority)
           const cluster = findClosestCluster(mouse.x, mouse.y, frame, chart, candleSeries)
           if (cluster) {
             drawClusterTooltip(ctx, cluster, mouse.x, mouse.y, width, height)
@@ -414,10 +441,6 @@ export default function ExecutionChart() {
           }
           ctx.restore()
         }
-
-        // Store goLive rect for click detection
-        const liveResult = drawLiveBadge(rc)
-        goLiveRectRef.current = liveResult.goLiveRect
       }
 
       rafRef.current = requestAnimationFrame(frame)
@@ -430,30 +453,8 @@ export default function ExecutionChart() {
     }
   }, []) // Run once
 
-  // ─── Mouse handlers ───
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    mouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-  }, [])
-
-  const onMouseLeave = useCallback(() => {
-    mouseRef.current = null
-  }, [])
-
-  const onClick = useCallback((e: React.MouseEvent) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const pill = goLiveRectRef.current
-    if (pill && x >= pill.x && x <= pill.x + pill.w && y >= pill.y && y <= pill.y + pill.h) {
-      chartRef.current?.timeScale().scrollToRealTime()
-      setFollowLive(true)
-    }
-  }, [setFollowLive])
-
-  const onDoubleClick = useCallback(() => {
+  // ─── GO LIVE handler ───
+  const handleGoLive = useCallback(() => {
     chartRef.current?.timeScale().scrollToRealTime()
     setFollowLive(true)
   }, [setFollowLive])
@@ -463,9 +464,8 @@ export default function ExecutionChart() {
       ref={containerRef}
       className="chart-container"
       style={{ position: 'relative', width: '100%', height: '100%' }}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
     >
+      {/* Overlay canvas — purely visual, never blocks interaction */}
       <canvas
         ref={overlayCanvasRef}
         style={{
@@ -478,23 +478,52 @@ export default function ExecutionChart() {
           zIndex: 10,
         }}
       />
-      {/* Invisible overlay for mouse events that Lightweight Charts doesn't capture */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'auto',
-          cursor: 'crosshair',
-          zIndex: 11,
-        }}
-        onMouseMove={onMouseMove}
-        onMouseLeave={onMouseLeave}
-        onClick={onClick}
-        onDoubleClick={onDoubleClick}
-      />
+      {/* GO LIVE button — only interactive element on overlay */}
+      {showGoLive && (
+        <button
+          onClick={handleGoLive}
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            zIndex: 20,
+            background: 'rgba(228,167,59,0.10)',
+            border: '1px solid rgba(228,167,59,0.30)',
+            color: '#e4a73b',
+            fontFamily: '"SF Mono", monospace',
+            fontSize: 10,
+            fontWeight: 'bold',
+            padding: '4px 10px',
+            borderRadius: 4,
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+          }}
+        >
+          ◉ GO LIVE
+        </button>
+      )}
+      {/* LIVE indicator when following — no pointer-events needed */}
+      {followLive && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            zIndex: 20,
+            background: 'rgba(45,212,160,0.12)',
+            border: '1px solid rgba(45,212,160,0.35)',
+            color: '#2dd4a0',
+            fontFamily: '"SF Mono", monospace',
+            fontSize: 10,
+            fontWeight: 'bold',
+            padding: '4px 10px',
+            borderRadius: 4,
+            pointerEvents: 'none',
+          }}
+        >
+          LIVE
+        </div>
+      )}
     </div>
   )
 }

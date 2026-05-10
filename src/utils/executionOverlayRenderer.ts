@@ -164,21 +164,26 @@ function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void
   }
 
   // Filter to nearby levels, then take top 5 by quantity
+  // SAFETY: strict distance limit prevents distant levels from creating huge bands
+  const maxDist = livePrice * 0.015 // 1.5% max distance
   const nearbyBids = bids
-    .filter(b => b.price < livePrice && (livePrice - b.price) < rangeThreshold)
+    .filter(b => b.price < livePrice && (livePrice - b.price) < maxDist)
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
+  // Fallback: if not enough nearby, use closer global top-5 but still within 3%
   const effectiveBids = nearbyBids.length >= 3 ? nearbyBids
-    : bids.filter(b => b.price < livePrice).sort((a, b) => b.qty - a.qty).slice(0, 5)
+    : bids.filter(b => b.price < livePrice && (livePrice - b.price) < livePrice * 0.03)
+      .sort((a, b) => b.qty - a.qty).slice(0, 5)
 
   const nearbyAsks = asks
-    .filter(a => a.price > livePrice && (a.price - livePrice) < rangeThreshold)
+    .filter(a => a.price > livePrice && (a.price - livePrice) < maxDist)
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
   const effectiveAsks = nearbyAsks.length >= 3 ? nearbyAsks
-    : asks.filter(a => a.price > livePrice).sort((a, b) => b.qty - a.qty).slice(0, 5)
+    : asks.filter(a => a.price > livePrice && (a.price - livePrice) < livePrice * 0.03)
+      .sort((a, b) => b.qty - a.qty).slice(0, 5)
 
   const maxQty = Math.max(1, ...effectiveBids.map(b => b.qty), ...effectiveAsks.map(a => a.qty))
 
