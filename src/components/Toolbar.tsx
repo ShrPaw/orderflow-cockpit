@@ -25,7 +25,9 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
   const livePrice = useMarketStore(s => s.livePrice)
   const liveChange = useMarketStore(s => s.liveChange)
   const liveChangePct = useMarketStore(s => s.liveChangePct)
-  const connectionError = useMarketStore(s => s.connectionError)
+  const tradeError = useMarketStore(s => s.tradeError)
+  const depthError = useMarketStore(s => s.depthError)
+  const tickerError = useMarketStore(s => s.tickerError)
   const instruments = useMarketStore(s => s.instruments)
 
   const setMode = useMarketStore(s => s.setMode)
@@ -129,9 +131,13 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
             />
           </div>
 
-          {connectionError && (
-            <span className="conn-error" title={connectionError}>⚠</span>
-          )}
+          {(() => {
+            const errors = [tradeError, depthError, tickerError].filter(Boolean)
+            const connectionError = errors.length > 0 ? errors.join(' · ') : null
+            return connectionError ? (
+              <span className="conn-error" title={connectionError}>⚠</span>
+            ) : null
+          })()}
         </div>
 
         {/* Center: View mode */}

@@ -1,4 +1,5 @@
 import type { Trade } from '../types/market'
+import { registryAdd, registryRemove } from './connectionRegistry'
 
 export type AggTradeCallback = (trade: Trade) => void
 export type StatusCallback = (connected: boolean) => void
@@ -26,18 +27,31 @@ export function getTradeDiagnostics(): TradeDiagnostics {
   return { ...tradeDiag }
 }
 
+// ─── Exponential backoff with jitter ───
+const BACKOFF_INITIAL = 1_000
+const BACKOFF_MAX = 30_000
+const BACKOFF_FACTOR = 1.5
+
+function getBackoffDelay(attempt: number): number {
+  const base = Math.min(BACKOFF_INITIAL * Math.pow(BACKOFF_FACTOR, attempt), BACKOFF_MAX)
+  const jitter = base * 0.25 * (Math.random() * 2 - 1)
+  return Math.max(500, base + jitter)
+}
+
+const STREAM_NAME = 'trade'
+
 export function connectBinanceAggTrade(
   symbol: string,
   onTrade: AggTradeCallback,
   onStatus: StatusCallback
 ): () => void {
-  // Binance Futures @aggTrade stream is dead — use @trade instead
   const wsSymbol = symbol.toLowerCase() + '@trade'
   const url = `wss://fstream.binance.com/ws/${wsSymbol}`
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
   let generation = 0
+  let reconnectAttempt = 0
 
   tradeDiag = { url, symbol, opened: false, messageCount: 0, lastMessageTime: 0, parseErrors: 0, closeCount: 0, lastError: null }
 
@@ -65,7 +79,8 @@ export function connectBinanceAggTrade(
     closeSocket()
 
     const myGen = ++generation
-    console.log(`[Binance trade] Connecting: ${url} (gen=${myGen})`)
+    registryAdd(STREAM_NAME, symbol, myGen, url)
+    console.log(`[Binance trade] Connecting: ${url} (gen=${myGen}, attempt=${reconnectAttempt})`)
     const socket = new WebSocket(url)
     ws = socket
 
@@ -74,6 +89,7 @@ export function connectBinanceAggTrade(
       console.log(`[Binance trade] Connected: ${symbol} (gen=${myGen})`)
       tradeDiag.opened = true
       tradeDiag.lastError = null
+      reconnectAttempt = 0
       onStatus(true)
     }
 
@@ -81,8 +97,6 @@ export function connectBinanceAggTrade(
       if (disposed || generation !== myGen) return
       try {
         const msg = JSON.parse(event.data as string)
-        // @trade stream uses e="trade", @aggTrade uses e="aggTrade"
-        // Accept both for resilience
         if (msg.e === 'trade' || msg.e === 'aggTrade') {
           const price = parseFloat(msg.p)
           const qty = parseFloat(msg.q)
@@ -92,7 +106,7 @@ export function connectBinanceAggTrade(
             id: msg.t ?? ++tradeIdCounter,
             price,
             qty,
-            side: msg.m ? 'sell' : 'buy', // m=true means buyer is maker = seller aggressor
+            side: msg.m ? 'sell' : 'buy',
             time: msg.T,
             notional: price * qty,
           }
@@ -111,16 +125,18 @@ export function connectBinanceAggTrade(
         console.log(`[Binance trade] Ignoring close from stale socket (gen=${myGen})`)
         return
       }
-      console.log(`[Binance trade] Disconnected: ${symbol} code=${ev.code} (gen=${myGen})`)
+      console.log(`[Binance trade] Disconnected: ${symbol} code=${ev.code} wasClean=${ev.wasClean} (gen=${myGen})`)
       tradeDiag.opened = false
       tradeDiag.closeCount++
       ws = null
       onStatus(false)
       if (!disposed) {
+        const delay = getBackoffDelay(reconnectAttempt++)
+        console.log(`[Binance trade] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempt})`)
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null
           if (!disposed && generation === myGen) connect()
-        }, 3000)
+        }, delay)
       }
     }
 
@@ -128,7 +144,6 @@ export function connectBinanceAggTrade(
       if (disposed || generation !== myGen) return
       tradeDiag.lastError = 'WebSocket error'
       console.error('[Binance trade] Error:', ev)
-      // onerror is always followed by onclose — let onclose handle reconnect
       socket.close()
     }
   }
@@ -137,7 +152,8 @@ export function connectBinanceAggTrade(
 
   return () => {
     disposed = true
-    generation++ // invalidate pending events
+    registryRemove(STREAM_NAME, symbol, generation)
+    generation++
     cancelReconnectTimer()
     closeSocket()
   }

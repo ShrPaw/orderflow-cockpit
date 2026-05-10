@@ -1,4 +1,5 @@
 import type { Ticker24h, Instrument } from '../types/market'
+import { registryAdd, registryRemove } from './connectionRegistry'
 
 const CACHE = new Map<string, { data: Ticker24h; ts: number }>()
 const CACHE_TTL = 5_000
@@ -127,6 +128,19 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
 // ─── WebSocket-based live price ticker ───
 export type PriceCallback = (price: number, change: number, changePct: number) => void
 
+// ─── Exponential backoff with jitter ───
+const TICKER_BACKOFF_INITIAL = 1_000
+const TICKER_BACKOFF_MAX = 30_000
+const TICKER_BACKOFF_FACTOR = 1.5
+
+function getTickerBackoffDelay(attempt: number): number {
+  const base = Math.min(TICKER_BACKOFF_INITIAL * Math.pow(TICKER_BACKOFF_FACTOR, attempt), TICKER_BACKOFF_MAX)
+  const jitter = base * 0.25 * (Math.random() * 2 - 1)
+  return Math.max(500, base + jitter)
+}
+
+const STREAM_NAME = 'miniTicker'
+
 export function connectMiniTicker(
   symbol: string,
   onPrice: PriceCallback
@@ -137,6 +151,7 @@ export function connectMiniTicker(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
   let generation = 0
+  let reconnectAttempt = 0
 
   function cancelReconnectTimer() {
     if (reconnectTimer !== null) {
@@ -162,8 +177,16 @@ export function connectMiniTicker(
     closeSocket()
 
     const myGen = ++generation
+    console.log(`[MiniTicker] Connecting: ${url} (gen=${myGen}, attempt=${reconnectAttempt})`)
+    registryAdd(STREAM_NAME, symbol, myGen, url)
     const socket = new WebSocket(url)
     ws = socket
+
+    socket.onopen = () => {
+      if (disposed || generation !== myGen) return
+      console.log(`[MiniTicker] Connected: ${symbol} (gen=${myGen})`)
+      reconnectAttempt = 0
+    }
 
     socket.onmessage = (event) => {
       if (disposed || generation !== myGen) return
@@ -179,14 +202,20 @@ export function connectMiniTicker(
       } catch { /* ignore */ }
     }
 
-    socket.onclose = () => {
-      if (disposed || generation !== myGen) return
+    socket.onclose = (ev) => {
+      if (disposed || generation !== myGen) {
+        console.log(`[MiniTicker] Ignoring close from stale socket (gen=${myGen})`)
+        return
+      }
+      console.log(`[MiniTicker] Disconnected: ${symbol} code=${ev.code} wasClean=${ev.wasClean} (gen=${myGen})`)
       ws = null
       if (!disposed) {
+        const delay = getTickerBackoffDelay(reconnectAttempt++)
+        console.log(`[MiniTicker] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempt})`)
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null
           if (!disposed && generation === myGen) connect()
-        }, 3000)
+        }, delay)
       }
     }
 
@@ -200,6 +229,7 @@ export function connectMiniTicker(
 
   return () => {
     disposed = true
+    registryRemove(STREAM_NAME, symbol, generation)
     generation++
     cancelReconnectTimer()
     closeSocket()

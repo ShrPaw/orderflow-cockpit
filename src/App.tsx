@@ -102,9 +102,9 @@ export default function App() {
         (connected) => {
           store().setConnected(connected)
           if (!connected) {
-            store().setConnectionError('Trade stream disconnected')
+            store().setTradeError('Trade stream disconnected')
           } else {
-            store().setConnectionError(null)
+            store().setTradeError(null)
           }
         }
       )
@@ -115,34 +115,35 @@ export default function App() {
           store().setOrderBookSnapshot(bids, asks, lastUpdateId)
           store().setDepth(bids, asks)
           store().setDepthConnected(true)
-          store().setConnectionError(null)
+          store().setDepthError(null)
         },
         onDiffApplied: (bids, asks, lastUpdateId, transactionTime) => {
           store().applyOrderBookDiff(bids, asks, lastUpdateId, transactionTime)
           store().setDepth(bids, asks)
           store().setDepthStale(false)
           store().setDepthLastMessageTime(Date.now())
-          if (store().connected) store().setConnectionError(null)
+          if (store().connected) store().setDepthError(null)
         },
         onHealthChange: (health, error) => {
           store().setOrderBookHealth(health, error)
           if (health === 'HEALTHY') {
             store().setDepthConnected(true)
             store().setDepthStale(false)
+            store().setDepthError(null)
           } else if (health === 'DISCONNECTED') {
             store().setDepthConnected(false)
           } else if (health === 'STALE' || health === 'RESYNCING') {
             store().setDepthStale(true)
-            if (error) store().setConnectionError(error)
+            if (error) store().setDepthError(error)
           } else if (health === 'ERROR') {
             store().setDepthConnected(false)
-            if (error) store().setConnectionError(`Order book error: ${error}`)
+            if (error) store().setDepthError(`Order book error: ${error}`)
           }
         },
         onStale: (reason) => {
           store().markOrderBookStale(reason)
           store().setDepthStale(true)
-          store().setConnectionError(`Depth book stale — ${reason}`)
+          store().setDepthError(`Depth book stale — ${reason}`)
         },
       })
 

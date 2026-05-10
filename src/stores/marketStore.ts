@@ -48,6 +48,9 @@ interface MarketState {
   liveChange: number
   liveChangePct: number
   connectionError: string | null
+  tradeError: string | null
+  depthError: string | null
+  tickerError: string | null
   lastTradeTime: number
 
   // ─── Dynamic instruments ───
@@ -99,6 +102,9 @@ interface MarketState {
   setTicker: (ticker: Ticker24h | null) => void
   updateLivePrice: (price: number, change: number, changePct: number) => void
   setConnectionError: (error: string | null) => void
+  setTradeError: (error: string | null) => void
+  setDepthError: (error: string | null) => void
+  setTickerError: (error: string | null) => void
   setInstruments: (instruments: Instrument[]) => void
   setInstrumentsLoading: (loading: boolean) => void
   loadHistoricalCandles: (candles: Candle[]) => void
@@ -146,6 +152,9 @@ function getInitialState() {
     liveChange: 0,
     liveChangePct: 0,
     connectionError: null as string | null,
+    tradeError: null as string | null,
+    depthError: null as string | null,
+    tickerError: null as string | null,
     lastTradeTime: 0,
     instruments: [] as Instrument[],
     instrumentsLoading: false,
@@ -191,6 +200,9 @@ function getDataResetFields() {
     liveChange: 0,
     liveChangePct: 0,
     connectionError: null as string | null,
+    tradeError: null as string | null,
+    depthError: null as string | null,
+    tickerError: null as string | null,
     lastTradeTime: 0,
     clusters: [] as AuctionCluster[],
     depthStale: false,
@@ -226,7 +238,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     set({ interval, candles: [], currentCandle: null, bubbles: [] })
   },
   setConnected: (connected) => {
-    const update: Partial<MarketState> = { connected }
+    const update: Partial<MarketState> = { connected, tradeError: connected ? null : undefined }
     if (connected) {
       update.connectionError = null
     }
@@ -414,8 +426,8 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
     if (state.mode === 'live' && state.connected && state.lastTradeTime > 0) {
       const stale = Date.now() - state.lastTradeTime > STALE_THRESHOLD
-      if (stale && !state.connectionError) {
-        set({ connectionError: 'No trades received — data may be stale' })
+      if (stale && !state.tradeError) {
+        set({ tradeError: 'No trades received — data may be stale' })
       }
     }
 
@@ -461,6 +473,9 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     liveChangePct: changePct,
   }),
   setConnectionError: (error) => set({ connectionError: error }),
+  setTradeError: (error) => set({ tradeError: error }),
+  setDepthError: (error) => set({ depthError: error }),
+  setTickerError: (error) => set({ tickerError: error }),
   setInstruments: (instruments) => set({ instruments }),
   setInstrumentsLoading: (loading) => set({ instrumentsLoading: loading }),
 

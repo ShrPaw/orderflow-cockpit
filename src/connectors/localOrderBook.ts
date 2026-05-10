@@ -20,6 +20,7 @@
 import type {
   OrderLevel, OrderBookHealth, DiffDepthEvent, DepthSnapshot,
 } from '../types/market'
+import { registryAdd, registryRemove } from './connectionRegistry'
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -54,17 +55,27 @@ const WS_BASE = 'wss://fstream.binance.com/ws'
 const SNAPSHOT_LIMIT = 1000
 const MAX_BUFFER_EVENTS = 500
 
-const BACKOFF_STEPS = [1_000, 2_000, 5_000, 10_000]
+// Exponential backoff: 1s → 1.5s → 2.25s → 3.4s → 5.1s → 7.6s → 11.4s → 15s cap
+const BACKOFF_INITIAL = 1_000
+const BACKOFF_MAX = 15_000
+const BACKOFF_FACTOR = 1.5
+
 const STALE_THRESHOLD_MS = 15_000
-const HEALTHY_RESET_RECONNECT_DELAY = 1_000
+const STALE_CHECK_INTERVAL_MS = 5_000
+const INITIAL_GRACE_PERIOD_MS = 20_000 // don't mark stale during initial snapshot+sync
+
+// Rate-limit resync: at most once per this interval
+const RESYNC_COOLDOWN_MS = 5_000
 
 // ═══════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════
 
-function getBackoffDelay(attempts: number): number {
-  const idx = Math.min(attempts, BACKOFF_STEPS.length - 1)
-  return BACKOFF_STEPS[idx]
+function getBackoffDelay(attempt: number): number {
+  const base = Math.min(BACKOFF_INITIAL * Math.pow(BACKOFF_FACTOR, attempt), BACKOFF_MAX)
+  // ±25% jitter to prevent thundering herd
+  const jitter = base * 0.25 * (Math.random() * 2 - 1)
+  return Math.max(500, base + jitter)
 }
 
 function sortedBids(book: Map<string, number>): OrderLevel[] {
@@ -106,6 +117,8 @@ async function fetchDepthSnapshot(symbol: string): Promise<DepthSnapshot> {
 // LOCAL ORDER BOOK ENGINE
 // ═══════════════════════════════════════════
 
+const STREAM_NAME = 'depth'
+
 export function createLocalOrderBook(
   symbol: string,
   callbacks: LocalBookCallbacks,
@@ -130,6 +143,8 @@ export function createLocalOrderBook(
   let pendingEvents: DiffDepthEvent[] = []
   let firstEventValidated = false
   let lastPu: number | null = null
+  let createdAt = Date.now()
+  let lastResyncTime = 0
 
   // ─── Generation token: ignores events from stale sockets ───
   let generation = 0
@@ -152,6 +167,7 @@ export function createLocalOrderBook(
   // ─── Schedule a reconnect with the given delay ───
   function scheduleReconnect(fn: () => void, delay: number) {
     cancelReconnectTimer()
+    console.log(`[LocalBook] Scheduling reconnect in ${Math.round(delay)}ms (attempt=${book.reconnectAttempts})`)
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       if (!disposed) fn()
@@ -243,7 +259,7 @@ export function createLocalOrderBook(
     if (startIdx === -1) {
       // No valid first event — need fresh snapshot
       console.warn('[LocalBook] No valid first event after snapshot, resyncing')
-      triggerResync()
+      triggerResync('no valid first event after snapshot')
       return
     }
 
@@ -255,8 +271,8 @@ export function createLocalOrderBook(
       if (i > startIdx && event.pu !== undefined) {
         const prevEvent = valid[i - 1]
         if (event.pu !== prevEvent.u) {
-          console.warn(`[LocalBook] Sequence gap: event.pu=${event.pu} !== prev.u=${prevEvent.u}, resyncing`)
-          triggerResync()
+          console.warn(`[LocalBook] Sequence gap in buffered events: event.pu=${event.pu} !== prev.u=${prevEvent.u}`)
+          triggerResync('sequence gap in buffered events')
           return
         }
       }
@@ -298,8 +314,8 @@ export function createLocalOrderBook(
         return
       } else if (event.U > book.lastUpdateId) {
         // Gap — we missed the overlapping event
-        console.warn(`[LocalBook] First event gap: U=${event.U} > lastUpdateId=${book.lastUpdateId}, resyncing`)
-        triggerResync()
+        console.warn(`[LocalBook] First event gap: U=${event.U} > lastUpdateId=${book.lastUpdateId}`)
+        triggerResync('first event gap: missing overlapping event')
         return
       }
       // Otherwise discard (event.u < lastUpdateId — stale)
@@ -309,8 +325,8 @@ export function createLocalOrderBook(
     // Validate continuity via pu
     if (event.pu !== undefined && lastPu !== null) {
       if (event.pu !== book.lastEventUpdateId) {
-        console.warn(`[LocalBook] Continuity break: pu=${event.pu} !== lastEventUpdateId=${book.lastEventUpdateId}, resyncing`)
-        triggerResync()
+        console.warn(`[LocalBook] Continuity break: pu=${event.pu} !== lastEventUpdateId=${book.lastEventUpdateId}`)
+        triggerResync('continuity break: pu mismatch')
         return
       }
     }
@@ -355,13 +371,24 @@ export function createLocalOrderBook(
     }
   }
 
-  // ─── Full resync ───
-  function triggerResync() {
+  // ─── Full resync (rate-limited) ───
+  function triggerResync(reason: string) {
     if (disposed) return
-    console.log(`[LocalBook] Triggering full resync for ${symbol}`)
+
+    // Rate-limit resync attempts
+    const now = Date.now()
+    const timeSinceLastResync = now - lastResyncTime
+    if (timeSinceLastResync < RESYNC_COOLDOWN_MS && lastResyncTime > 0) {
+      const waitMs = RESYNC_COOLDOWN_MS - timeSinceLastResync
+      console.log(`[LocalBook] Resync rate-limited: "${reason}" — waiting ${Math.round(waitMs)}ms cooldown`)
+      scheduleReconnect(() => triggerResync(reason), waitMs)
+      return
+    }
+
+    console.log(`[LocalBook] Triggering full resync for ${symbol}: ${reason}`)
+    lastResyncTime = now
 
     // CRITICAL: cancel any pending reconnect timer BEFORE doing anything else.
-    // Without this, the old timer will fire later and create a duplicate socket.
     cancelReconnectTimer()
 
     // Close existing socket with detached handlers so onclose cannot schedule reconnects
@@ -393,7 +420,6 @@ export function createLocalOrderBook(
     if (disposed) return
 
     // CRITICAL: cancel any pending reconnect timer first.
-    // Without this, a timer from a previous onclose would fire and create a duplicate socket.
     cancelReconnectTimer()
 
     // Close existing socket with detached handlers
@@ -405,13 +431,14 @@ export function createLocalOrderBook(
     const wsSymbol = symbol.toLowerCase() + '@depth@100ms'
     const url = `${WS_BASE}/${wsSymbol}`
     console.log(`[LocalBook] Connecting diff stream: ${url} (gen=${myGen})`)
+    registryAdd(STREAM_NAME, symbol, myGen, url)
 
     const socket = new WebSocket(url)
     ws = socket
 
     socket.onopen = () => {
       if (disposed || generation !== myGen) return
-      console.log(`[LocalBook] Diff stream connected: ${symbol} (gen=${myGen})`)
+      console.log(`[LocalBook] Diff stream connected: ${symbol} (gen=${myGen}, readyState=${socket.readyState})`)
       if (!snapshotLoaded) {
         setHealth('SYNCING')
       }
@@ -437,11 +464,10 @@ export function createLocalOrderBook(
 
     socket.onclose = (ev) => {
       if (disposed || generation !== myGen) {
-        // Stale socket — ignore completely
         console.log(`[LocalBook] Ignoring close from stale socket (gen=${myGen}, current=${generation})`)
         return
       }
-      console.log(`[LocalBook] Diff stream closed: ${symbol} code=${ev.code} (gen=${myGen})`)
+      console.log(`[LocalBook] Diff stream closed: ${symbol} code=${ev.code} wasClean=${ev.wasClean} (gen=${myGen})`)
       ws = null
 
       if (book.health === 'HEALTHY') {
@@ -457,7 +483,7 @@ export function createLocalOrderBook(
           if (snapshotLoaded && firstEventValidated) {
             connectStream()
           } else {
-            triggerResync()
+            triggerResync('reconnect after disconnect — book not healthy')
           }
         }
       }, delay)
@@ -472,18 +498,39 @@ export function createLocalOrderBook(
   }
 
   // ─── Stale monitor ───
+  // Only marks stale if:
+  //   - Book is HEALTHY (not during initial sync)
+  //   - We're past the initial grace period
+  //   - Socket exists and is OPEN (readyState === 1)
+  //   - No messages for STALE_THRESHOLD_MS
   function startStaleMonitor() {
     stopStaleMonitor()
     staleTimer = setInterval(() => {
       if (disposed) return
-      if (book.health === 'HEALTHY' && book.lastMessageTime > 0) {
-        const elapsed = Date.now() - book.lastMessageTime
-        if (elapsed > STALE_THRESHOLD_MS) {
-          callbacks.onStale(`No depth updates for ${Math.round(elapsed / 1000)}s`)
+      const now = Date.now()
+
+      // Don't mark stale during initial connection/sync grace period
+      if (now - createdAt < INITIAL_GRACE_PERIOD_MS) return
+
+      if (book.health !== 'HEALTHY') return
+      if (book.lastMessageTime <= 0) return
+
+      const elapsed = now - book.lastMessageTime
+      if (elapsed > STALE_THRESHOLD_MS) {
+        // Verify socket is actually open before marking stale
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const reason = `No depth updates for ${Math.round(elapsed / 1000)}s (socket open, readyState=${ws.readyState})`
+          console.warn(`[LocalBook] Stale detected: ${reason}`)
+          callbacks.onStale(reason)
           setHealth('STALE', 'No depth updates — book stale')
+        } else if (!ws) {
+          // No socket — stream disconnected, onclose handler manages reconnect
+          console.log(`[LocalBook] Stale check: no socket (reconnect in progress)`)
+        } else {
+          console.log(`[LocalBook] Stale check: socket readyState=${ws.readyState} (not OPEN), skipping`)
         }
       }
-    }, 5_000)
+    }, STALE_CHECK_INTERVAL_MS)
   }
 
   function stopStaleMonitor() {
@@ -494,6 +541,7 @@ export function createLocalOrderBook(
   }
 
   // ─── Start ───
+  createdAt = Date.now()
   setHealth('CONNECTING')
   startStaleMonitor()
 
@@ -507,6 +555,7 @@ export function createLocalOrderBook(
   // ─── Cleanup ───
   return () => {
     disposed = true
+    registryRemove(STREAM_NAME, symbol, generation)
     generation++ // invalidate all pending events from current sockets
     cancelReconnectTimer()
     stopStaleMonitor()

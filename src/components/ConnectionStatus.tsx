@@ -6,15 +6,23 @@ export default function ConnectionStatus() {
   const depthConnected = useMarketStore(s => s.depthConnected)
   const depthStale = useMarketStore(s => s.depthStale)
   const tickerConnected = useMarketStore(s => s.tickerConnected)
-  const connectionError = useMarketStore(s => s.connectionError)
+  const tradeError = useMarketStore(s => s.tradeError)
+  const depthError = useMarketStore(s => s.depthError)
+  const tickerError = useMarketStore(s => s.tickerError)
   const setMode = useMarketStore(s => s.setMode)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const orderBookError = useMarketStore(s => s.orderBookError)
   const resyncOrderBook = useMarketStore(s => s.resyncOrderBook)
 
+  // Derive combined error from per-stream errors
+  const errors: string[] = []
+  if (tradeError) errors.push(tradeError)
+  if (depthError) errors.push(depthError)
+  if (tickerError) errors.push(tickerError)
+  const connectionError = errors.length > 0 ? errors.join(' · ') : null
+
   if (mode === 'live') {
     const allConnected = connected && depthConnected && tickerConnected
-    const bookHealthy = orderBookHealth === 'HEALTHY'
     const bookProblem = orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' || orderBookHealth === 'RESYNCING'
 
     if (connectionError) {

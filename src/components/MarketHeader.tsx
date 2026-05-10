@@ -11,11 +11,15 @@ export default function MarketHeader() {
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
   const tickerConnected = useMarketStore(s => s.tickerConnected)
-  const connectionError = useMarketStore(s => s.connectionError)
+  const tradeError = useMarketStore(s => s.tradeError)
+  const depthError = useMarketStore(s => s.depthError)
+  const tickerError = useMarketStore(s => s.tickerError)
 
   if (mode === 'demo') return null
 
   const allConnected = connected && depthConnected && tickerConnected
+  const errors = [tradeError, depthError, tickerError].filter(Boolean)
+  const connectionError = errors.length > 0 ? errors.join(' · ') : null
 
   const isUp = liveChange >= 0
 
