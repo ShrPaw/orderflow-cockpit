@@ -103,20 +103,58 @@ export default function LightweightChartCanvas() {
   const lastCandleTimeRef = useRef<number>(0)
   const overlayRafRef = useRef<number>(0)
 
-  // Store selectors (needed before tools state for addHLine)
+  // ─── Overlay data refs (updated via subscription, not render) ───
+  // This prevents scheduleOverlayRedraw from being recreated on every tick.
+  const overlayDataRef = useRef({
+    bubbles: [] as any[],
+    currentCandle: null as any,
+    livePrice: 0,
+    bids: [] as any[],
+    asks: [] as any[],
+    interval: '40s',
+    clusters: [] as any[],
+    displayMode: 'CLUSTERED' as string,
+    orderBookHealth: 'DISCONNECTED',
+  })
+
+  // Store selectors (needed for render-triggering subscriptions)
   const candles = useMarketStore(s => s.candles)
   const currentCandle = useMarketStore(s => s.currentCandle)
   const livePrice = useMarketStore(s => s.livePrice)
   const symbol = useMarketStore(s => s.symbol)
-  const interval = useMarketStore(s => s.interval)
   const followLive = useMarketStore(s => s.followLive)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
-  const bubbles = useMarketStore(s => s.bubbles)
-  const bids = useMarketStore(s => s.bids)
-  const asks = useMarketStore(s => s.asks)
-  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
-  const clusters = useMarketStore(s => s.clusters)
-  const displayMode = useMarketStore(s => s.displayMode)
+
+  // Keep overlay data refs in sync with store
+  useEffect(() => {
+    const unsub = useMarketStore.subscribe((state) => {
+      overlayDataRef.current = {
+        bubbles: state.bubbles,
+        currentCandle: state.currentCandle,
+        livePrice: state.livePrice,
+        bids: state.bids,
+        asks: state.asks,
+        interval: state.interval,
+        clusters: state.clusters,
+        displayMode: state.displayMode,
+        orderBookHealth: state.orderBookHealth,
+      }
+    })
+    // Initialize
+    const s = useMarketStore.getState()
+    overlayDataRef.current = {
+      bubbles: s.bubbles,
+      currentCandle: s.currentCandle,
+      livePrice: s.livePrice,
+      bids: s.bids,
+      asks: s.asks,
+      interval: s.interval,
+      clusters: s.clusters,
+      displayMode: s.displayMode,
+      orderBookHealth: s.orderBookHealth,
+    }
+    return unsub
+  }, [])
 
   // ─── Lightweight tools state ───
   const [showBubbles, setShowBubbles] = useState(true)
@@ -142,7 +180,7 @@ export default function LightweightChartCanvas() {
       title: 'H-Line',
     })
     hLineRef.current.push(line)
-  }, [livePrice])
+  }, [])
 
   const resetOverlays = useCallback(() => {
     setShowBubbles(true)
@@ -155,6 +193,15 @@ export default function LightweightChartCanvas() {
   }, [])
 
   // ─── Overlay redraw scheduling ───
+  // Reads from overlayDataRef to avoid recreation on every tick.
+  // Only depends on local UI state (showBubbles, showLiquidity, showLevels).
+  const showBubblesRef = useRef(showBubbles)
+  const showLiquidityRef = useRef(showLiquidity)
+  const showLevelsRef = useRef(showLevels)
+  showBubblesRef.current = showBubbles
+  showLiquidityRef.current = showLiquidity
+  showLevelsRef.current = showLevels
+
   const scheduleOverlayRedraw = useCallback(() => {
     if (overlayRafRef.current) cancelAnimationFrame(overlayRafRef.current)
     overlayRafRef.current = requestAnimationFrame(() => {
@@ -184,12 +231,13 @@ export default function LightweightChartCanvas() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
       const now = Date.now()
-      const intervalMs = INTERVAL_MS[interval] ?? 60_000
+      const data = overlayDataRef.current
+      const intervalMs = INTERVAL_MS[data.interval as keyof typeof INTERVAL_MS] ?? 60_000
 
-      const allBubbles = [...bubbles]
-      if (currentCandle) {
-        for (const b of currentCandle.bubbles) {
-          if (!allBubbles.some(ab => ab.id === b.id)) {
+      const allBubbles = [...data.bubbles]
+      if (data.currentCandle) {
+        for (const b of data.currentCandle.bubbles) {
+          if (!allBubbles.some((ab: any) => ab.id === b.id)) {
             allBubbles.push(b)
           }
         }
@@ -201,19 +249,19 @@ export default function LightweightChartCanvas() {
         now, intervalMs, symbol,
       }
 
-      const isBookHealthy = orderBookHealth === 'HEALTHY'
-      drawOverlay(rc, allBubbles, livePrice,
-        isBookHealthy ? bids : [],
-        isBookHealthy ? asks : [],
+      const isBookHealthy = data.orderBookHealth === 'HEALTHY'
+      drawOverlay(rc, allBubbles, data.livePrice,
+        isBookHealthy ? data.bids : [],
+        isBookHealthy ? data.asks : [],
         {
-        showBubbles,
-        showLiquidity: showLiquidity && isBookHealthy,
-        showLevels,
-        clusters,
-        displayMode,
+        showBubbles: showBubblesRef.current,
+        showLiquidity: showLiquidityRef.current && isBookHealthy,
+        showLevels: showLevelsRef.current,
+        clusters: data.clusters,
+        displayMode: data.displayMode as 'RAW' | 'CLUSTERED' | 'HYBRID',
       })
     })
-  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels, clusters, displayMode, orderBookHealth])
+  }, [symbol])
 
   // ─── Chart creation & cleanup ───
   useEffect(() => {
@@ -481,9 +529,14 @@ export default function LightweightChartCanvas() {
   }, [livePrice])
 
   // ─── Overlay redraw on store changes ───
+  // scheduleOverlayRedraw reads from refs, so we just need to trigger it
+  // when any relevant data changes. Use subscribe for efficiency.
   useEffect(() => {
-    scheduleOverlayRedraw()
-  }, [bubbles, bids, asks, livePrice, scheduleOverlayRedraw])
+    const unsub = useMarketStore.subscribe(() => {
+      scheduleOverlayRedraw()
+    })
+    return unsub
+  }, [scheduleOverlayRedraw])
 
   // ─── Track user scroll to toggle followLive ───
   useEffect(() => {

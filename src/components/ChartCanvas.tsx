@@ -17,19 +17,53 @@ export default function ChartCanvas() {
   const rafRef = useRef<number>(0)
   const [size, setSize] = useState({ width: 800, height: 600 })
 
-  const candles = useMarketStore(s => s.candles)
-  const currentCandle = useMarketStore(s => s.currentCandle)
-  const volumeProfile = useMarketStore(s => s.volumeProfile)
+  // ─── Store refs for render loop (avoid effect restart on every tick) ───
+  // The render loop reads these refs instead of depending on them as effect deps.
+  // This prevents the RAF loop from being torn down on every market tick.
+  const candlesRef = useRef<unknown[]>([])
+  const currentCandleRef = useRef<unknown>(null)
+  const volumeProfileRef = useRef<unknown[]>([])
+  const livePriceRef = useRef(0)
+  const bidsRef = useRef<unknown[]>([])
+  const asksRef = useRef<unknown[]>([])
+  const intervalRef = useRef('40s')
+  const clustersRef = useRef<unknown[]>([])
+  const displayModeRef = useRef<string>('CLUSTERED')
+  const orderBookHealthRef = useRef<string>('DISCONNECTED')
+
+  // Subscribe to store and update refs
   const followLive = useMarketStore(s => s.followLive)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
-  const livePrice = useMarketStore(s => s.livePrice)
-  const bids = useMarketStore(s => s.bids)
-  const asks = useMarketStore(s => s.asks)
-  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const symbol = useMarketStore(s => s.symbol)
-  const interval = useMarketStore(s => s.interval)
-  const clusters = useMarketStore(s => s.clusters)
-  const displayMode = useMarketStore(s => s.displayMode)
+
+  // Keep refs in sync with store — these selectors are cheap (just ref assignment)
+  useEffect(() => {
+    const unsub = useMarketStore.subscribe((state) => {
+      candlesRef.current = state.candles
+      currentCandleRef.current = state.currentCandle
+      volumeProfileRef.current = state.volumeProfile
+      livePriceRef.current = state.livePrice
+      bidsRef.current = state.bids
+      asksRef.current = state.asks
+      intervalRef.current = state.interval
+      clustersRef.current = state.clusters
+      displayModeRef.current = state.displayMode
+      orderBookHealthRef.current = state.orderBookHealth
+    })
+    // Initialize refs from current state
+    const s = useMarketStore.getState()
+    candlesRef.current = s.candles
+    currentCandleRef.current = s.currentCandle
+    volumeProfileRef.current = s.volumeProfile
+    livePriceRef.current = s.livePrice
+    bidsRef.current = s.bids
+    asksRef.current = s.asks
+    intervalRef.current = s.interval
+    clustersRef.current = s.clusters
+    displayModeRef.current = s.displayMode
+    orderBookHealthRef.current = s.orderBookHealth
+    return unsub
+  }, [])
 
   // Reset view state on symbol switch
   useEffect(() => {
@@ -54,12 +88,16 @@ export default function ChartCanvas() {
         setFollowLive(true)
       },
       fitAll: () => {
-        const total = candles.length + (currentCandle ? 1 : 0)
+        const candles = candlesRef.current as any[]
+        const current = currentCandleRef.current as any
+        const total = candles.length + (current ? 1 : 0)
         viewRef.current = fitAllData(viewRef.current, total, size.width, size.height)
         setFollowLive(false)
       },
       fitRecent: () => {
-        const total = candles.length + (currentCandle ? 1 : 0)
+        const candles = candlesRef.current as any[]
+        const current = currentCandleRef.current as any
+        const total = candles.length + (current ? 1 : 0)
         viewRef.current = fitRecent(viewRef.current, total)
         setFollowLive(true)
       },
@@ -67,7 +105,7 @@ export default function ChartCanvas() {
     }
     ;(window as any).__chartApi = api
     return () => { delete (window as any).__chartApi }
-  }, [candles.length, currentCandle, size, setFollowLive])
+  }, [size, setFollowLive])
 
   // Resize observer
   useEffect(() => {
@@ -83,7 +121,10 @@ export default function ChartCanvas() {
     return () => observer.disconnect()
   }, [])
 
-  // Render loop
+  // ─── Render loop — runs once, reads refs for current data ───
+  // This effect depends ONLY on `size` (canvas dimensions).
+  // All market data is read from refs which are updated by the subscription above.
+  // This prevents the RAF loop from being torn down on every market tick.
   useEffect(() => {
     let running = true
     function frame() {
@@ -97,7 +138,19 @@ export default function ChartCanvas() {
       canvas.style.height = size.height + 'px'
       const ctx = canvas.getContext('2d')
       if (ctx) {
-        const intervalMs = INTERVAL_MS[interval] ?? 40_000
+        // Read current data from refs — never stale because subscription runs synchronously
+        const candles = candlesRef.current as any[]
+        const currentCandle = currentCandleRef.current as any
+        const volumeProfile = volumeProfileRef.current as any[]
+        const livePrice = livePriceRef.current
+        const bids = bidsRef.current as any[]
+        const asks = asksRef.current as any[]
+        const interval = intervalRef.current as string
+        const clusters = clustersRef.current as any[]
+        const displayMode = displayModeRef.current as any
+        const orderBookHealth = orderBookHealthRef.current as string
+
+        const intervalMs = INTERVAL_MS[interval as keyof typeof INTERVAL_MS] ?? 40_000
         const isBookHealthy = orderBookHealth === 'HEALTHY'
         const result = renderChart(
           ctx, size.width, size.height, dpr,
@@ -118,7 +171,7 @@ export default function ChartCanvas() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval, clusters, displayMode, orderBookHealth])
+  }, [size])
 
   // ─── Mouse handlers ───
   const onWheel = useCallback((e: React.WheelEvent) => {
