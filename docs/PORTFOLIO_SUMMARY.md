@@ -16,8 +16,8 @@ The core challenge is managing WebSocket connections to multiple concurrent data
 
 Single-page React + TypeScript app with:
 - **Zustand** for state management optimized for streaming data
-- **Unified Canvas2D execution chart** — one chart surface fusing candles, footprint, bubbles, heatmap, liquidity, and order book state
-- **Layered rendering model** — 16 clear layers from background to state overlay
+- **Unified execution chart** — TradingView Lightweight Charts for professional candlestick rendering + Canvas2D overlay for orderflow methodology
+- **Dual-layer rendering** — Lightweight Charts owns candlesticks/time-price scale/zoom-pan/crosshair; overlay canvas owns heatmap/bubbles/footprint/state badges
 - **Ref subscription pattern** to decouple render loops from React re-render cycles
 - **Generation tokens** on every WebSocket to prevent stale socket events
 - **Per-stream lifecycle management** with idempotent start/stop

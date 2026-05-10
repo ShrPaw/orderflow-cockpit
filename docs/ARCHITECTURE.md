@@ -2,7 +2,7 @@
 
 ## Overview
 
-Orderflow Cockpit is a single-page React application that connects to Binance Futures public WebSocket streams and renders real-time market microstructure data on a unified Canvas2D execution chart.
+Orderflow Cockpit is a single-page React application that connects to Binance Futures public WebSocket streams and renders real-time market microstructure data on a unified execution chart built on TradingView Lightweight Charts with custom Canvas2D orderflow overlays.
 
 ## Data Flow
 
@@ -13,9 +13,9 @@ Connectors (binanceAggTrade, localOrderBook, binanceTicker)
     ↓
 Zustand Store (marketStore)
     ↓
-Unified Execution Chart (ChartCanvas → chartRenderer.ts)
-    ↓
-Canvas2D layered rendering (candles, heatmap, bubbles, footprint, state overlays)
+ExecutionChart component
+    ├── Lightweight Charts (candlesticks, time/price scale, zoom/pan, crosshair)
+    └── Overlay Canvas2D (heatmap, bubbles, footprint, state badges, GO LIVE)
 ```
 
 ## Binance Streams Used
@@ -155,57 +155,88 @@ High-frequency data (trades, depth) updates the store on every message. The char
 
 ## Unified Execution Chart
 
-**One chart surface** — `ChartCanvas.tsx` → `chartRenderer.ts`
+**One chart surface** — `ExecutionChart.tsx` with Lightweight Charts base + Canvas2D overlay.
 
-The unified execution chart renders all orderflow visualization on a single Canvas2D with clear internal layers:
+### Architecture
 
-### Layer Model
-1. **Background** — solid fill
-2. **Grid** — price/time grid lines
-3. **Liquidity** — orderbook bid/ask bands (from local order book)
-4. **Level Memory** — horizontal lines at meaningful price levels
-5. **Volume Profile** — horizontal volume bars
-6. **Candles** — body + wick with zoom-adaptive scaling
-7. **Footprint** — per-candle bid/ask volume cells (visible at high zoom)
-8. **Bubbles** — aggressive flow events with state/age encoding
-9. **Auction Clusters** — clustered bubble rendering
-10. **Live Price Line** — current price indicator
-11. **Crosshair** — price/time readout on hover
-12. **Bubble Tooltip** — detailed trade info on hover
-13. **Price Scale** — right axis with price labels
-14. **Time Axis** — bottom axis with time labels
-15. **GO LIVE** — pill indicator when detached from live edge
-16. **Order Book State** — honest status overlay for non-HEALTHY states
+```
+┌─────────────────────────────────────────────┐
+│  TradingView Lightweight Charts             │
+│  (candlesticks, volume histogram,           │
+│   time scale, price scale, native zoom/pan, │
+│   crosshair, scroll-to-real-time)           │
+├─────────────────────────────────────────────┤
+│  Overlay Canvas2D (pointer-events: none)    │
+│  (liquidity, footprint, bubbles, clusters,  │
+│   tooltip, state badges, GO LIVE)           │
+└─────────────────────────────────────────────┘
+```
 
-### Coordinate System
-- One unified coordinate system (`makeCoords`)
-- One time scale (candle index → x pixel)
-- One price scale (price → y pixel)
-- One zoom/pan state (`ViewState`)
-- One crosshair state
-- One follow-live state
+### What Lightweight Charts Owns
+
+- Candlestick rendering (open/high/low/close)
+- Volume histogram
+- Time scale with zoom/pan
+- Price scale with auto-scaling
+- Native crosshair with labels
+- Visible range management
+- Scroll-to-real-time
+- Resize handling
+
+### What the Custom Overlay Owns
+
+- Liquidity levels (orderbook bid/ask bands)
+- Level memory (horizontal dashed lines at meaningful prices)
+- Footprint cells (per-candle volume-at-price)
+- Bubbles (aggressive flow events with state/age encoding)
+- Auction clusters (clustered bubble rendering)
+- Bubble tooltip (hover info)
+- Order book state badges (DEGRADED, RESYNCING, STALE, ERROR, etc.)
+- GO LIVE / LIVE indicator
+
+### Coordinate Mapping
+
+The overlay uses Lightweight Charts APIs for coordinate mapping:
+- `chart.timeScale().timeToCoordinate(timeSec)` → x pixel
+- `candleSeries.priceToCoordinate(price)` → y pixel
+- Returns null for off-screen elements (caller skips)
 
 ### Data Flow
-- ChartCanvas subscribes to store via `useMarketStore.subscribe()`
+
+- `ExecutionChart` subscribes to store via `useMarketStore.subscribe()`
 - Subscription updates refs (candles, bids, asks, bubbles, health, etc.)
 - RAF loop reads refs every frame — no React re-render
-- RAF loop depends only on `[size]` (canvas dimensions)
-- Symbol switch resets `ViewState` and refs intentionally
+- RAF loop updates Lightweight Charts series + redraws overlay canvas
+- Symbol switch reloads all data into chart series
+
+### Layer Order (bottom → top)
+
+1. **Liquidity levels** — orderbook bid/ask bands
+2. **Level memory** — horizontal dashed lines at meaningful prices
+3. **Footprint cells** — per-candle volume-at-price bars
+4. **Bubbles** — aggressive flow events with state encoding
+5. **Auction clusters** — clustered bubble rendering
+6. **Tooltip** — bubble hover info
+7. **Order book state badge** — honest status for non-HEALTHY states
+8. **GO LIVE / LIVE** — live edge indicator
 
 ### Interaction
-- **Wheel zoom** — horizontal (candles), vertical with Shift/Ctrl/price-axis drag
-- **Pan** — drag chart area to pan horizontally and vertically
-- **Price-axis drag** — vertical scaling
-- **Time-axis drag** — horizontal scaling
-- **GO LIVE** — click pill or press Home to return to live edge
-- **Keyboard** — Home (live), R (reset), F (recent), A (all)
+
+- **Zoom/Pan** — native Lightweight Charts handling (wheel, drag)
+- **Crosshair** — native Lightweight Charts crosshair
+- **GO LIVE** — click pill to return to live edge
+- **Double-click** — scroll to real-time
+- **Mouse hover** — bubble tooltip on overlay canvas
 
 ## Performance Safeguards
 
-- **Single RAF loop** — starts once per mount, cleaned up on unmount
-- **No RAF restart on ticks** — loop depends only on `[size]`
+- **Single chart instance** — created once on mount, cleaned up on unmount
+- **Single series** — one candlestick + one volume histogram, created once
+- **Single RAF loop** — starts once per mount, reads refs, cleaned up on unmount
+- **No RAF restart on ticks** — loop runs continuously, reads latest refs
 - **Ref-based data flow** — store subscription → refs → RAF reads refs
+- **Overlay redraw scheduled** — integrated into existing RAF loop, no separate timer
 - **Array size caps** — 1500 candles, 200 trades, 100 large trades, 3000 heatmap, 500 bubbles
 - **No unbounded timers** — all intervals cleaned up
-- **No duplicate render loops** — one chart, one RAF
-- **No dead code** — LightweightChartCanvas removed, lightweight-charts dependency removed
+- **No duplicate render loops** — one chart, one RAF, one overlay canvas
+- **No React render storm** — chart data flows through refs, not React state

@@ -38,16 +38,20 @@ npm run dev
 - [ ] Console shows `[MiniTicker] Connected: BTCUSDT`
 - [ ] No repeated connect/disconnect spam
 
-## 5. Unified Chart
+## 5. Unified Execution Chart
 
 - [ ] Only ONE chart is visible (no chart engine toggle)
-- [ ] Chart shows candles, volume, price axis, time axis
-- [ ] Crosshair shows price/time on hover
-- [ ] Footprint cells visible at high zoom
-- [ ] Bubble tooltips appear on hover
-- [ ] Liquidity bands visible on chart
-- [ ] GO LIVE pill appears when panned away
-- [ ] Order book state overlay shows for non-HEALTHY states
+- [ ] Chart shows candlesticks rendered by TradingView Lightweight Charts
+- [ ] Volume histogram visible below candles
+- [ ] Native crosshair shows price/time on hover
+- [ ] Zoom/pan works smoothly (wheel + drag)
+- [ ] Footprint cells visible at high zoom (overlay canvas)
+- [ ] Bubble tooltips appear on hover (overlay canvas)
+- [ ] Liquidity bands visible on chart (overlay canvas)
+- [ ] GO LIVE pill appears when panned away (overlay canvas)
+- [ ] LIVE pill appears when following live edge
+- [ ] Order book state overlay shows for non-HEALTHY states (overlay canvas)
+- [ ] Level memory lines visible at meaningful prices (overlay canvas)
 
 ## 6. Five-Minute Stability Test
 
