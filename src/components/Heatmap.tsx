@@ -2,17 +2,25 @@ import { useRef, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 
 const BID_COLORS = [
-  'rgba(45,212,160,0.04)',
-  'rgba(45,212,160,0.12)',
-  'rgba(45,212,160,0.22)',
-  'rgba(45,212,160,0.45)',
+  'rgba(45,212,160,0.06)',
+  'rgba(45,212,160,0.15)',
+  'rgba(45,212,160,0.28)',
+  'rgba(45,212,160,0.50)',
 ]
 const ASK_COLORS = [
-  'rgba(239,100,97,0.04)',
-  'rgba(239,100,97,0.12)',
-  'rgba(239,100,97,0.22)',
-  'rgba(239,100,97,0.45)',
+  'rgba(239,100,97,0.06)',
+  'rgba(239,100,97,0.15)',
+  'rgba(239,100,97,0.28)',
+  'rgba(239,100,97,0.50)',
 ]
+
+function fmtQty(qty: number): string {
+  if (qty >= 1000) return (qty / 1000).toFixed(1) + 'k'
+  if (qty >= 100) return qty.toFixed(0)
+  if (qty >= 10) return qty.toFixed(1)
+  if (qty >= 1) return qty.toFixed(2)
+  return qty.toFixed(4)
+}
 
 export default function Heatmap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -39,7 +47,8 @@ export default function Heatmap() {
     canvas.style.height = h + 'px'
     ctx.scale(dpr, dpr)
 
-    ctx.fillStyle = '#06090f'
+    // Dim background when stale
+    ctx.fillStyle = showWarning ? '#040609' : '#06090f'
     ctx.fillRect(0, 0, w, h)
 
     const allLevels = [
@@ -60,40 +69,75 @@ export default function Heatmap() {
     const maxPrice = Math.max(...prices)
     const priceRange = maxPrice - minPrice || 1
     const maxQty = Math.max(...allLevels.map(l => l.qty))
-    const barH = Math.max(3, h / allLevels.length)
+    const levelCount = allLevels.length
+    const barH = Math.max(8, Math.min(28, (h - 20) / levelCount))
 
     for (let i = 0; i < allLevels.length; i++) {
       const level = allLevels[i]
-      const y = h - ((level.price - minPrice) / priceRange) * h - barH
+      const y = h - ((level.price - minPrice) / priceRange) * (h - 20) - barH - 4
       const intensity = Math.min(1, level.qty / maxQty)
       const colorIdx = Math.min(3, Math.floor(intensity * 4))
 
+      // Bar background
+      const barAlpha = showWarning ? 0.3 : 1.0
+      ctx.globalAlpha = barAlpha
       ctx.fillStyle = level.side === 'bid' ? BID_COLORS[colorIdx] : ASK_COLORS[colorIdx]
       ctx.fillRect(0, y, w, barH)
 
-      // Subtle border between levels
-      ctx.strokeStyle = 'rgba(255,255,255,0.02)'
+      // Volume bar (right-aligned, proportional)
+      const qtyBarW = Math.max(2, (intensity * 0.55) * w)
+      const qtyColor = level.side === 'bid' ? 'rgba(45,212,160,0.12)' : 'rgba(239,100,97,0.12)'
+      ctx.fillStyle = qtyColor
+      ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
+
+      // Border between levels
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)'
       ctx.lineWidth = 0.5
       ctx.beginPath()
       ctx.moveTo(0, y + barH)
       ctx.lineTo(w, y + barH)
       ctx.stroke()
 
-      // Price label
-      if (i % 2 === 0) {
-        ctx.fillStyle = '#3d4f68'
-        ctx.font = '9px "SF Mono", monospace'
-        ctx.textAlign = 'left'
-        ctx.fillText(level.price.toFixed(0), 4, y + barH - 3)
-      }
+      // Price label (left side)
+      ctx.fillStyle = '#4a5e78'
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      const priceLabel = level.price >= 1000 ? level.price.toFixed(0) : level.price.toFixed(2)
+      ctx.fillText(priceLabel, 4, y + barH - 4)
 
-      // Qty bar
-      const qtyBarW = (intensity * 0.6) * w
-      const qtyColor = level.side === 'bid' ? 'rgba(45,212,160,0.12)' : 'rgba(239,100,97,0.12)'
-      ctx.fillStyle = qtyColor
-      ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
+      // Qty label (right side)
+      ctx.fillStyle = level.side === 'bid' ? 'rgba(45,212,160,0.7)' : 'rgba(239,100,97,0.7)'
+      ctx.font = '10px "SF Mono", monospace'
+      ctx.textAlign = 'right'
+      ctx.fillText(fmtQty(level.qty), w - 6, y + barH - 4)
+
+      ctx.globalAlpha = 1.0
     }
-  }, [bids, asks])
+
+    // Spread indicator between bid/ask groups
+    if (bids.length > 0 && asks.length > 0) {
+      const bestBidY = h - ((bids[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
+      const bestAskY = h - ((asks[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
+      const spreadMid = (bestBidY + bestAskY + barH) / 2
+
+      ctx.strokeStyle = 'rgba(79,195,247,0.2)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 3])
+      ctx.beginPath()
+      ctx.moveTo(0, spreadMid)
+      ctx.lineTo(w, spreadMid)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Spread label
+      const spread = asks[0].price - bids[0].price
+      const spreadPct = bids[0].price > 0 ? (spread / bids[0].price * 100) : 0
+      ctx.fillStyle = 'rgba(79,195,247,0.5)'
+      ctx.font = '8px "SF Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(`spread ${spread.toFixed(1)} (${spreadPct.toFixed(3)}%)`, w / 2, spreadMid - 3)
+    }
+  }, [bids, asks, showWarning])
 
   const healthLabel =
     orderBookHealth === 'HEALTHY' ? '' :
@@ -105,13 +149,15 @@ export default function Heatmap() {
     ' ⚠'
 
   return (
-    <div className="heatmap-container" style={showWarning ? { opacity: 0.5 } : undefined}>
-      <div className="heatmap-header">Liquidity Depth{healthLabel}</div>
-      {showWarning && (
-        <div style={{ padding: '2px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
-          {!isReliable ? 'Book not synchronized — overlays paused' : 'Stale — resyncing…'}
-        </div>
-      )}
+    <div className="heatmap-container" style={showWarning ? { opacity: 0.6 } : undefined}>
+      <div className="heatmap-header">
+        Liquidity Depth{healthLabel}
+        {showWarning && orderBookHealth !== 'HEALTHY' && (
+          <span style={{ fontSize: 9, color: '#e4a73b', marginLeft: 8, fontFamily: 'monospace' }}>
+            overlays paused
+          </span>
+        )}
+      </div>
       <div className="heatmap-canvas-wrap">
         <canvas ref={canvasRef} />
       </div>

@@ -70,13 +70,13 @@ export interface ViewState {
   _hoverZone?: 'chart' | 'priceAxis' | 'timeAxis' | null
 }
 
-const MIN_CANDLES = 5
+const MIN_CANDLES = 3
 const MAX_CANDLES = 1500
-const DEFAULT_CANDLES = 120
+const DEFAULT_CANDLES = 100
 const BUBBLE_MIN_R = 3
 const BUBBLE_MAX_R = 22
-const PRICE_SCALE_W = 84
-const TIME_AXIS_H = 28
+const PRICE_SCALE_W = 90
+const TIME_AXIS_H = 30
 const LEFT_MARGIN = 4
 
 // ─── Adaptive font sizing ───
@@ -338,8 +338,12 @@ export function renderChart(
     const wickTop = c.priceToY(candle.high)
     const wickBot = c.priceToY(candle.low)
     if (!isFinite(wickTop) || !isFinite(wickBot)) continue
+    // Scale wick thickness with candle width for readability at high zoom
+    const wickWidth = c.bodyW > 20
+      ? Math.max(1.0, Math.min(2.5, c.bodyW * 0.04))
+      : Math.max(0.5, Math.min(1.5, c.bodyW * 0.06))
     ctx.strokeStyle = wickCol
-    ctx.lineWidth = Math.max(0.5, Math.min(1.5, c.bodyW * 0.06))
+    ctx.lineWidth = wickWidth
     ctx.beginPath()
     ctx.moveTo(cx, wickTop)
     ctx.lineTo(cx, wickBot)
@@ -360,7 +364,7 @@ export function renderChart(
 
     // Footprint cells — per-candle clipped, strict visibility thresholds
     // Only draw when candle is wide enough AND scale is readable
-    if (c.bodyW >= 18) {
+    if (c.bodyW >= 14) {
       const entries = Object.entries(candle.priceMap)
       if (entries.length > 0) {
         // Cap visible bins to prevent density explosion on wide price scales
@@ -397,10 +401,10 @@ export function renderChart(
 
           // Text labels — only when cells are large enough to be readable
           // AND volume is non-trivial
-          if (c.bodyW >= 35 && level.total > 0) {
+          if (c.bodyW >= 25 && level.total > 0) {
             const cellH = Math.max(4, c.chartH / sorted.length)
-            if (cellH >= 7) {
-              const fontSize = Math.max(8, Math.min(10, cellH * 0.7))
+            if (cellH >= 6) {
+              const fontSize = Math.max(7, Math.min(10, cellH * 0.65))
               ctx.font = `${fontSize}px "SF Mono", monospace`
               ctx.textAlign = 'left'
               ctx.fillStyle = buyRatio > 0.5
@@ -630,16 +634,90 @@ export function renderChart(
     }
   }
 
+  // ─── Bubble hover tooltip ───
+  // Show bubble info when mouse is near one
+  if (mousePos && mousePos.x > LEFT_MARGIN && mousePos.x < c.priceScaleX && mousePos.y < c.chartH) {
+    const hoverIdx = Math.round(c.xToIndex(mousePos.x))
+    if (hoverIdx >= 0 && hoverIdx < totalCandles) {
+      const hoverCandle = allCandles[hoverIdx]
+      if (hoverCandle.bubbles.length > 0) {
+        const cx = c.indexToX(hoverIdx) + c.bodyW / 2
+        // Find closest bubble to mouse Y
+        let closest: typeof hoverCandle.bubbles[0] | null = null
+        let closestDist = Infinity
+        for (const b of hoverCandle.bubbles) {
+          const by = c.priceToY(b.price)
+          const dist = Math.abs(by - mousePos.y)
+          if (dist < closestDist && dist < 30) {
+            closestDist = dist
+            closest = b
+          }
+        }
+        if (closest) {
+          const by = c.priceToY(closest.price)
+          const side = closest.side === 'buy' ? 'BUY' : 'SELL'
+          const state = closest.state
+          const notional = closest.notional >= 1000
+            ? `$${(closest.notional / 1000).toFixed(1)}k`
+            : `$${closest.notional.toFixed(0)}`
+          const age = Date.now() - closest.timestamp
+          const ageStr = age < 60000 ? `${(age / 1000).toFixed(0)}s ago`
+            : age < 3600000 ? `${(age / 60000).toFixed(0)}m ago`
+            : `${(age / 3600000).toFixed(1)}h ago`
+          const lines = [
+            `${side} ${state} · ${notional}`,
+            `${closest.volume.toFixed(4)} @ ${fmtPriceLabel(closest.price)}`,
+            ageStr,
+          ]
+
+          // Measure tooltip size
+          ctx.font = '10px "SF Mono", monospace'
+          const lineH = 14
+          const padX = 8
+          const padY = 6
+          const maxW = Math.max(...lines.map(l => ctx.measureText(l).width))
+          const tipW = maxW + padX * 2
+          const tipH = lines.length * lineH + padY * 2
+
+          // Position: offset from cursor, clamped to chart area
+          let tipX = mousePos.x + 16
+          let tipY = mousePos.y - tipH / 2
+          if (tipX + tipW > c.priceScaleX) tipX = mousePos.x - tipW - 16
+          if (tipY < 0) tipY = 4
+          if (tipY + tipH > c.chartH) tipY = c.chartH - tipH - 4
+
+          // Draw tooltip background
+          ctx.fillStyle = 'rgba(12,16,25,0.92)'
+          ctx.strokeStyle = 'rgba(100,130,170,0.25)'
+          ctx.lineWidth = 1
+          roundRect(ctx, tipX, tipY, tipW, tipH, 4)
+          ctx.fill()
+          ctx.stroke()
+
+          // Draw text
+          ctx.textAlign = 'left'
+          for (let li = 0; li < lines.length; li++) {
+            ctx.fillStyle = li === 0
+              ? (closest.side === 'buy' ? COL.candleUp : COL.candleDown)
+              : COL.textBright
+            ctx.fillText(lines[li], tipX + padX, tipY + padY + (li + 1) * lineH - 3)
+          }
+        }
+      }
+    }
+  }
+
   // ─── Price scale strip ───
   drawPriceScale(ctx, c, view, width, height, fonts, mousePos)
 
   // ─── Time axis strip ───
-  drawTimeAxis(ctx, c, view, width, height, fonts, totalCandles, mousePos)
+  drawTimeAxis(ctx, c, view, width, height, fonts, totalCandles, mousePos, allCandles)
 
   // ─── Live indicator ───
   if (view.followLive && totalCandles > 0) {
     const lastX = c.indexToX(totalCandles - 1)
     if (lastX > LEFT_MARGIN && lastX < c.priceScaleX) {
+      // Pulsing dot on time axis
       ctx.fillStyle = COL.liveDot
       ctx.beginPath()
       ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 4, 0, Math.PI * 2)
@@ -649,7 +727,45 @@ export function renderChart(
       ctx.arc(lastX, c.chartH + TIME_AXIS_H / 2, 8, 0, Math.PI * 2)
       ctx.fill()
       ctx.globalAlpha = 1
+
+      // LIVE pill badge at top-right of chart area
+      const pillText = 'LIVE'
+      ctx.font = 'bold 10px "SF Mono", monospace'
+      const pillW = ctx.measureText(pillText).width + 16
+      const pillH = 20
+      const pillX = c.priceScaleX - pillW - 8
+      const pillY = 8
+
+      ctx.fillStyle = 'rgba(45,212,160,0.12)'
+      ctx.strokeStyle = 'rgba(45,212,160,0.35)'
+      ctx.lineWidth = 1
+      roundRect(ctx, pillX, pillY, pillW, pillH, 4)
+      ctx.fill()
+      ctx.stroke()
+
+      ctx.fillStyle = COL.liveDot
+      ctx.textAlign = 'center'
+      ctx.fillText(pillText, pillX + pillW / 2, pillY + 14)
     }
+  } else if (totalCandles > 0) {
+    // ─── "Click to return to live" hint ───
+    const pillText = '◉ GO LIVE'
+    ctx.font = 'bold 10px "SF Mono", monospace'
+    const pillW = ctx.measureText(pillText).width + 16
+    const pillH = 20
+    const pillX = c.priceScaleX - pillW - 8
+    const pillY = 8
+
+    ctx.fillStyle = 'rgba(228,167,59,0.10)'
+    ctx.strokeStyle = 'rgba(228,167,59,0.30)'
+    ctx.lineWidth = 1
+    roundRect(ctx, pillX, pillY, pillW, pillH, 4)
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.fillStyle = COL.amber
+    ctx.textAlign = 'center'
+    ctx.fillText(pillText, pillX + pillW / 2, pillY + 14)
   }
 
   ctx.restore()
@@ -724,7 +840,8 @@ function drawTimeAxis(
   height: number,
   fonts: ReturnType<typeof getFontSizes>,
   totalCandles: number,
-  mousePos: { x: number; y: number } | null
+  mousePos: { x: number; y: number } | null,
+  allCandles?: Candle[]
 ) {
   const isHovered = mousePos && mousePos.y >= c.chartH
 
@@ -762,10 +879,12 @@ function drawTimeAxis(
 
     // Time label
     if (idx >= 0 && idx < allLen) {
-      ctx.fillStyle = COL.gridText
-      ctx.font = `${fonts.axisLabel}px "SF Mono", monospace`
-      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
-      ctx.fillText(timeStr, x, c.chartH + TIME_AXIS_H - 6)
+      if (allCandles && idx < allCandles.length) {
+        ctx.fillStyle = COL.gridText
+        ctx.font = `${fonts.axisLabel}px "SF Mono", monospace`
+        const timeStr = new Date(allCandles[idx].openTime).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
+        ctx.fillText(timeStr, x, c.chartH + TIME_AXIS_H - 6)
+      }
     }
   }
 
@@ -973,18 +1092,19 @@ function drawLiquidityLevels(
     const y = c.priceToY(bid.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = bid.qty / maxQty
-    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
-    const alpha = 0.06 + strength * 0.12
+    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
+    const alpha = 0.08 + strength * 0.18
 
     ctx.fillStyle = `rgba(45,212,160,${alpha})`
     ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
 
-    // Subtle label if readable
-    if (c.chartW > 200) {
-      ctx.fillStyle = `rgba(45,212,160,${alpha + 0.15})`
-      ctx.font = '9px "SF Mono", monospace'
+    // Qty label — show when chart is wide enough
+    if (c.chartW > 180) {
+      const qtyLabel = fmtCompactQty(bid.qty)
+      ctx.fillStyle = `rgba(45,212,160,${Math.min(0.85, alpha + 0.3)})`
+      ctx.font = '10px "SF Mono", monospace'
       ctx.textAlign = 'left'
-      ctx.fillText('BID', LEFT_MARGIN + 4, y - bandH / 2 - 2)
+      ctx.fillText(`BID ${qtyLabel}`, LEFT_MARGIN + 6, y + 3)
     }
   }
 
@@ -993,17 +1113,18 @@ function drawLiquidityLevels(
     const y = c.priceToY(ask.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = ask.qty / maxQty
-    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
-    const alpha = 0.06 + strength * 0.12
+    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
+    const alpha = 0.08 + strength * 0.18
 
     ctx.fillStyle = `rgba(239,100,97,${alpha})`
     ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
 
-    if (c.chartW > 200) {
-      ctx.fillStyle = `rgba(239,100,97,${alpha + 0.15})`
-      ctx.font = '9px "SF Mono", monospace'
+    if (c.chartW > 180) {
+      const qtyLabel = fmtCompactQty(ask.qty)
+      ctx.fillStyle = `rgba(239,100,97,${Math.min(0.85, alpha + 0.3)})`
+      ctx.font = '10px "SF Mono", monospace'
       ctx.textAlign = 'left'
-      ctx.fillText('ASK', LEFT_MARGIN + 4, y + bandH / 2 + 9)
+      ctx.fillText(`ASK ${qtyLabel}`, LEFT_MARGIN + 6, y + 3)
     }
   }
 }
@@ -1035,6 +1156,14 @@ function fmtCompact(n: number): string {
   return n.toFixed(2)
 }
 
+function fmtCompactQty(qty: number): string {
+  if (qty >= 1000) return (qty / 1000).toFixed(1) + 'k'
+  if (qty >= 100) return qty.toFixed(0)
+  if (qty >= 10) return qty.toFixed(1)
+  if (qty >= 1) return qty.toFixed(2)
+  return qty.toFixed(4)
+}
+
 // ═══════════════════════════════════════════
 // INTERACTION HANDLERS
 // ═══════════════════════════════════════════
@@ -1049,7 +1178,7 @@ export function handleWheel(
 ): ViewState {
   const newView = { ...view }
   const chartW = width - PRICE_SCALE_W - LEFT_MARGIN
-  const factor = e.deltaY > 0 ? 1.08 : 1 / 1.08
+  const factor = e.deltaY > 0 ? 1.06 : 1 / 1.06
 
   const c = makeCoords(width, height, view)
   const focalIdx = mousePos ? c.xToIndex(mousePos.x) : view.anchorIndex
