@@ -745,9 +745,15 @@ function drawOrderBookStateBadge(rc: OverlayRenderContext): void {
   const cfg = STATE_CONFIG[health]
   if (!cfg) return
 
-  // Subtle background tint
+  // Subtle background tint — convert hex to rgba with bgAlpha
   ctx.save()
-  ctx.fillStyle = cfg.color.replace(')', `,${cfg.bgAlpha})`).replace('rgb', 'rgba')
+  const hexToRgba = (hex: string, alpha: number) => {
+    const r = parseInt(hex.slice(1, 3), 16)
+    const g = parseInt(hex.slice(3, 5), 16)
+    const b = parseInt(hex.slice(5, 7), 16)
+    return `rgba(${r},${g},${b},${alpha})`
+  }
+  ctx.fillStyle = hexToRgba(cfg.color, cfg.bgAlpha)
   ctx.fillRect(0, 0, width, height)
 
   // Badge at top-left
@@ -759,7 +765,7 @@ function drawOrderBookStateBadge(rc: OverlayRenderContext): void {
   const badgeY = 8
 
   ctx.fillStyle = 'rgba(12,16,25,0.85)'
-  ctx.strokeStyle = cfg.color.replace(')', ',0.4)').replace('rgb', 'rgba')
+  ctx.strokeStyle = hexToRgba(cfg.color, 0.4)
   ctx.lineWidth = 1
   roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 4)
   ctx.fill()
