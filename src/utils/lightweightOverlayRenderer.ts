@@ -1,0 +1,304 @@
+/**
+ * lightweightOverlayRenderer.ts
+ *
+ * ─── Hybrid Overlay Architecture ───
+ *
+ * This module renders orderflow methodology overlays on top of
+ * TradingView Lightweight Charts. The Lightweight chart handles:
+ * - candles, volume, price scale, time scale, zoom, pan, crosshair
+ *
+ * This overlay handles:
+ * - bubbles (aggressive flow events with state/age encoding)
+ * - liquidity levels (orderbook bid/ask bands)
+ *
+ * The overlay canvas is absolutely positioned over the Lightweight chart
+ * container with pointer-events: none so it does not block chart interactions.
+ *
+ * Coordinate mapping uses Lightweight APIs:
+ * - chart.timeScale().timeToCoordinate(time) → x
+ * - candleSeries.priceToCoordinate(price) → y
+ *
+ * Do NOT guess coordinates when API coordinates are available.
+ */
+
+import type { Bubble, OrderLevel } from '../types/market'
+import type { IChartApi, ISeriesApi } from 'lightweight-charts'
+import {
+  getBubbleVisualStyle,
+  getRenderableBubbles,
+} from './bubbleMethodology'
+import { INTERVAL_MS } from '../types/market'
+
+// ═══════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════
+
+export interface OverlayRenderContext {
+  ctx: CanvasRenderingContext2D
+  width: number
+  height: number
+  dpr: number
+  chart: IChartApi
+  candleSeries: ISeriesApi<'Candlestick'>
+  now: number
+  intervalMs: number
+  symbol: string
+}
+
+// ═══════════════════════════════════════════
+// COORDINATE MAPPING
+// ═══════════════════════════════════════════
+
+/**
+ * Map a bubble's time/price to pixel coordinates using Lightweight APIs.
+ * Returns null if coordinates are outside the chart area or invalid.
+ */
+function getBubblePixelCoords(
+  bubble: Bubble,
+  chart: IChartApi,
+  candleSeries: ISeriesApi<'Candlestick'>
+): { x: number; y: number } | null {
+  // Lightweight Charts expects seconds
+  const timeSec = Math.floor(bubble.timestamp / 1000)
+
+  const x = chart.timeScale().timeToCoordinate(timeSec as any)
+  const y = candleSeries.priceToCoordinate(bubble.price)
+
+  if (x === null || y === null) return null
+  if (!isFinite(x) || !isFinite(y)) return null
+
+  return { x, y }
+}
+
+/**
+ * Map a price level to y-coordinate.
+ */
+function getLiquidityY(
+  price: number,
+  candleSeries: ISeriesApi<'Candlestick'>
+): number | null {
+  const y = candleSeries.priceToCoordinate(price)
+  if (y === null || !isFinite(y)) return null
+  return y
+}
+
+// ═══════════════════════════════════════════
+// BUBBLE RENDERING
+// ═══════════════════════════════════════════
+
+/**
+ * Draw all relevant bubbles on the overlay canvas.
+ *
+ * Uses the bubble methodology helpers for:
+ * - render relevance filtering (shouldRenderBubble)
+ * - visual style computation (getBubbleVisualStyle)
+ * - age phase classification (getBubbleAgePhase)
+ * - priority sorting (getRenderableBubbles)
+ */
+export function drawHybridBubbles(
+  rc: OverlayRenderContext,
+  bubbles: Bubble[]
+): void {
+  if (bubbles.length === 0) return
+
+  const { ctx, width, height, chart, candleSeries, now, intervalMs } = rc
+
+  // Get renderable bubbles (filtered by age, sorted by relevance)
+  const renderable = getRenderableBubbles(bubbles, now, intervalMs)
+  if (renderable.length === 0) return
+
+  // Compute zoom-adaptive opacity scale based on visible candle count
+  const logicalRange = chart.timeScale().getVisibleLogicalRange()
+  const visibleCandles = logicalRange
+    ? Math.abs((logicalRange.to as number) - (logicalRange.from as number))
+    : 100
+  // More candles = less detail per bubble
+  const zoomAlphaScale = visibleCandles > 200 ? 0.5
+    : visibleCandles > 80 ? 0.75
+    : visibleCandles > 30 ? 0.9
+    : 1.0
+
+  ctx.save()
+
+  for (const bubble of renderable) {
+    const coords = getBubblePixelCoords(bubble, chart, candleSeries)
+    if (!coords) continue
+
+    const { x, y } = coords
+
+    // Skip if outside chart bounds
+    if (x < -30 || x > width + 30) continue
+    if (y < -30 || y > height + 30) continue
+
+    // Get visual style from methodology
+    const style = getBubbleVisualStyle(bubble, now, intervalMs, zoomAlphaScale)
+
+    if (style.radius < 1) continue
+    if (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01) continue
+
+    // ─── Draw circle ───
+    ctx.beginPath()
+    ctx.arc(x, y, style.radius, 0, Math.PI * 2)
+
+    // Fill — semi-transparent so candles show through
+    if (style.fillAlpha > 0) {
+      ctx.globalAlpha = style.fillAlpha
+      ctx.fillStyle = style.fillColor
+      ctx.fill()
+    }
+
+    // Stroke — state-specific style
+    if (style.strokeAlpha > 0) {
+      ctx.globalAlpha = style.strokeAlpha
+      ctx.strokeStyle = style.strokeColor
+      ctx.lineWidth = style.strokeWidth
+
+      if (style.dashed) {
+        ctx.setLineDash([3, 2])
+      } else {
+        ctx.setLineDash([])
+      }
+
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    // ─── Side indicator tick ───
+    if (style.sideTick > 0) {
+      ctx.globalAlpha = 0.6
+      ctx.strokeStyle = style.fillColor
+      ctx.lineWidth = 1
+      ctx.beginPath()
+
+      if (style.sideDirection < 0) {
+        // Buy: tick above
+        ctx.moveTo(x, y - style.radius - 1)
+        ctx.lineTo(x, y - style.radius - 1 - style.sideTick)
+      } else {
+        // Sell: tick below
+        ctx.moveTo(x, y + style.radius + 1)
+        ctx.lineTo(x, y + style.radius + 1 + style.sideTick)
+      }
+
+      ctx.stroke()
+    }
+  }
+
+  ctx.globalAlpha = 1
+  ctx.restore()
+}
+
+// ═══════════════════════════════════════════
+// LIQUIDITY LEVEL RENDERING (P7)
+// ═══════════════════════════════════════════
+
+/**
+ * Draw orderbook liquidity levels as subtle horizontal bands.
+ *
+ * Shows top 3 bid and top 3 ask levels nearest to current price.
+ * Uses real orderbook data — does not invent levels.
+ *
+ * TODO: persistent level memory (repeated rejection, absorption at level)
+ */
+export function drawHybridLiquidityLevels(
+  rc: OverlayRenderContext,
+  livePrice: number,
+  bids: OrderLevel[],
+  asks: OrderLevel[]
+): void {
+  if (!livePrice || livePrice <= 0) return
+  if (bids.length === 0 && asks.length === 0) return
+
+  const { ctx, width, height, candleSeries } = rc
+
+  // Select top 3 strongest bid levels below price
+  const nearbyBids = bids
+    .filter(b => b.price < livePrice)
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 3)
+
+  // Select top 3 strongest ask levels above price
+  const nearbyAsks = asks
+    .filter(a => a.price > livePrice)
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 3)
+
+  const maxQty = Math.max(
+    1,
+    ...nearbyBids.map(b => b.qty),
+    ...nearbyAsks.map(a => a.qty)
+  )
+
+  ctx.save()
+
+  // Draw bid liquidity bands (green/cyan)
+  for (const bid of nearbyBids) {
+    const y = getLiquidityY(bid.price, candleSeries)
+    if (y === null || y < 0 || y > height) continue
+
+    const strength = bid.qty / maxQty
+    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
+    const alpha = 0.06 + strength * 0.12
+
+    ctx.fillStyle = `rgba(45,212,160,${alpha})`
+    ctx.fillRect(0, y - bandH / 2, width, bandH)
+
+    // Label if space allows
+    if (width > 200) {
+      ctx.fillStyle = `rgba(45,212,160,${alpha + 0.15})`
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText('BID LIQ', 4, y - bandH / 2 - 2)
+    }
+  }
+
+  // Draw ask liquidity bands (red/amber)
+  for (const ask of nearbyAsks) {
+    const y = getLiquidityY(ask.price, candleSeries)
+    if (y === null || y < 0 || y > height) continue
+
+    const strength = ask.qty / maxQty
+    const bandH = Math.max(1, Math.min(3, 1 + strength * 2))
+    const alpha = 0.06 + strength * 0.12
+
+    ctx.fillStyle = `rgba(239,100,97,${alpha})`
+    ctx.fillRect(0, y - bandH / 2, width, bandH)
+
+    if (width > 200) {
+      ctx.fillStyle = `rgba(239,100,97,${alpha + 0.15})`
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText('ASK LIQ', 4, y + bandH / 2 + 9)
+    }
+  }
+
+  ctx.restore()
+}
+
+// ═══════════════════════════════════════════
+// FULL OVERLAY REDRAW
+// ═══════════════════════════════════════════
+
+/**
+ * Perform a complete overlay redraw.
+ * Called on: candle update, bubble update, depth update, zoom/pan, resize.
+ */
+export function drawOverlay(
+  rc: OverlayRenderContext,
+  bubbles: Bubble[],
+  livePrice: number,
+  bids: OrderLevel[],
+  asks: OrderLevel[]
+): void {
+  const { ctx, width, height, dpr } = rc
+
+  // Clear the overlay canvas
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, width * dpr, height * dpr)
+  ctx.restore()
+
+  // Draw in order: liquidity first (behind), bubbles on top
+  drawHybridLiquidityLevels(rc, livePrice, bids, asks)
+  drawHybridBubbles(rc, bubbles)
+}

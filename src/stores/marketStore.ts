@@ -212,9 +212,33 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const delta = state.delta + (trade.side === 'buy' ? trade.qty : -trade.qty)
     const cvd = state.cvd + (trade.side === 'buy' ? trade.qty : -trade.qty)
 
-    const allBubbles = [...state.bubbles, ...currentCandle.bubbles.filter(
-      b => !state.bubbles.some(sb => sb.id === b.id)
-    )].slice(-MAX_BUBBLES)
+    // ─── Bubble state synchronization ───
+    // BUGFIX: state.bubbles previously stored stale copies that never updated.
+    // Now we ensure state.bubbles always contains the LATEST classified versions.
+    //
+    // currentCandle.bubbles has the freshest state (just classified above).
+    // We build a lookup of current-candle bubbles by id, then:
+    //   - replace old entries with updated versions
+    //   - add truly new bubbles
+    //   - keep closed-candle bubbles that are still in the buffer
+    const currentBubbleMap = new Map(currentCandle.bubbles.map(b => [b.id, b]))
+    const mergedBubbles: Bubble[] = []
+    for (const b of state.bubbles) {
+      const updated = currentBubbleMap.get(b.id)
+      if (updated) {
+        // Use the latest classified version, not the stale one
+        mergedBubbles.push(updated)
+        currentBubbleMap.delete(b.id)
+      } else {
+        // Bubble from a closed candle — keep it (already classified)
+        mergedBubbles.push(b)
+      }
+    }
+    // Add any brand-new bubbles that weren't in state.bubbles yet
+    for (const b of currentBubbleMap.values()) {
+      mergedBubbles.push(b)
+    }
+    const allBubbles = mergedBubbles.slice(-MAX_BUBBLES)
 
     set({
       currentCandle,
@@ -271,11 +295,19 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       }
     }
 
-    const updated = state.currentCandle.bubbles.map(b =>
+    // Re-classify all current candle bubbles with latest price data
+    const updatedCurrentBubbles = state.currentCandle.bubbles.map(b =>
       classifyBubble(b, state.currentCandle!.close, state.currentCandle!.high, state.currentCandle!.low)
     )
+
+    // Propagate updated states to the global bubbles array
+    // This is the periodic re-classification that makes bubbles change color over time
+    const updatedMap = new Map(updatedCurrentBubbles.map(b => [b.id, b]))
+    const updatedGlobalBubbles = state.bubbles.map(b => updatedMap.get(b.id) ?? b)
+
     set({
-      currentCandle: { ...state.currentCandle, bubbles: updated },
+      currentCandle: { ...state.currentCandle, bubbles: updatedCurrentBubbles },
+      bubbles: updatedGlobalBubbles,
     })
   },
 

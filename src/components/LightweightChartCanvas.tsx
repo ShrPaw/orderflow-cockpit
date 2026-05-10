@@ -1,43 +1,22 @@
 /**
  * LightweightChartCanvas.tsx
  *
- * ⚠️  EXPERIMENTAL — NOT production default yet.
+ * ─── Hybrid Experimental Chart Engine ───
  *
- * This component uses TradingView Lightweight Charts v5 as the chart engine.
- * It is currently behind a feature toggle (USE_LIGHTWEIGHT_CHART = false in App.tsx).
+ * TradingView Lightweight Charts v5 as the base chart engine:
+ * - candles, volume, price scale, time scale, zoom, pan, crosshair
  *
- * Before making this the default, it must support Cockpit-specific overlays:
- * - round-level overlays (key price levels from orderbook)
- * - orderbook liquidity levels
- * - rejection/resistance coloring
- * - support/resistance conversion state
- * - big trade bubbles (large order flow events)
- * - absorption markers
- * - heatmap synchronization with orderbook depth
- * - volume profile / price-level context from footprint data
- * - drawing tools (trendlines, rectangles, alert lines)
+ * Custom Cockpit overlay canvas for orderflow methodology:
+ * - bubbles (aggressive flow events with state/age encoding)
+ * - liquidity levels (orderbook bid/ask bands)
  *
- * Currently only renders basic candlesticks + volume histogram.
- * Does NOT display orderflow-specific context that defines the Cockpit product.
+ * The overlay is absolutely positioned over the Lightweight chart container
+ * with pointer-events: none so it does not block chart interactions.
  *
- * To test: set USE_LIGHTWEIGHT_CHART = true in App.tsx
- *
- * Phase 1: Core chart engine only (done)
- * Phase 2: Orderflow overlays (not started)
- *
- * TODO: rectangle liquidity zones
- * TODO: trendline drawing
- * TODO: alert lines
- * TODO: absorption zone overlays
- * TODO: liquidation bubbles
- * TODO: big trade bubbles
- * TODO: heatmap custom series
- * TODO: volume profile overlay
- * TODO: round-level overlays from orderbook
- * TODO: rejection/resistance coloring
+ * Lightweight remains EXPERIMENTAL — Legacy ChartCanvas remains default.
  */
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -56,11 +35,15 @@ import {
   adaptSingleCandle,
   adaptSingleVolume,
 } from '../utils/lightweightChartAdapters'
+import {
+  drawOverlay,
+  type OverlayRenderContext,
+} from '../utils/lightweightOverlayRenderer'
+import { INTERVAL_MS } from '../types/market'
 
-// ─── Round-number price levels (simple non-invasive overlay) ───
+// ─── Round-number price levels ───
 function getRoundLevels(price: number): number[] {
   if (price <= 0) return []
-  // Determine step based on price magnitude
   let step: number
   if (price > 50000) step = 1000
   else if (price > 10000) step = 500
@@ -78,7 +61,7 @@ function getRoundLevels(price: number): number[] {
   return levels
 }
 
-// ─── Theme constants matching the Cockpit midnight-slate palette ───
+// ─── Theme constants ───
 const THEME = {
   bg: '#06090f',
   grid: '#121924',
@@ -98,20 +81,80 @@ const THEME = {
 
 export default function LightweightChartCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> | null>(null)
   const roundLevelLinesRef = useRef<Array<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>>>([])
   const lastCandleTimeRef = useRef<number>(0)
+  const overlayRafRef = useRef<number>(0)
 
   // Store selectors
   const candles = useMarketStore(s => s.candles)
   const currentCandle = useMarketStore(s => s.currentCandle)
   const livePrice = useMarketStore(s => s.livePrice)
   const symbol = useMarketStore(s => s.symbol)
+  const interval = useMarketStore(s => s.interval)
   const followLive = useMarketStore(s => s.followLive)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
+  const bubbles = useMarketStore(s => s.bubbles)
+  const bids = useMarketStore(s => s.bids)
+  const asks = useMarketStore(s => s.asks)
+
+  // ─── Overlay redraw scheduling ───
+  const scheduleOverlayRedraw = useCallback(() => {
+    if (overlayRafRef.current) cancelAnimationFrame(overlayRafRef.current)
+    overlayRafRef.current = requestAnimationFrame(() => {
+      const chart = chartRef.current
+      const candleSeries = candleSeriesRef.current
+      const canvas = overlayCanvasRef.current
+      const container = containerRef.current
+
+      if (!chart || !candleSeries || !canvas || !container) return
+
+      const rect = container.getBoundingClientRect()
+      const width = rect.width
+      const height = rect.height
+      const dpr = window.devicePixelRatio || 1
+
+      // Resize overlay canvas to match container
+      if (canvas.width !== Math.floor(width * dpr) ||
+          canvas.height !== Math.floor(height * dpr)) {
+        canvas.width = Math.floor(width * dpr)
+        canvas.height = Math.floor(height * dpr)
+        canvas.style.width = width + 'px'
+        canvas.style.height = height + 'px'
+      }
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+      const now = Date.now()
+      const intervalMs = INTERVAL_MS[interval] ?? 60_000
+
+      // Collect all bubbles: global store has the latest classified versions
+      // (fixed: processTrade and updateBubbles now propagate state to global array)
+      const allBubbles = [...bubbles]
+      if (currentCandle) {
+        for (const b of currentCandle.bubbles) {
+          if (!allBubbles.some(ab => ab.id === b.id)) {
+            allBubbles.push(b)
+          }
+        }
+      }
+
+      const rc: OverlayRenderContext = {
+        ctx, width, height, dpr,
+        chart, candleSeries,
+        now, intervalMs, symbol,
+      }
+
+      drawOverlay(rc, allBubbles, livePrice, bids, asks)
+    })
+  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol])
 
   // ─── Chart creation & cleanup ───
   useEffect(() => {
@@ -160,7 +203,6 @@ export default function LightweightChartCanvas() {
       handleScroll: { vertTouchDrag: false },
     })
 
-    // Candlestick series (v5 API: chart.addSeries(CandlestickSeries, options))
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: THEME.candleUp,
       downColor: THEME.candleDown,
@@ -169,7 +211,6 @@ export default function LightweightChartCanvas() {
       borderVisible: false,
     })
 
-    // Volume histogram series
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
@@ -183,7 +224,7 @@ export default function LightweightChartCanvas() {
     candleSeriesRef.current = candleSeries
     volumeSeriesRef.current = volumeSeries
 
-    // ─── ResizeObserver for responsive sizing ───
+    // ResizeObserver for responsive sizing
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
@@ -192,7 +233,13 @@ export default function LightweightChartCanvas() {
     })
     observer.observe(container)
 
-    // ─── Expose chart API globally for Toolbar integration ───
+    // Subscribe to visible range changes → trigger overlay redraw
+    const onVisibleRangeChange = () => {
+      scheduleOverlayRedraw()
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange)
+
+    // Expose chart API for Toolbar integration
     const api = {
       goLive: () => {
         chart.timeScale().scrollToRealTime()
@@ -218,6 +265,7 @@ export default function LightweightChartCanvas() {
 
     return () => {
       observer.disconnect()
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange)
       delete (window as any).__chartApi
       chart.remove()
       chartRef.current = null
@@ -226,6 +274,7 @@ export default function LightweightChartCanvas() {
       priceLineRef.current = null
       roundLevelLinesRef.current = []
       lastCandleTimeRef.current = 0
+      if (overlayRafRef.current) cancelAnimationFrame(overlayRafRef.current)
     }
   }, []) // Create chart once on mount
 
@@ -250,6 +299,8 @@ export default function LightweightChartCanvas() {
     if (followLive) {
       chartRef.current?.timeScale().scrollToRealTime()
     }
+
+    scheduleOverlayRedraw()
   }, [symbol]) // Reload everything on symbol switch
 
   // ─── Update chart when closed candles change ───
@@ -265,18 +316,17 @@ export default function LightweightChartCanvas() {
       candleSeries.setData([])
       volumeSeries.setData([])
       lastCandleTimeRef.current = 0
+      scheduleOverlayRedraw()
       return
     }
 
     const lastNewTime = lwcCandles[lwcCandles.length - 1].time as number
 
     if (lastNewTime !== lastCandleTimeRef.current) {
-      // New candle interval started — full setData
       candleSeries.setData(lwcCandles)
       volumeSeries.setData(lwvVolumes)
       lastCandleTimeRef.current = lastNewTime
     } else {
-      // Same candle, just update the last bar
       const lastCandle = lwcCandles[lwcCandles.length - 1]
       candleSeries.update(lastCandle)
       const lastVol = lwvVolumes[lwvVolumes.length - 1]
@@ -286,6 +336,8 @@ export default function LightweightChartCanvas() {
     if (followLive) {
       chartRef.current?.timeScale().scrollToRealTime()
     }
+
+    scheduleOverlayRedraw()
   }, [candles, followLive])
 
   // ─── Live current candle updates ───
@@ -303,6 +355,8 @@ export default function LightweightChartCanvas() {
     if (followLive) {
       chartRef.current?.timeScale().scrollToRealTime()
     }
+
+    scheduleOverlayRedraw()
   }, [currentCandle, followLive])
 
   // ─── Current price line ───
@@ -310,7 +364,6 @@ export default function LightweightChartCanvas() {
     const candleSeries = candleSeriesRef.current
     if (!candleSeries || !livePrice || livePrice <= 0) return
 
-    // Remove old price line
     if (priceLineRef.current) {
       candleSeries.removePriceLine(priceLineRef.current)
       priceLineRef.current = null
@@ -342,13 +395,11 @@ export default function LightweightChartCanvas() {
     const candleSeries = candleSeriesRef.current
     if (!candleSeries || !livePrice || livePrice <= 0) return
 
-    // Remove old round level lines
     for (const line of roundLevelLinesRef.current) {
       try { candleSeries.removePriceLine(line) } catch { /* already removed */ }
     }
     roundLevelLinesRef.current = []
 
-    // Add round-number levels near current price
     const levels = getRoundLevels(livePrice)
     for (const level of levels) {
       const line = candleSeries.createPriceLine({
@@ -369,6 +420,11 @@ export default function LightweightChartCanvas() {
       roundLevelLinesRef.current = []
     }
   }, [livePrice])
+
+  // ─── Overlay redraw on store changes ───
+  useEffect(() => {
+    scheduleOverlayRedraw()
+  }, [bubbles, bids, asks, livePrice, scheduleOverlayRedraw])
 
   // ─── Track user scroll to toggle followLive ───
   useEffect(() => {
@@ -391,6 +447,20 @@ export default function LightweightChartCanvas() {
 
   return (
     <div ref={containerRef} className="chart-container" style={{ position: 'relative' }}>
+      {/* Hybrid overlay canvas — absolutely positioned, pointer-events: none */}
+      <canvas
+        ref={overlayCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 5,
+        }}
+      />
+
       <div style={{
         position: 'absolute',
         top: 8,
@@ -407,7 +477,7 @@ export default function LightweightChartCanvas() {
         pointerEvents: 'none',
         userSelect: 'none',
       }}>
-        ⚠ EXPERIMENTAL — orderflow overlays not fully migrated yet
+        ⚠ EXPERIMENTAL — hybrid orderflow overlays
       </div>
     </div>
   )
