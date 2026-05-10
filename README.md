@@ -8,7 +8,7 @@ A local live crypto orderflow visualization cockpit using Binance Futures public
 
 ## Features
 
-- **Unified execution chart** — TradingView Lightweight Charts for professional candlestick rendering + Canvas2D overlay for orderflow methodology (heatmap, bubbles, footprint, state badges)
+- **Unified execution chart** — Custom Canvas2D rendering engine with native zoom/pan, candlesticks, orderflow overlays (heatmap, bubbles, footprint, state badges)
 - **Live candles** — Real-time candlestick chart with footprint-style buy/sell volume at each price level
 - **Live trades & bubbles** — Aggressive large-print detection with state classification (PENDING → ACCEPTED/REJECTED/ABSORBED/EXHAUSTED/RESISTANCE)
 - **Local order book & heatmap** — L2 depth visualization with quantity labels, spread indicator, and stale-data indication
@@ -31,8 +31,7 @@ A local live crypto orderflow visualization cockpit using Binance Futures public
 - React 18 + TypeScript
 - Vite
 - Zustand (state management)
-- TradingView Lightweight Charts (candlestick chart engine)
-- Canvas2D (orderflow overlay rendering)
+- Custom Canvas2D rendering engine (chartRenderer.ts)
 - Binance Futures public WebSockets (no API keys required)
 
 ## Local Setup

@@ -5,7 +5,7 @@ import { createLocalOrderBook, type LocalOrderBookHandle } from './connectors/lo
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { fetchHistoricalKlines } from './connectors/binanceKlines'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
-import ExecutionChart from './components/ExecutionChart'
+import ChartCanvas from './components/ChartCanvas'
 import Toolbar from './components/Toolbar'
 import SidePanel from './components/SidePanel'
 import DOMLite from './components/DOMLite'
@@ -216,7 +216,7 @@ export default function App() {
       <MarketHeader />
       <div className="main-area">
         <div className="chart-panel">
-          <ExecutionChart />
+          <ChartCanvas />
         </div>
         <div className="right-panels">
           <SidePanel />
