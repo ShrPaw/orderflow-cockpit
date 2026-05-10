@@ -18,6 +18,7 @@ export default function Heatmap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const depthStale = useMarketStore(s => s.depthStale)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -91,8 +92,8 @@ export default function Heatmap() {
   }, [bids, asks])
 
   return (
-    <div className="heatmap-container">
-      <div className="heatmap-header">Liquidity Depth</div>
+    <div className="heatmap-container" style={depthStale ? { opacity: 0.5 } : undefined}>
+      <div className="heatmap-header">Liquidity Depth{depthStale ? ' ⚠STALE' : ''}</div>
       <div className="heatmap-canvas-wrap">
         <canvas ref={canvasRef} />
       </div>

@@ -4,6 +4,7 @@ import { fmtPrice, fmtNum } from '../utils/formatters'
 export default function DOMLite() {
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const depthStale = useMarketStore(s => s.depthStale)
 
   const bestBid = bids[0]?.price ?? 0
   const bestAsk = asks[0]?.price ?? 0
@@ -24,9 +25,9 @@ export default function DOMLite() {
     : 0
 
   return (
-    <div className="dom-lite">
+    <div className="dom-lite" style={depthStale ? { opacity: 0.5 } : undefined}>
       <div className="dom-header">
-        <span className="dom-title">Order Book</span>
+        <span className="dom-title">Order Book{depthStale ? ' ⚠STALE' : ''}</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
 

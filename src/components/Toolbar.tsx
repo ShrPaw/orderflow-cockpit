@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
 import type { ChartEngine } from '../App'
+import type { DisplayMode } from '../utils/auctionClusters'
 import { INSTRUMENTS } from '../types/market'
 import { fmtPrice } from '../utils/formatters'
 import AssetSelector from './AssetSelector'
@@ -30,6 +31,8 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
   const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
   const setFollowLive = useMarketStore(s => s.setFollowLive)
+  const displayMode = useMarketStore(s => s.displayMode)
+  const setDisplayMode = useMarketStore(s => s.setDisplayMode)
 
   const [showAssetSelector, setShowAssetSelector] = useState(false)
 
@@ -185,6 +188,18 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
               onClick={() => onChartEngineChange('lightweight')}
               title="Experimental chart engine — orderflow overlays not fully migrated yet"
             >Lightweight ⚠</button>
+          </div>
+
+          {/* Bubble Display Mode */}
+          <div className="chart-engine-toggle" title="Bubble display mode">
+            {(['RAW', 'CLUSTERED', 'HYBRID'] as DisplayMode[]).map(dm => (
+              <button
+                key={dm}
+                className={`engine-btn ${displayMode === dm ? 'active' : ''}`}
+                onClick={() => setDisplayMode(dm)}
+                title={dm === 'RAW' ? 'Show individual bubbles' : dm === 'CLUSTERED' ? 'Show auction cluster bubbles' : 'Clusters + freshest raw events'}
+              >{dm === 'CLUSTERED' ? 'CLU' : dm}</button>
+            ))}
           </div>
         </div>
       </div>

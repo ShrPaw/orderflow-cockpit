@@ -8,6 +8,10 @@ import {
   newCandle, processTradeIntoCandle, classifyBubble, computeVolumeProfile,
 } from '../utils/aggregation'
 import { updateLevelsFromBubbles, resetLevels, type LevelRecord } from '../utils/levelMemory'
+import {
+  formClusters, type AuctionCluster, type DisplayMode, type DisplayConfig,
+  getDefaultDisplayConfig,
+} from '../utils/auctionClusters'
 
 interface MarketState {
   mode: AppMode
@@ -53,6 +57,17 @@ interface MarketState {
   // ─── Level memory ───
   levelMemory: LevelRecord[]
 
+  // ─── Auction Clusters ───
+  clusters: AuctionCluster[]
+
+  // ─── Display mode ───
+  displayMode: DisplayMode
+  displayConfig: DisplayConfig
+
+  // ─── Depth health ───
+  depthStale: boolean
+  depthLastMessageTime: number
+
   // Actions
   setMode: (mode: AppMode) => void
   setSymbol: (symbol: string) => void
@@ -72,6 +87,11 @@ interface MarketState {
   setInstruments: (instruments: Instrument[]) => void
   setInstrumentsLoading: (loading: boolean) => void
   loadHistoricalCandles: (candles: Candle[]) => void
+  updateClusters: () => void
+  setDisplayMode: (mode: DisplayMode) => void
+  setDisplayConfig: (config: Partial<DisplayConfig>) => void
+  setDepthStale: (stale: boolean) => void
+  setDepthLastMessageTime: (time: number) => void
   reset: () => void
 }
 
@@ -115,6 +135,11 @@ function getInitialState() {
     instruments: [] as Instrument[],
     instrumentsLoading: false,
     levelMemory: [] as LevelRecord[],
+    clusters: [] as AuctionCluster[],
+    displayMode: 'CLUSTERED' as DisplayMode,
+    displayConfig: getDefaultDisplayConfig(),
+    depthStale: false,
+    depthLastMessageTime: 0,
   }
 }
 
@@ -145,6 +170,9 @@ function getDataResetFields() {
     liveChangePct: 0,
     connectionError: null as string | null,
     lastTradeTime: 0,
+    clusters: [] as AuctionCluster[],
+    depthStale: false,
+    depthLastMessageTime: 0,
   }
 }
 
@@ -319,10 +347,21 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       state.livePrice
     )
 
+    // Update auction clusters
+    const clusters = formClusters(
+      updatedGlobalBubbles,
+      state.interval,
+      state.livePrice,
+      state.currentCandle!.high,
+      state.currentCandle!.low,
+      state.clusters
+    )
+
     set({
       currentCandle: { ...state.currentCandle, bubbles: updatedCurrentBubbles },
       bubbles: updatedGlobalBubbles,
       levelMemory,
+      clusters,
     })
   },
 
@@ -338,18 +377,33 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   loadHistoricalCandles: (historicalCandles) => {
     const state = get()
-    // Merge with existing candles, deduplicate by openTime, sort ascending
     const existing = state.candles
     const merged = new Map<number, Candle>()
     for (const c of existing) merged.set(c.openTime, c)
     for (const c of historicalCandles) {
-      // Only add if we don't already have a candle at this time
-      // (live data takes priority over historical)
       if (!merged.has(c.openTime)) merged.set(c.openTime, c)
     }
     const sorted = Array.from(merged.values()).sort((a, b) => a.openTime - b.openTime)
     set({ candles: sorted.slice(-MAX_CANDLES) })
   },
+
+  updateClusters: () => {
+    const state = get()
+    const clusters = formClusters(
+      state.bubbles,
+      state.interval,
+      state.livePrice,
+      state.currentCandle?.high ?? state.livePrice,
+      state.currentCandle?.low ?? state.livePrice,
+      state.clusters
+    )
+    set({ clusters })
+  },
+
+  setDisplayMode: (mode) => set({ displayMode: mode }),
+  setDisplayConfig: (config) => set({ displayConfig: { ...get().displayConfig, ...config } }),
+  setDepthStale: (stale) => set({ depthStale: stale }),
+  setDepthLastMessageTime: (time) => set({ depthLastMessageTime: time }),
 
   reset: () => set(getInitialState()),
 }))

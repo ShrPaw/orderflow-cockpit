@@ -114,6 +114,8 @@ export default function LightweightChartCanvas() {
   const bubbles = useMarketStore(s => s.bubbles)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const clusters = useMarketStore(s => s.clusters)
+  const displayMode = useMarketStore(s => s.displayMode)
 
   // ─── Lightweight tools state ───
   const [showBubbles, setShowBubbles] = useState(true)
@@ -167,7 +169,6 @@ export default function LightweightChartCanvas() {
       const height = rect.height
       const dpr = window.devicePixelRatio || 1
 
-      // Resize overlay canvas to match container
       if (canvas.width !== Math.floor(width * dpr) ||
           canvas.height !== Math.floor(height * dpr)) {
         canvas.width = Math.floor(width * dpr)
@@ -184,8 +185,6 @@ export default function LightweightChartCanvas() {
       const now = Date.now()
       const intervalMs = INTERVAL_MS[interval] ?? 60_000
 
-      // Collect all bubbles: global store has the latest classified versions
-      // (fixed: processTrade and updateBubbles now propagate state to global array)
       const allBubbles = [...bubbles]
       if (currentCandle) {
         for (const b of currentCandle.bubbles) {
@@ -205,9 +204,11 @@ export default function LightweightChartCanvas() {
         showBubbles,
         showLiquidity,
         showLevels,
+        clusters,
+        displayMode,
       })
     })
-  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels])
+  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels, clusters, displayMode])
 
   // ─── Chart creation & cleanup ───
   useEffect(() => {

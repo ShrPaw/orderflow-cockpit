@@ -1,6 +1,8 @@
 import type { Candle, VolumeLevel, OrderLevel, Bubble } from '../types/market'
 import { getBubbleVisualStyle, getRenderableBubbles } from './bubbleMethodology'
 import { getAllLevels } from './levelMemory'
+import type { AuctionCluster, AgePhase } from './auctionClusters'
+import { getRenderableClusters } from './auctionClusters'
 
 // ─── Color System — Midnight Slate ───
 const COL = {
@@ -173,7 +175,9 @@ export function renderChart(
   livePrice?: number,
   bids?: OrderLevel[],
   asks?: OrderLevel[],
-  intervalMs?: number
+  intervalMs?: number,
+  clusters?: AuctionCluster[],
+  displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID'
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -401,112 +405,153 @@ export function renderChart(
     }
 
     // Bubbles — methodology-driven rendering
-    // Uses getBubbleVisualStyle for state/age/side encoding
+    // Supports RAW / CLUSTERED / HYBRID display modes
     if (candle.bubbles.length > 0 && c.bodyW > 3) {
       const now = Date.now()
       const intMs = intervalMs || 40_000
+      const mode = displayMode || 'CLUSTERED'
 
-      // Use getRenderableBubbles to filter by age and priority
-      const renderable = getRenderableBubbles(candle.bubbles, now, intMs)
+      if (mode === 'CLUSTERED' && clusters && clusters.length > 0) {
+        // ─── CLUSTERED MODE ───
+        const renderableClusters = getRenderableClusters(clusters, now)
+        const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
 
-      // Zoom-adaptive opacity scaling
-      const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
+        for (const cluster of renderableClusters) {
+          const clusterCandleIdx = allCandles.findIndex(
+            cl => cl.openTime <= cluster.endTs && (cl.openTime + intMs) >= cluster.startTs
+          )
+          if (clusterCandleIdx < 0) continue
 
-      // Compute notional percentiles for relative sizing
-      const notionals = renderable.map(b => b.notional).sort((a, b) => a - b)
-      const getPercentile = (val: number): number => {
-        if (notionals.length === 0) return 0.5
-        let count = 0
-        for (const n of notionals) { if (n <= val) count++ }
-        return count / notionals.length
-      }
+          const clusterX = c.indexToX(clusterCandleIdx)
+          const clusterCx = clusterX + c.bodyW / 2
+          const clusterY = c.priceToY(cluster.vwapPrice)
 
-      for (const bubble of renderable) {
-        const by = c.priceToY(bubble.price)
-        if (!isFinite(by) || by < -20 || by > c.chartH + 20) continue
+          if (!isFinite(clusterY) || clusterY < -30 || clusterY > c.chartH + 30) continue
+          drawClusterBubble(ctx, clusterCx, clusterY, cluster, now, zoomAlphaScale, c.bodyW)
+        }
+      } else if (mode === 'HYBRID' && clusters && clusters.length > 0) {
+        // ─── HYBRID MODE: clusters + freshest raw events ───
+        const renderableClusters = getRenderableClusters(clusters, now)
+        const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
 
-        const pctl = getPercentile(bubble.notional)
-        const style = getBubbleVisualStyle(bubble, now, intMs, zoomAlphaScale, pctl)
+        for (const cluster of renderableClusters) {
+          const clusterCandleIdx = allCandles.findIndex(
+            cl => cl.openTime <= cluster.endTs && (cl.openTime + intMs) >= cluster.startTs
+          )
+          if (clusterCandleIdx < 0) continue
 
-        if (style.radius < 1) continue
-        if (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01) continue
+          const clusterX = c.indexToX(clusterCandleIdx)
+          const clusterCx = clusterX + c.bodyW / 2
+          const clusterY = c.priceToY(cluster.vwapPrice)
 
-        // ─── Draw circle ───
-        ctx.beginPath()
-        ctx.arc(cx, by, style.radius, 0, Math.PI * 2)
-
-        // Fill — ring-style (absorbed) uses very low fill
-        if (style.fillAlpha > 0 && !style.ringStyle) {
-          ctx.globalAlpha = style.fillAlpha
-          ctx.fillStyle = style.fillColor
-          ctx.fill()
-        } else if (style.ringStyle) {
-          // Ring style: barely-there fill
-          ctx.globalAlpha = Math.min(style.fillAlpha, 0.04)
-          ctx.fillStyle = style.fillColor
-          ctx.fill()
+          if (!isFinite(clusterY) || clusterY < -30 || clusterY > c.chartH + 30) continue
+          drawClusterBubble(ctx, clusterCx, clusterY, cluster, now, zoomAlphaScale, c.bodyW)
         }
 
-        // Stroke — state-specific style
-        if (style.strokeAlpha > 0) {
-          ctx.globalAlpha = style.strokeAlpha
-          ctx.strokeStyle = style.strokeColor
-          ctx.lineWidth = style.strokeWidth
+        // Freshest raw events with low opacity
+        const clusterBubbleIds = new Set(renderableClusters.flatMap(cl => cl.rawBubbleIds))
+        const renderable = getRenderableBubbles(candle.bubbles, now, intMs)
+          .filter(b => !clusterBubbleIds.has(b.id) && (now - b.timestamp) < 10_000)
 
-          if (style.dashed) {
-            ctx.setLineDash([3, 2])
-          } else {
-            ctx.setLineDash([])
-          }
-
-          ctx.stroke()
-          ctx.setLineDash([])
-
-          // Broken outline for INVALIDATED: draw an X through the circle
-          if (style.brokenOutline) {
-            ctx.globalAlpha = style.strokeAlpha * 0.6
-            ctx.strokeStyle = style.strokeColor
-            ctx.lineWidth = 1
-            const xLen = style.radius * 0.6
-            ctx.beginPath()
-            ctx.moveTo(cx - xLen, by - xLen)
-            ctx.lineTo(cx + xLen, by + xLen)
-            ctx.moveTo(cx + xLen, by - xLen)
-            ctx.lineTo(cx - xLen, by + xLen)
-            ctx.stroke()
-          }
-
-          // Resistance outer ring (purple halo)
-          if (bubble.state === 'RESISTANCE') {
-            ctx.globalAlpha = 0.25
-            ctx.strokeStyle = '#a855f7'
-            ctx.lineWidth = 3
-            ctx.beginPath()
-            ctx.arc(cx, by, style.radius + 3, 0, Math.PI * 2)
-            ctx.stroke()
-          }
-        }
-
-        // ─── Side notch (directional triangle) ───
-        if (style.sideNotchSize > 0 && c.bodyW >= 6) {
-          ctx.globalAlpha = 0.65
-          ctx.fillStyle = style.sideAccentColor
+        for (const bubble of renderable) {
+          const by = c.priceToY(bubble.price)
+          if (!isFinite(by) || by < -20 || by > c.chartH + 20) continue
+          const style = getBubbleVisualStyle(bubble, now, intMs, 0.3)
+          if (style.radius < 1) continue
           ctx.beginPath()
-          const notchY = by + (style.sideDirection > 0 ? style.radius + 2 : -(style.radius + 2))
-          const notchDir = style.sideDirection
-          ctx.moveTo(cx, notchY + notchDir * style.sideNotchSize)
-          ctx.lineTo(cx - style.sideNotchSize * 0.6, notchY)
-          ctx.lineTo(cx + style.sideNotchSize * 0.6, notchY)
-          ctx.closePath()
+          ctx.arc(cx, by, style.radius * 0.7, 0, Math.PI * 2)
+          ctx.globalAlpha = style.fillAlpha * 0.4
+          ctx.fillStyle = style.fillColor
           ctx.fill()
+          ctx.globalAlpha = style.strokeAlpha * 0.4
+          ctx.strokeStyle = style.strokeColor
+          ctx.lineWidth = style.strokeWidth * 0.7
+          ctx.stroke()
+        }
+      } else {
+        // ─── RAW MODE ───
+        const renderable = getRenderableBubbles(candle.bubbles, now, intMs)
+        const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
+        const notionals = renderable.map(b => b.notional).sort((a, b) => a - b)
+        const getPercentile = (val: number): number => {
+          if (notionals.length === 0) return 0.5
+          let count = 0
+          for (const n of notionals) { if (n <= val) count++ }
+          return count / notionals.length
         }
 
-        // ─── Level interaction halo ───
-        if (bubble.levelInteraction) {
-          ctx.globalAlpha = 0.08
-          ctx.fillStyle = style.fillColor
-          const haloH = Math.max(2, style.radius * 0.5)
-          ctx.fillRect(LEFT_MARGIN, by - haloH / 2, c.chartW, haloH)
+        for (const bubble of renderable) {
+          const by = c.priceToY(bubble.price)
+          if (!isFinite(by) || by < -20 || by > c.chartH + 20) continue
+          const pctl = getPercentile(bubble.notional)
+          const style = getBubbleVisualStyle(bubble, now, intMs, zoomAlphaScale, pctl)
+          if (style.radius < 1) continue
+          if (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01) continue
+
+          ctx.beginPath()
+          ctx.arc(cx, by, style.radius, 0, Math.PI * 2)
+
+          if (style.fillAlpha > 0 && !style.ringStyle) {
+            ctx.globalAlpha = style.fillAlpha
+            ctx.fillStyle = style.fillColor
+            ctx.fill()
+          } else if (style.ringStyle) {
+            ctx.globalAlpha = Math.min(style.fillAlpha, 0.04)
+            ctx.fillStyle = style.fillColor
+            ctx.fill()
+          }
+
+          if (style.strokeAlpha > 0) {
+            ctx.globalAlpha = style.strokeAlpha
+            ctx.strokeStyle = style.strokeColor
+            ctx.lineWidth = style.strokeWidth
+            if (style.dashed) ctx.setLineDash([3, 2])
+            else ctx.setLineDash([])
+            ctx.stroke()
+            ctx.setLineDash([])
+
+            if (style.brokenOutline) {
+              ctx.globalAlpha = style.strokeAlpha * 0.6
+              ctx.strokeStyle = style.strokeColor
+              ctx.lineWidth = 1
+              const xLen = style.radius * 0.6
+              ctx.beginPath()
+              ctx.moveTo(cx - xLen, by - xLen)
+              ctx.lineTo(cx + xLen, by + xLen)
+              ctx.moveTo(cx + xLen, by - xLen)
+              ctx.lineTo(cx - xLen, by + xLen)
+              ctx.stroke()
+            }
+
+            if (bubble.state === 'RESISTANCE') {
+              ctx.globalAlpha = 0.25
+              ctx.strokeStyle = '#a855f7'
+              ctx.lineWidth = 3
+              ctx.beginPath()
+              ctx.arc(cx, by, style.radius + 3, 0, Math.PI * 2)
+              ctx.stroke()
+            }
+          }
+
+          if (style.sideNotchSize > 0 && c.bodyW >= 6) {
+            ctx.globalAlpha = 0.65
+            ctx.fillStyle = style.sideAccentColor
+            ctx.beginPath()
+            const notchY = by + (style.sideDirection > 0 ? style.radius + 2 : -(style.radius + 2))
+            const notchDir = style.sideDirection
+            ctx.moveTo(cx, notchY + notchDir * style.sideNotchSize)
+            ctx.lineTo(cx - style.sideNotchSize * 0.6, notchY)
+            ctx.lineTo(cx + style.sideNotchSize * 0.6, notchY)
+            ctx.closePath()
+            ctx.fill()
+          }
+
+          if (bubble.levelInteraction) {
+            ctx.globalAlpha = 0.08
+            ctx.fillStyle = style.fillColor
+            const haloH = Math.max(2, style.radius * 0.5)
+            ctx.fillRect(LEFT_MARGIN, by - haloH / 2, c.chartW, haloH)
+          }
         }
       }
 
@@ -745,6 +790,176 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.lineTo(x, y + r)
   ctx.quadraticCurveTo(x, y, x + r, y)
   ctx.closePath()
+}
+
+// ═══════════════════════════════════════════
+// CLUSTER BUBBLE RENDERING
+// ═══════════════════════════════════════════
+
+const CLUSTER_COLORS: Record<string, { fill: string; stroke: string }> = {
+  'buy-FORMING':     { fill: '#34d399', stroke: '#34d399' },
+  'buy-ACCEPTED':    { fill: '#2dd4a0', stroke: '#2dd4a0' },
+  'buy-REJECTED':    { fill: '#f87171', stroke: '#ef4444' },
+  'buy-ABSORBED':    { fill: '#2dd4a0', stroke: '#4fc3f7' },
+  'buy-EXHAUSTED':   { fill: '#4a7a6a', stroke: '#3d5f52' },
+  'buy-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'buy-RESISTANCE':  { fill: '#a855f7', stroke: '#22c55e' },
+  'sell-FORMING':     { fill: '#f87171', stroke: '#f87171' },
+  'sell-ACCEPTED':    { fill: '#ef6461', stroke: '#ef6461' },
+  'sell-REJECTED':    { fill: '#34d399', stroke: '#2dd4a0' },
+  'sell-ABSORBED':    { fill: '#ef6461', stroke: '#4fc3f7' },
+  'sell-EXHAUSTED':   { fill: '#7a4a4a', stroke: '#5f3d3d' },
+  'sell-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'sell-RESISTANCE':  { fill: '#a855f7', stroke: '#ef6461' },
+}
+
+const CLUSTER_AGE_MOD: Record<AgePhase, { f: number; s: number; r: number }> = {
+  FRESH:   { f: 1.0, s: 1.0, r: 1.0 },
+  ACTIVE:  { f: 0.85, s: 0.9, r: 0.95 },
+  FADING:  { f: 0.5, s: 0.6, r: 0.85 },
+  EXPIRED: { f: 0.0, s: 0.0, r: 0.0 },
+}
+
+const CLUSTER_FILL_A: Record<string, number> = {
+  FORMING: 0.18, ACCEPTED: 0.22, REJECTED: 0.18,
+  ABSORBED: 0.06, EXHAUSTED: 0.05, INVALIDATED: 0.12, RESISTANCE: 0.14,
+}
+
+const CLUSTER_STROKE_A: Record<string, number> = {
+  FORMING: 0.40, ACCEPTED: 0.60, REJECTED: 0.70,
+  ABSORBED: 0.80, EXHAUSTED: 0.18, INVALIDATED: 0.55, RESISTANCE: 0.75,
+}
+
+const CLUSTER_LINE_W: Record<string, number> = {
+  FORMING: 1.0, ACCEPTED: 1.5, REJECTED: 2.0,
+  ABSORBED: 2.5, EXHAUSTED: 0.7, INVALIDATED: 1.5, RESISTANCE: 2.0,
+}
+
+function drawClusterBubble(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  cluster: AuctionCluster,
+  now: number,
+  zoomAlphaScale: number,
+  candleWidth: number
+) {
+  const ageMod = CLUSTER_AGE_MOD[cluster.agePhase]
+
+  // Radius from cumulative notional (log scale)
+  const logNotional = Math.log10(Math.max(1, cluster.cumulativeNotional))
+  const normalized = Math.max(0, Math.min(1, (logNotional - 3) / 3))
+  let baseRadius = 6 + normalized * 22
+  if (cluster.cumulativeNotional > 100_000) baseRadius = 34
+
+  // Absorption shrink
+  let radiusMul = ageMod.r
+  if (cluster.state === 'ABSORBED') {
+    const absorbedAge = now - cluster.startTs
+    if (absorbedAge > 10_000) {
+      const shrinkProgress = Math.min(1, (absorbedAge - 10_000) / 110_000)
+      radiusMul *= 1 - shrinkProgress * 0.55
+    }
+  }
+
+  const countBonus = Math.min(1.2, 1 + (cluster.tradeCount - 1) * 0.03)
+  const radius = Math.max(6, Math.min(34, baseRadius * radiusMul * countBonus))
+
+  const colorKey = `${cluster.side}-${cluster.state}`
+  const colors = CLUSTER_COLORS[colorKey] || CLUSTER_COLORS['buy-EXHAUSTED']
+
+  const baseFillAlpha = CLUSTER_FILL_A[cluster.state] ?? 0.15
+  const fillAlpha = Math.max(0, Math.min(1, baseFillAlpha * ageMod.f * zoomAlphaScale))
+  const baseStrokeAlpha = CLUSTER_STROKE_A[cluster.state] ?? 0.5
+  const strokeAlpha = Math.max(0, Math.min(1, baseStrokeAlpha * ageMod.s * zoomAlphaScale))
+  const lineWidth = CLUSTER_LINE_W[cluster.state] ?? 1.5
+
+  if (radius < 1 || (fillAlpha < 0.01 && strokeAlpha < 0.01)) return
+
+  // Draw circle
+  ctx.beginPath()
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+
+  const ringStyle = cluster.state === 'ABSORBED'
+  if (fillAlpha > 0 && !ringStyle) {
+    ctx.globalAlpha = fillAlpha
+    ctx.fillStyle = colors.fill
+    ctx.fill()
+  } else if (ringStyle) {
+    ctx.globalAlpha = Math.min(fillAlpha, 0.04)
+    ctx.fillStyle = colors.fill
+    ctx.fill()
+  }
+
+  if (strokeAlpha > 0) {
+    ctx.globalAlpha = strokeAlpha
+    ctx.strokeStyle = colors.stroke
+    ctx.lineWidth = lineWidth
+    const dashed = cluster.state === 'FORMING' || cluster.state === 'INVALIDATED'
+    ctx.setLineDash(dashed ? [3, 2] : [])
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    if (cluster.state === 'INVALIDATED') {
+      ctx.globalAlpha = strokeAlpha * 0.6
+      ctx.strokeStyle = colors.stroke
+      ctx.lineWidth = 1
+      const xLen = radius * 0.6
+      ctx.beginPath()
+      ctx.moveTo(cx - xLen, cy - xLen)
+      ctx.lineTo(cx + xLen, cy + xLen)
+      ctx.moveTo(cx + xLen, cy - xLen)
+      ctx.lineTo(cx - xLen, cy + xLen)
+      ctx.stroke()
+    }
+
+    if (cluster.state === 'RESISTANCE') {
+      ctx.globalAlpha = 0.25
+      ctx.strokeStyle = '#a855f7'
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius + 3, 0, Math.PI * 2)
+      ctx.stroke()
+      // Origin accent
+      ctx.globalAlpha = 0.4
+      ctx.strokeStyle = cluster.resistanceOrigin === 'sell' ? '#ef6461' : '#22c55e'
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius + 5, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+
+  // Trade count badge
+  if (cluster.tradeCount >= 3 && candleWidth >= 10) {
+    ctx.globalAlpha = 0.7
+    ctx.fillStyle = '#0c1019'
+    ctx.beginPath()
+    ctx.arc(cx + radius * 0.7, cy - radius * 0.7, 6, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#cdd6e4'
+    ctx.font = '8px "SF Mono", monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(String(cluster.tradeCount), cx + radius * 0.7, cy - radius * 0.7 + 3)
+  }
+
+  // Side notch
+  if (candleWidth >= 6) {
+    const sideDir = cluster.side === 'buy' ? -1 : 1
+    const notchSize = Math.max(3, Math.min(6, radius * 0.3))
+    const notchAccent = cluster.side === 'buy' ? '#22c55e' : '#ef6461'
+    ctx.globalAlpha = 0.65
+    ctx.fillStyle = notchAccent
+    ctx.beginPath()
+    const notchY = cy + (sideDir > 0 ? radius + 2 : -(radius + 2))
+    ctx.moveTo(cx, notchY + sideDir * notchSize)
+    ctx.lineTo(cx - notchSize * 0.6, notchY)
+    ctx.lineTo(cx + notchSize * 0.6, notchY)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  ctx.globalAlpha = 1
 }
 
 function getVisibleCandles(allCandles: Candle[], first: number, last: number): Candle[] {

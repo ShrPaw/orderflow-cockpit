@@ -27,6 +27,8 @@ export default function ChartCanvas() {
   const asks = useMarketStore(s => s.asks)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
+  const clusters = useMarketStore(s => s.clusters)
+  const displayMode = useMarketStore(s => s.displayMode)
 
   // Reset view state on symbol switch
   useEffect(() => {
@@ -99,7 +101,8 @@ export default function ChartCanvas() {
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
           volumeProfile, mouseRef.current,
-          livePrice, bids, asks, intervalMs
+          livePrice, bids, asks, intervalMs,
+          clusters, displayMode
         )
         viewRef.current = result.view
       }
@@ -110,7 +113,7 @@ export default function ChartCanvas() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval])
+  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval, clusters, displayMode])
 
   // ─── Mouse handlers ───
   const onWheel = useCallback((e: React.WheelEvent) => {

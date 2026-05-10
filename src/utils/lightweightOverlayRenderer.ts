@@ -29,6 +29,8 @@ import {
 } from './bubbleMethodology'
 import { getAllLevels, type LevelRecord } from './levelMemory'
 import { INTERVAL_MS } from '../types/market'
+import type { AuctionCluster, AgePhase } from './auctionClusters'
+import { getRenderableClusters } from './auctionClusters'
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -397,6 +399,118 @@ export function drawHybridLevelMemory(
 }
 
 // ═══════════════════════════════════════════
+// CLUSTER RENDERING
+// ═══════════════════════════════════════════
+
+const CLUSTER_COLORS: Record<string, { fill: string; stroke: string }> = {
+  'buy-FORMING':     { fill: '#34d399', stroke: '#34d399' },
+  'buy-ACCEPTED':    { fill: '#2dd4a0', stroke: '#2dd4a0' },
+  'buy-REJECTED':    { fill: '#f87171', stroke: '#ef4444' },
+  'buy-ABSORBED':    { fill: '#2dd4a0', stroke: '#4fc3f7' },
+  'buy-EXHAUSTED':   { fill: '#4a7a6a', stroke: '#3d5f52' },
+  'buy-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'buy-RESISTANCE':  { fill: '#a855f7', stroke: '#22c55e' },
+  'sell-FORMING':     { fill: '#f87171', stroke: '#f87171' },
+  'sell-ACCEPTED':    { fill: '#ef6461', stroke: '#ef6461' },
+  'sell-REJECTED':    { fill: '#34d399', stroke: '#2dd4a0' },
+  'sell-ABSORBED':    { fill: '#ef6461', stroke: '#4fc3f7' },
+  'sell-EXHAUSTED':   { fill: '#7a4a4a', stroke: '#5f3d3d' },
+  'sell-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'sell-RESISTANCE':  { fill: '#a855f7', stroke: '#ef6461' },
+}
+
+const CL_AGE: Record<AgePhase, { f: number; s: number; r: number }> = {
+  FRESH: { f: 1, s: 1, r: 1 }, ACTIVE: { f: 0.85, s: 0.9, r: 0.95 },
+  FADING: { f: 0.5, s: 0.6, r: 0.85 }, EXPIRED: { f: 0, s: 0, r: 0 },
+}
+const CL_FILL: Record<string, number> = { FORMING: 0.18, ACCEPTED: 0.22, REJECTED: 0.18, ABSORBED: 0.06, EXHAUSTED: 0.05, INVALIDATED: 0.12, RESISTANCE: 0.14 }
+const CL_STROKE: Record<string, number> = { FORMING: 0.4, ACCEPTED: 0.6, REJECTED: 0.7, ABSORBED: 0.8, EXHAUSTED: 0.18, INVALIDATED: 0.55, RESISTANCE: 0.75 }
+const CL_LINE: Record<string, number> = { FORMING: 1, ACCEPTED: 1.5, REJECTED: 2, ABSORBED: 2.5, EXHAUSTED: 0.7, INVALIDATED: 1.5, RESISTANCE: 2 }
+
+function drawHybridClusters(rc: OverlayRenderContext, clusters: AuctionCluster[]): void {
+  if (clusters.length === 0) return
+  const { ctx, width, height, chart, candleSeries, now } = rc
+  const renderable = getRenderableClusters(clusters, now)
+  if (renderable.length === 0) return
+
+  const logicalRange = chart.timeScale().getVisibleLogicalRange()
+  const visibleCandles = logicalRange ? Math.abs((logicalRange.to as number) - (logicalRange.from as number)) : 100
+  const zoomAlpha = visibleCandles > 200 ? 0.5 : visibleCandles > 80 ? 0.75 : visibleCandles > 30 ? 0.9 : 1.0
+
+  ctx.save()
+  for (const cluster of renderable) {
+    const timeSec = Math.floor(cluster.endTs / 1000)
+    const x = chart.timeScale().timeToCoordinate(timeSec as any)
+    const y = candleSeries.priceToCoordinate(cluster.vwapPrice)
+    if (x === null || y === null || !isFinite(x) || !isFinite(y)) continue
+    if (x < -40 || x > width + 40 || y < -40 || y > height + 40) continue
+
+    const ageMod = CL_AGE[cluster.agePhase]
+    const logN = Math.log10(Math.max(1, cluster.cumulativeNotional))
+    const norm = Math.max(0, Math.min(1, (logN - 3) / 3))
+    let baseR = 6 + norm * 22
+    if (cluster.cumulativeNotional > 100_000) baseR = 34
+    let rMul = ageMod.r
+    if (cluster.state === 'ABSORBED') {
+      const aAge = now - cluster.startTs
+      if (aAge > 10_000) rMul *= 1 - Math.min(1, (aAge - 10_000) / 110_000) * 0.55
+    }
+    const radius = Math.max(6, Math.min(34, baseR * rMul * Math.min(1.2, 1 + (cluster.tradeCount - 1) * 0.03)))
+
+    const ck = `${cluster.side}-${cluster.state}`
+    const col = CLUSTER_COLORS[ck] || CLUSTER_COLORS['buy-EXHAUSTED']
+    const fa = Math.max(0, Math.min(1, (CL_FILL[cluster.state] ?? 0.15) * ageMod.f * zoomAlpha))
+    const sa = Math.max(0, Math.min(1, (CL_STROKE[cluster.state] ?? 0.5) * ageMod.s * zoomAlpha))
+    if (radius < 1 || (fa < 0.01 && sa < 0.01)) continue
+
+    ctx.beginPath()
+    ctx.arc(x, y, radius, 0, Math.PI * 2)
+    if (cluster.state === 'ABSORBED') { ctx.globalAlpha = Math.min(fa, 0.04) }
+    else { ctx.globalAlpha = fa }
+    ctx.fillStyle = col.fill
+    ctx.fill()
+
+    if (sa > 0) {
+      ctx.globalAlpha = sa
+      ctx.strokeStyle = col.stroke
+      ctx.lineWidth = CL_LINE[cluster.state] ?? 1.5
+      ctx.setLineDash(cluster.state === 'FORMING' || cluster.state === 'INVALIDATED' ? [3, 2] : [])
+      ctx.stroke()
+      ctx.setLineDash([])
+      if (cluster.state === 'RESISTANCE') {
+        ctx.globalAlpha = 0.25
+        ctx.strokeStyle = '#a855f7'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(x, y, radius + 3, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.globalAlpha = 0.4
+        ctx.strokeStyle = cluster.resistanceOrigin === 'sell' ? '#ef6461' : '#22c55e'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.arc(x, y, radius + 5, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+    }
+
+    // Side notch
+    const sDir = cluster.side === 'buy' ? -1 : 1
+    const ns = Math.max(3, Math.min(6, radius * 0.3))
+    ctx.globalAlpha = 0.65
+    ctx.fillStyle = cluster.side === 'buy' ? '#22c55e' : '#ef6461'
+    ctx.beginPath()
+    const ny = y + (sDir > 0 ? radius + 2 : -(radius + 2))
+    ctx.moveTo(x, ny + sDir * ns)
+    ctx.lineTo(x - ns * 0.6, ny)
+    ctx.lineTo(x + ns * 0.6, ny)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.globalAlpha = 1
+  ctx.restore()
+}
+
+// ═══════════════════════════════════════════
 // FULL OVERLAY REDRAW
 // ═══════════════════════════════════════════
 
@@ -410,27 +524,37 @@ export function drawOverlay(
   livePrice: number,
   bids: OrderLevel[],
   asks: OrderLevel[],
-  options?: { showBubbles?: boolean; showLiquidity?: boolean; showLevels?: boolean }
+  options?: {
+    showBubbles?: boolean
+    showLiquidity?: boolean
+    showLevels?: boolean
+    clusters?: AuctionCluster[]
+    displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID'
+  }
 ): void {
   const { ctx, width, height, dpr } = rc
   const showBubbles = options?.showBubbles !== false
   const showLiquidity = options?.showLiquidity !== false
   const showLevels = options?.showLevels !== false
+  const clusters = options?.clusters
+  const displayMode = options?.displayMode || 'CLUSTERED'
 
-  // Clear the overlay canvas
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, width * dpr, height * dpr)
   ctx.restore()
 
-  // Draw in order: level memory (behind), liquidity, bubbles (top)
-  if (showLevels) {
-    drawHybridLevelMemory(rc, livePrice)
-  }
-  if (showLiquidity) {
-    drawHybridLiquidityLevels(rc, livePrice, bids, asks)
-  }
+  if (showLevels) drawHybridLevelMemory(rc, livePrice)
+  if (showLiquidity) drawHybridLiquidityLevels(rc, livePrice, bids, asks)
+
   if (showBubbles) {
-    drawHybridBubbles(rc, bubbles)
+    if (displayMode === 'CLUSTERED' && clusters && clusters.length > 0) {
+      drawHybridClusters(rc, clusters)
+    } else if (displayMode === 'HYBRID' && clusters && clusters.length > 0) {
+      drawHybridClusters(rc, clusters)
+      drawHybridBubbles(rc, bubbles)
+    } else {
+      drawHybridBubbles(rc, bubbles)
+    }
   }
 }

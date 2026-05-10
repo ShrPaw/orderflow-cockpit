@@ -4,6 +4,7 @@ export default function ConnectionStatus() {
   const mode = useMarketStore(s => s.mode)
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
+  const depthStale = useMarketStore(s => s.depthStale)
   const tickerConnected = useMarketStore(s => s.tickerConnected)
   const connectionError = useMarketStore(s => s.connectionError)
   const setMode = useMarketStore(s => s.setMode)
@@ -17,12 +18,23 @@ export default function ConnectionStatus() {
           <span className="conn-bar-icon">⚠</span>
           <span className="conn-bar-text">{connectionError}</span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}{depthStale ? ' ⚠STALE' : ''}
           </span>
           <button className="conn-bar-action" onClick={() => {
             setMode('demo')
             setTimeout(() => setMode('live'), 100)
           }}>Reconnect</button>
+        </div>
+      )
+    }
+    if (depthStale) {
+      return (
+        <div className="conn-bar error" style={{ background: 'rgba(228,167,59,0.12)', borderColor: 'rgba(228,167,59,0.3)' }}>
+          <span className="conn-bar-icon">⏳</span>
+          <span className="conn-bar-text">Depth data stale — waiting for fresh snapshot…</span>
+          <span className="conn-bar-detail">
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'} ⚠STALE
+          </span>
         </div>
       )
     }

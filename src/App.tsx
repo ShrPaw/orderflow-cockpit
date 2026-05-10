@@ -39,6 +39,8 @@ export default function App() {
   const updateLivePrice = useMarketStore(s => s.updateLivePrice)
   const setConnectionError = useMarketStore(s => s.setConnectionError)
   const loadHistoricalCandles = useMarketStore(s => s.loadHistoricalCandles)
+  const setDepthStale = useMarketStore(s => s.setDepthStale)
+  const setDepthLastMessageTime = useMarketStore(s => s.setDepthLastMessageTime)
 
   const cleanupTrade = useRef<(() => void) | null>(null)
   const cleanupDepth = useRef<(() => void) | null>(null)
@@ -118,16 +120,24 @@ export default function App() {
         }
       )
 
-      // Connect depth
+      // Connect depth with health tracking
       cleanupDepth.current = connectBinanceDepth(
         symbol,
         (bids, asks) => setDepth(bids, asks),
         (connected) => {
           setDepthConnected(connected)
           if (!connected) {
-            setConnectionError('Depth stream disconnected')
+            setConnectionError('Depth stream disconnected — auto-recovering…')
+          } else {
+            const state = useMarketStore.getState()
+            if (state.connected) setConnectionError(null)
           }
-        }
+        },
+        (stale) => {
+          setDepthStale(stale)
+          if (stale) setConnectionError('Depth data stale — waiting for fresh snapshot…')
+        },
+        (time) => setDepthLastMessageTime(time)
       )
 
       // Periodic diagnostic log

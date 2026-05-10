@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import { fmtNum, fmtPrice } from '../utils/formatters'
 import type { LevelRecord } from '../utils/levelMemory'
+import type { AuctionCluster } from '../utils/auctionClusters'
 
 export default function SidePanel() {
   const delta = useMarketStore(s => s.delta)
@@ -13,6 +14,8 @@ export default function SidePanel() {
   const largeTrades = useMarketStore(s => s.largeTrades)
   const bubbles = useMarketStore(s => s.bubbles)
   const levelMemory = useMarketStore(s => s.levelMemory)
+  const clusters = useMarketStore(s => s.clusters)
+  const depthStale = useMarketStore(s => s.depthStale)
 
   const buyPct = totalVolume > 0 ? (buyVolume / totalVolume) * 100 : 50
 
@@ -145,6 +148,57 @@ export default function SidePanel() {
           <span className="value purple">{resistance}</span>
         </div>
       </div>
+
+      {/* Auction Cluster Context (P5) */}
+      {clusters.length > 0 && (
+        <div className="panel-section">
+          <div className="panel-title">Auction Clusters</div>
+          <div className="bubble-legend">
+            <span className="legend-item"><span className="dot green" /> Accepted auction</span>
+            <span className="legend-item"><span className="dot red" /> Rejected / failed auction</span>
+            <span className="legend-item"><span className="dot cyan" /> Absorbed at level</span>
+            <span className="legend-item"><span className="dot purple" /> Structural resistance</span>
+          </div>
+          {clusters
+            .filter(c => c.agePhase !== 'EXPIRED')
+            .sort((a, b) => b.cumulativeNotional - a.cumulativeNotional)
+            .slice(0, 6)
+            .map(cl => (
+              <div key={cl.id} className="stat-row">
+                <span className="label" style={{ fontSize: 10 }}>
+                  {cl.side === 'buy' ? '▲' : '▼'} {fmtPrice(cl.vwapPrice)}
+                </span>
+                <span className="value" style={{
+                  color: cl.state === 'ACCEPTED' ? '#2dd4a0'
+                    : cl.state === 'REJECTED' ? '#ef6461'
+                    : cl.state === 'ABSORBED' ? '#4fc3f7'
+                    : cl.state === 'RESISTANCE' ? '#a855f7'
+                    : cl.state === 'EXHAUSTED' ? '#4a5e78'
+                    : '#e4a73b'
+                }}>
+                  {cl.auctionContext !== 'NONE'
+                    ? cl.auctionContext.replace(/_/g, ' ')
+                    : cl.state}
+                  {' '}(${fmtNum(cl.cumulativeNotional)})
+                </span>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* Depth Health */}
+      {depthStale && (
+        <div className="panel-section">
+          <div className="panel-title" style={{ color: '#e4a73b' }}>⚠ Depth Health</div>
+          <div className="stat-row">
+            <span className="label" style={{ color: '#e4a73b' }}>Status</span>
+            <span className="value" style={{ color: '#e4a73b' }}>STALE</span>
+          </div>
+          <div className="empty" style={{ color: '#6b7d96' }}>
+            Depth-dependent overlays may be unreliable. Auto-recovering…
+          </div>
+        </div>
+      )}
 
       {/* Level Memory */}
       {levelMemory.length > 0 && (
