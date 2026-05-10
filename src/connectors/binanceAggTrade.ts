@@ -37,22 +37,48 @@ export function connectBinanceAggTrade(
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
+  let generation = 0
 
   tradeDiag = { url, symbol, opened: false, messageCount: 0, lastMessageTime: 0, parseErrors: 0, closeCount: 0, lastError: null }
 
+  function cancelReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  function closeSocket() {
+    if (ws) {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      try { ws.close() } catch { /* ignore */ }
+      ws = null
+    }
+  }
+
   function connect() {
     if (disposed) return
-    console.log(`[Binance trade] Connecting: ${url}`)
-    ws = new WebSocket(url)
+    cancelReconnectTimer()
+    closeSocket()
 
-    ws.onopen = () => {
-      console.log(`[Binance trade] Connected: ${symbol}`)
+    const myGen = ++generation
+    console.log(`[Binance trade] Connecting: ${url} (gen=${myGen})`)
+    const socket = new WebSocket(url)
+    ws = socket
+
+    socket.onopen = () => {
+      if (disposed || generation !== myGen) return
+      console.log(`[Binance trade] Connected: ${symbol} (gen=${myGen})`)
       tradeDiag.opened = true
       tradeDiag.lastError = null
       onStatus(true)
     }
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (disposed || generation !== myGen) return
       try {
         const msg = JSON.parse(event.data as string)
         // @trade stream uses e="trade", @aggTrade uses e="aggTrade"
@@ -80,18 +106,30 @@ export function connectBinanceAggTrade(
       }
     }
 
-    ws.onclose = (ev) => {
-      console.log(`[Binance trade] Disconnected: ${symbol} code=${ev.code}`)
+    socket.onclose = (ev) => {
+      if (disposed || generation !== myGen) {
+        console.log(`[Binance trade] Ignoring close from stale socket (gen=${myGen})`)
+        return
+      }
+      console.log(`[Binance trade] Disconnected: ${symbol} code=${ev.code} (gen=${myGen})`)
       tradeDiag.opened = false
       tradeDiag.closeCount++
+      ws = null
       onStatus(false)
-      if (!disposed) reconnectTimer = setTimeout(connect, 3000)
+      if (!disposed) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          if (!disposed && generation === myGen) connect()
+        }, 3000)
+      }
     }
 
-    ws.onerror = (ev) => {
+    socket.onerror = (ev) => {
+      if (disposed || generation !== myGen) return
       tradeDiag.lastError = 'WebSocket error'
       console.error('[Binance trade] Error:', ev)
-      ws?.close()
+      // onerror is always followed by onclose — let onclose handle reconnect
+      socket.close()
     }
   }
 
@@ -99,8 +137,8 @@ export function connectBinanceAggTrade(
 
   return () => {
     disposed = true
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    ws?.close()
-    ws = null
+    generation++ // invalidate pending events
+    cancelReconnectTimer()
+    closeSocket()
   }
 }

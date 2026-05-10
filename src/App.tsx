@@ -27,58 +27,41 @@ export default function App() {
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
 
-  const processTrade = useMarketStore(s => s.processTrade)
-  const setDepth = useMarketStore(s => s.setDepth)
-  const setConnected = useMarketStore(s => s.setConnected)
-  const setDepthConnected = useMarketStore(s => s.setDepthConnected)
-  const setTickerConnected = useMarketStore(s => s.setTickerConnected)
-  const rebuildVolumeProfile = useMarketStore(s => s.rebuildVolumeProfile)
-  const addHeatmapSnapshot = useMarketStore(s => s.addHeatmapSnapshot)
-  const updateBubbles = useMarketStore(s => s.updateBubbles)
-  const setTicker = useMarketStore(s => s.setTicker)
-  const updateLivePrice = useMarketStore(s => s.updateLivePrice)
-  const setConnectionError = useMarketStore(s => s.setConnectionError)
-  const loadHistoricalCandles = useMarketStore(s => s.loadHistoricalCandles)
-  const setDepthStale = useMarketStore(s => s.setDepthStale)
-  const setDepthLastMessageTime = useMarketStore(s => s.setDepthLastMessageTime)
-  const setOrderBookSnapshot = useMarketStore(s => s.setOrderBookSnapshot)
-  const applyOrderBookDiff = useMarketStore(s => s.applyOrderBookDiff)
-  const setOrderBookHealth = useMarketStore(s => s.setOrderBookHealth)
-  const markOrderBookStale = useMarketStore(s => s.markOrderBookStale)
-  const clearOrderBook = useMarketStore(s => s.clearOrderBook)
-
   const cleanupTrade = useRef<(() => void) | null>(null)
   const cleanupDepth = useRef<(() => void) | null>(null)
   const cleanupTicker = useRef<(() => void) | null>(null)
   const demoInterval = useRef<ReturnType<typeof setInterval> | null>(null)
+  const depthDemoInterval = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickerInterval = useRef<ReturnType<typeof setInterval> | null>(null)
   const diagInterval = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Live mode connections
+  // ─── Main connection effect ───
+  // Dependencies are ONLY the primitives that require full reconnect:
+  //   mode, symbol, interval
+  // All store actions are accessed via useMarketStore.getState() inside callbacks
+  // so they never cause this effect to re-run.
   useEffect(() => {
-    // Cleanup previous
+    const store = useMarketStore.getState
+
+    // Cleanup any previous connections
     cleanupTrade.current?.()
+    cleanupTrade.current = null
     cleanupDepth.current?.()
-    clearOrderBook()
+    cleanupDepth.current = null
     cleanupTicker.current?.()
-    if (demoInterval.current) {
-      clearInterval(demoInterval.current)
-      demoInterval.current = null
-    }
-    if (tickerInterval.current) {
-      clearInterval(tickerInterval.current)
-      tickerInterval.current = null
-    }
-    if (diagInterval.current) {
-      clearInterval(diagInterval.current)
-      diagInterval.current = null
-    }
+    cleanupTicker.current = null
+    store().clearOrderBook()
+
+    if (demoInterval.current) { clearInterval(demoInterval.current); demoInterval.current = null }
+    if (depthDemoInterval.current) { clearInterval(depthDemoInterval.current); depthDemoInterval.current = null }
+    if (tickerInterval.current) { clearInterval(tickerInterval.current); tickerInterval.current = null }
+    if (diagInterval.current) { clearInterval(diagInterval.current); diagInterval.current = null }
 
     if (mode === 'live') {
       // Fetch historical candles first, then connect live streams
       fetchHistoricalKlines(symbol, interval, 1000).then(historical => {
         if (historical.length > 0) {
-          loadHistoricalCandles(historical)
+          store().loadHistoricalCandles(historical)
           console.log(`[Klines] Loaded ${historical.length} historical candles for ${symbol}`)
         }
       }).catch(err => {
@@ -88,40 +71,40 @@ export default function App() {
       // Fetch 24h ticker immediately
       fetchTicker24h(symbol).then(ticker => {
         if (ticker) {
-          setTicker(ticker)
-          updateLivePrice(ticker.price, ticker.change, ticker.changePct)
-          setTickerConnected(true)
+          store().setTicker(ticker)
+          store().updateLivePrice(ticker.price, ticker.change, ticker.changePct)
+          store().setTickerConnected(true)
         }
-      }).catch(() => setTickerConnected(false))
+      }).catch(() => store().setTickerConnected(false))
 
       // Refresh ticker every 10s
       tickerInterval.current = setInterval(async () => {
         try {
           const ticker = await fetchTicker24h(symbol)
           if (ticker) {
-            setTicker(ticker)
-            setTickerConnected(true)
+            store().setTicker(ticker)
+            store().setTickerConnected(true)
           }
         } catch {
-          setTickerConnected(false)
+          store().setTickerConnected(false)
         }
       }, 10_000)
 
       // Connect mini ticker for live price updates
       cleanupTicker.current = connectMiniTicker(symbol, (price, change, changePct) => {
-        updateLivePrice(price, change, changePct)
+        store().updateLivePrice(price, change, changePct)
       })
 
-      // Connect trade stream (@trade replaces dead @aggTrade)
+      // Connect trade stream
       cleanupTrade.current = connectBinanceAggTrade(
         symbol,
-        (trade) => processTrade(trade),
+        (trade) => store().processTrade(trade),
         (connected) => {
-          setConnected(connected)
+          store().setConnected(connected)
           if (!connected) {
-            setConnectionError('Trade stream disconnected')
+            store().setConnectionError('Trade stream disconnected')
           } else {
-            setConnectionError(null)
+            store().setConnectionError(null)
           }
         }
       )
@@ -129,96 +112,91 @@ export default function App() {
       // Connect local order book (diff depth stream + REST snapshot + sequence validation)
       cleanupDepth.current = createLocalOrderBook(symbol, {
         onSnapshot: (bids, asks, lastUpdateId) => {
-          setOrderBookSnapshot(bids, asks, lastUpdateId)
-          setDepth(bids, asks)
-          setDepthConnected(true)
-          setConnectionError(null)
+          store().setOrderBookSnapshot(bids, asks, lastUpdateId)
+          store().setDepth(bids, asks)
+          store().setDepthConnected(true)
+          store().setConnectionError(null)
         },
         onDiffApplied: (bids, asks, lastUpdateId, transactionTime) => {
-          applyOrderBookDiff(bids, asks, lastUpdateId, transactionTime)
-          setDepth(bids, asks)
-          setDepthStale(false)
-          setDepthLastMessageTime(Date.now())
-          const state = useMarketStore.getState()
-          if (state.connected) setConnectionError(null)
+          store().applyOrderBookDiff(bids, asks, lastUpdateId, transactionTime)
+          store().setDepth(bids, asks)
+          store().setDepthStale(false)
+          store().setDepthLastMessageTime(Date.now())
+          if (store().connected) store().setConnectionError(null)
         },
         onHealthChange: (health, error) => {
-          setOrderBookHealth(health, error)
+          store().setOrderBookHealth(health, error)
           if (health === 'HEALTHY') {
-            setDepthConnected(true)
-            setDepthStale(false)
+            store().setDepthConnected(true)
+            store().setDepthStale(false)
           } else if (health === 'DISCONNECTED') {
-            setDepthConnected(false)
+            store().setDepthConnected(false)
           } else if (health === 'STALE' || health === 'RESYNCING') {
-            setDepthStale(true)
-            if (error) setConnectionError(error)
+            store().setDepthStale(true)
+            if (error) store().setConnectionError(error)
           } else if (health === 'ERROR') {
-            setDepthConnected(false)
-            if (error) setConnectionError(`Order book error: ${error}`)
+            store().setDepthConnected(false)
+            if (error) store().setConnectionError(`Order book error: ${error}`)
           }
         },
         onStale: (reason) => {
-          markOrderBookStale(reason)
-          setDepthStale(true)
-          setConnectionError(`Depth book stale — ${reason}`)
+          store().markOrderBookStale(reason)
+          store().setDepthStale(true)
+          store().setConnectionError(`Depth book stale — ${reason}`)
         },
       })
 
       // Periodic diagnostic log
       diagInterval.current = setInterval(() => {
         const td = getTradeDiagnostics()
-        const state = useMarketStore.getState()
+        const s = useMarketStore.getState()
         console.table({
           'Trade Stream': { url: td.url, opened: td.opened, messages: td.messageCount, parseErrors: td.parseErrors, lastMsg: td.lastMessageTime ? new Date(td.lastMessageTime).toLocaleTimeString() : 'never' },
-          'Order Book': { health: state.orderBookHealth, lastUpdateId: state.orderBookLastUpdateId, lastEventU: state.orderBookLastEventUpdateId, bidLevels: state.bids.length, askLevels: state.asks.length, error: state.orderBookError ?? 'none' },
+          'Order Book': { health: s.orderBookHealth, lastUpdateId: s.orderBookLastUpdateId, lastEventU: s.orderBookLastEventUpdateId, bidLevels: s.bids.length, askLevels: s.asks.length, error: s.orderBookError ?? 'none' },
         })
       }, 15_000)
 
     } else {
       // Demo mode
-      setConnected(true)
-      setDepthConnected(true)
-      setTickerConnected(true)
-      setOrderBookHealth('HEALTHY')
+      store().setConnected(true)
+      store().setDepthConnected(true)
+      store().setTickerConnected(true)
+      store().setOrderBookHealth('HEALTHY')
       resetDemoPrice()
 
       demoInterval.current = setInterval(() => {
-        const trade = generateDemoTrade()
-        processTrade(trade)
+        store().processTrade(generateDemoTrade())
       }, 100)
 
-      const depthInterval = setInterval(() => {
+      depthDemoInterval.current = setInterval(() => {
         const depth = generateDemoDepth()
-        setDepth(depth.bids, depth.asks)
+        store().setDepth(depth.bids, depth.asks)
       }, 200)
-
-      return () => {
-        if (demoInterval.current) clearInterval(demoInterval.current)
-        clearInterval(depthInterval)
-        setConnected(false)
-        setDepthConnected(false)
-        setTickerConnected(false)
-      }
     }
 
     return () => {
       cleanupTrade.current?.()
+      cleanupTrade.current = null
       cleanupDepth.current?.()
+      cleanupDepth.current = null
       cleanupTicker.current?.()
-      if (tickerInterval.current) clearInterval(tickerInterval.current)
-      if (diagInterval.current) clearInterval(diagInterval.current)
+      cleanupTicker.current = null
+      if (demoInterval.current) { clearInterval(demoInterval.current); demoInterval.current = null }
+      if (depthDemoInterval.current) { clearInterval(depthDemoInterval.current); depthDemoInterval.current = null }
+      if (tickerInterval.current) { clearInterval(tickerInterval.current); tickerInterval.current = null }
+      if (diagInterval.current) { clearInterval(diagInterval.current); diagInterval.current = null }
     }
-  }, [mode, symbol, interval, processTrade, setDepth, setConnected, setDepthConnected, setTickerConnected, setTicker, updateLivePrice, setConnectionError, loadHistoricalCandles])
+  }, [mode, symbol, interval])
 
   // Periodic volume profile rebuild
   useEffect(() => {
     const iv = setInterval(() => {
-      rebuildVolumeProfile()
-      addHeatmapSnapshot()
-      updateBubbles()
+      useMarketStore.getState().rebuildVolumeProfile()
+      useMarketStore.getState().addHeatmapSnapshot()
+      useMarketStore.getState().updateBubbles()
     }, 2000)
     return () => clearInterval(iv)
-  }, [rebuildVolumeProfile, addHeatmapSnapshot, updateBubbles])
+  }, [])
 
   return (
     <div className="app">

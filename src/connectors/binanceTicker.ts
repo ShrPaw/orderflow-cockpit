@@ -136,12 +136,37 @@ export function connectMiniTicker(
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
+  let generation = 0
+
+  function cancelReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  function closeSocket() {
+    if (ws) {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      try { ws.close() } catch { /* ignore */ }
+      ws = null
+    }
+  }
 
   function connect() {
     if (disposed) return
-    ws = new WebSocket(url)
+    cancelReconnectTimer()
+    closeSocket()
 
-    ws.onmessage = (event) => {
+    const myGen = ++generation
+    const socket = new WebSocket(url)
+    ws = socket
+
+    socket.onmessage = (event) => {
+      if (disposed || generation !== myGen) return
       try {
         const msg = JSON.parse(event.data as string)
         if (msg.e === '24hrMiniTicker') {
@@ -154,19 +179,29 @@ export function connectMiniTicker(
       } catch { /* ignore */ }
     }
 
-    ws.onclose = () => {
-      if (!disposed) reconnectTimer = setTimeout(connect, 3000)
+    socket.onclose = () => {
+      if (disposed || generation !== myGen) return
+      ws = null
+      if (!disposed) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          if (!disposed && generation === myGen) connect()
+        }, 3000)
+      }
     }
 
-    ws.onerror = () => ws?.close()
+    socket.onerror = () => {
+      if (disposed || generation !== myGen) return
+      socket.close()
+    }
   }
 
   connect()
 
   return () => {
     disposed = true
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    ws?.close()
-    ws = null
+    generation++
+    cancelReconnectTimer()
+    closeSocket()
   }
 }

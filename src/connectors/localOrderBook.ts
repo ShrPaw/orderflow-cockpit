@@ -131,11 +131,31 @@ export function createLocalOrderBook(
   let firstEventValidated = false
   let lastPu: number | null = null
 
+  // ─── Generation token: ignores events from stale sockets ───
+  let generation = 0
+
   // ─── Health management ───
   function setHealth(h: OrderBookHealth, err: string | null = null) {
     book.health = h
     book.error = err
     callbacks.onHealthChange(h, err)
+  }
+
+  // ─── Cancel any pending reconnect timer ───
+  function cancelReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  // ─── Schedule a reconnect with the given delay ───
+  function scheduleReconnect(fn: () => void, delay: number) {
+    cancelReconnectTimer()
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (!disposed) fn()
+    }, delay)
   }
 
   // ─── Apply diff to local book ───
@@ -300,25 +320,38 @@ export function createLocalOrderBook(
     emitBook()
   }
 
+  // ─── Close the current WebSocket if open ───
+  function closeSocket() {
+    if (ws) {
+      // Detach handlers before closing to prevent onclose from scheduling reconnects
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      try { ws.close() } catch { /* ignore */ }
+      ws = null
+    }
+  }
+
   // ─── Fetch snapshot and initialize ───
   async function loadSnapshot() {
     setHealth('SYNCING')
     try {
       const snapshot = await fetchDepthSnapshot(symbol)
+      if (disposed) return
       applySnapshot(snapshot)
       processBufferedEvents()
     } catch (err) {
+      if (disposed) return
       const msg = err instanceof Error ? err.message : 'Snapshot fetch failed'
       console.error(`[LocalBook] Snapshot error: ${msg}`)
       setHealth('ERROR', msg)
       // Retry with backoff
-      if (!disposed) {
-        const delay = getBackoffDelay(book.reconnectAttempts)
-        book.reconnectAttempts++
-        reconnectTimer = setTimeout(() => {
-          if (!disposed) loadSnapshot()
-        }, delay)
-      }
+      const delay = getBackoffDelay(book.reconnectAttempts)
+      book.reconnectAttempts++
+      scheduleReconnect(() => {
+        if (!disposed) loadSnapshot()
+      }, delay)
     }
   }
 
@@ -326,6 +359,17 @@ export function createLocalOrderBook(
   function triggerResync() {
     if (disposed) return
     console.log(`[LocalBook] Triggering full resync for ${symbol}`)
+
+    // CRITICAL: cancel any pending reconnect timer BEFORE doing anything else.
+    // Without this, the old timer will fire later and create a duplicate socket.
+    cancelReconnectTimer()
+
+    // Close existing socket with detached handlers so onclose cannot schedule reconnects
+    closeSocket()
+
+    // Bump generation so any stale events from old sockets are ignored
+    generation++
+
     setHealth('RESYNCING', 'Resyncing order book…')
     snapshotLoaded = false
     firstEventValidated = false
@@ -335,12 +379,6 @@ export function createLocalOrderBook(
     book.asks.clear()
     book.lastUpdateId = 0
     book.lastEventUpdateId = 0
-
-    // Close existing socket
-    if (ws) {
-      ws.close()
-      ws = null
-    }
 
     // Load fresh snapshot, then reconnect stream
     loadSnapshot().then(() => {
@@ -353,25 +391,34 @@ export function createLocalOrderBook(
   // ─── WebSocket diff depth stream ───
   function connectStream() {
     if (disposed) return
-    if (ws) {
-      ws.close()
-      ws = null
-    }
+
+    // CRITICAL: cancel any pending reconnect timer first.
+    // Without this, a timer from a previous onclose would fire and create a duplicate socket.
+    cancelReconnectTimer()
+
+    // Close existing socket with detached handlers
+    closeSocket()
+
+    // New generation for this socket
+    const myGen = ++generation
 
     const wsSymbol = symbol.toLowerCase() + '@depth@100ms'
     const url = `${WS_BASE}/${wsSymbol}`
-    console.log(`[LocalBook] Connecting diff stream: ${url}`)
+    console.log(`[LocalBook] Connecting diff stream: ${url} (gen=${myGen})`)
 
-    ws = new WebSocket(url)
+    const socket = new WebSocket(url)
+    ws = socket
 
-    ws.onopen = () => {
-      console.log(`[LocalBook] Diff stream connected: ${symbol}`)
+    socket.onopen = () => {
+      if (disposed || generation !== myGen) return
+      console.log(`[LocalBook] Diff stream connected: ${symbol} (gen=${myGen})`)
       if (!snapshotLoaded) {
         setHealth('SYNCING')
       }
     }
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (disposed || generation !== myGen) return
       try {
         const msg = JSON.parse(event.data as string)
         const diffEvent: DiffDepthEvent = {
@@ -388,32 +435,39 @@ export function createLocalOrderBook(
       }
     }
 
-    ws.onclose = (ev) => {
-      console.log(`[LocalBook] Diff stream closed: ${symbol} code=${ev.code}`)
-      ws = null
-      if (!disposed) {
-        if (book.health === 'HEALTHY') {
-          setHealth('STALE', 'Diff stream disconnected')
-        }
-        const delay = getBackoffDelay(book.reconnectAttempts)
-        book.reconnectAttempts++
-        reconnectTimer = setTimeout(() => {
-          if (!disposed) {
-            // If we were healthy, just reconnect stream
-            // If not, do full resync
-            if (snapshotLoaded && firstEventValidated) {
-              connectStream()
-            } else {
-              triggerResync()
-            }
-          }
-        }, delay)
+    socket.onclose = (ev) => {
+      if (disposed || generation !== myGen) {
+        // Stale socket — ignore completely
+        console.log(`[LocalBook] Ignoring close from stale socket (gen=${myGen}, current=${generation})`)
+        return
       }
+      console.log(`[LocalBook] Diff stream closed: ${symbol} code=${ev.code} (gen=${myGen})`)
+      ws = null
+
+      if (book.health === 'HEALTHY') {
+        setHealth('STALE', 'Diff stream disconnected')
+      }
+
+      const delay = getBackoffDelay(book.reconnectAttempts)
+      book.reconnectAttempts++
+      scheduleReconnect(() => {
+        if (!disposed && generation === myGen) {
+          // If we were healthy, just reconnect stream
+          // If not, do full resync
+          if (snapshotLoaded && firstEventValidated) {
+            connectStream()
+          } else {
+            triggerResync()
+          }
+        }
+      }, delay)
     }
 
-    ws.onerror = (ev) => {
+    socket.onerror = (ev) => {
+      if (disposed || generation !== myGen) return
       console.error('[LocalBook] Diff stream error:', ev)
-      ws?.close()
+      // onerror is always followed by onclose — let onclose handle reconnect
+      socket.close()
     }
   }
 
@@ -421,6 +475,7 @@ export function createLocalOrderBook(
   function startStaleMonitor() {
     stopStaleMonitor()
     staleTimer = setInterval(() => {
+      if (disposed) return
       if (book.health === 'HEALTHY' && book.lastMessageTime > 0) {
         const elapsed = Date.now() - book.lastMessageTime
         if (elapsed > STALE_THRESHOLD_MS) {
@@ -452,11 +507,9 @@ export function createLocalOrderBook(
   // ─── Cleanup ───
   return () => {
     disposed = true
-    if (reconnectTimer) clearTimeout(reconnectTimer)
+    generation++ // invalidate all pending events from current sockets
+    cancelReconnectTimer()
     stopStaleMonitor()
-    if (ws) {
-      ws.close()
-      ws = null
-    }
+    closeSocket()
   }
 }
