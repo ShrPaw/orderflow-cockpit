@@ -479,6 +479,7 @@ export default function ExecutionChart() {
           width: '100%',
           height: '100%',
           pointerEvents: 'none',
+          zIndex: 10,
         }}
       />
       {/* Invisible overlay for mouse events that Lightweight Charts doesn't capture */}
@@ -491,6 +492,7 @@ export default function ExecutionChart() {
           height: '100%',
           pointerEvents: 'auto',
           cursor: 'crosshair',
+          zIndex: 11,
         }}
         onMouseMove={onMouseMove}
         onMouseLeave={onMouseLeave}

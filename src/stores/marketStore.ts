@@ -434,9 +434,16 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     if (!state.currentCandle) return
 
     if (state.mode === 'live' && state.connected && state.lastTradeTime > 0) {
-      const stale = Date.now() - state.lastTradeTime > STALE_THRESHOLD
-      if (stale && !state.tradeError) {
-        set({ tradeError: 'No trades received — data may be stale' })
+      // Use local time for stale detection to avoid Binance server clock skew
+      const timeSinceLastTrade = Date.now() - state.lastTradeTime
+      const isStale = timeSinceLastTrade > STALE_THRESHOLD
+      // Only set trade stale if we were previously receiving trades
+      // Don't clear it if depthError is also set (keep messages separate)
+      if (isStale && !state.tradeError) {
+        set({ tradeError: `No trades for ${(timeSinceLastTrade / 1000).toFixed(0)}s — trade stream may be stale` })
+      } else if (!isStale && state.tradeError && state.tradeError.startsWith('No trades for')) {
+        // Clear stale message when trades resume
+        set({ tradeError: null })
       }
     }
 

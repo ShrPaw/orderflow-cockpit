@@ -2,6 +2,28 @@
 
 Post-fusion regression recovery — restoring the full orderflow cockpit feature set inside the single Lightweight-based execution chart.
 
+## Runtime Health Separation
+
+After fusion, trade stream health and order book health were incorrectly mixed in the UI:
+- "No trades received — data may be stale" appeared when the order book had sync issues
+- Order book errors (DEGRADED, SNAPSHOT_LOADING) leaked into trade stream alerts
+
+**Fix**: Trade health and book health are now fully separate:
+- `tradeError` — only trade stream issues (aggTrade WebSocket)
+- `orderBookHealth` + `orderBookError` — only book sync issues
+- ConnectionStatus shows each stream independently
+- Toolbar only shows trade/ticker errors (book shown in ConnectionStatus)
+
+## Bubble Rendering
+
+Bubbles depend on aggTrade data, NOT order book health:
+- Bubbles draw even if book is SNAPSHOT_LOADING or DEGRADED
+- Bubbles are created from trades with notional > $5000 (BTC)
+- CLUSTERED mode falls back to RAW if no cluster data exists
+- Overlay canvas has explicit z-index (10) to render above Lightweight Charts
+
+## Feature Matrix
+
 | Feature | Restored? | Evidence | File | Risk |
 |---|---|---|---|---|
 | Large trade circles (raw bubbles) | ✅ YES | `drawSingleBubble()` with full visual style encoding | `executionOverlayRenderer.ts` | None |

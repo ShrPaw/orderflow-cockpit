@@ -70,6 +70,16 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
     : visibleCandles > 30 ? 0.9
     : 1.0
 
+  // DEV: Overlay alive indicator (remove after verification)
+  if (import.meta.env.DEV) {
+    const allBubbleCount = frame.allCandles.reduce((n, c) => n + c.bubbles.length, 0)
+    const clusterCount = frame.clusters.length
+    ctx.fillStyle = 'rgba(79,195,247,0.5)'
+    ctx.font = '9px "SF Mono", monospace'
+    ctx.textAlign = 'left'
+    ctx.fillText(`OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles, ${clusterCount} clusters, book:${frame.orderBookHealth}`, 8, height - 8)
+  }
+
   // Layer 1: Liquidity levels
   if (frame.livePrice > 0 && frame.bids.length > 0 && frame.asks.length > 0) {
     drawLiquidityLevels(rc, zoomAlphaScale)
@@ -411,6 +421,10 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
     ? new Set(clusters.flatMap(cl => cl.rawBubbleIds))
     : new Set<string>()
 
+  // DEV: Track rendering stats
+  let drawnCount = 0
+  let skippedNullCoord = 0
+
   ctx.save()
 
   // Draw raw bubbles
@@ -418,25 +432,53 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
     const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
     for (const bubble of renderable) {
       const pctl = getPercentile(bubble.notional)
+      const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+      if (!coords) { skippedNullCoord++; continue }
       drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale, pctl)
+      drawnCount++
     }
   } else if (mode === 'HYBRID') {
     // Clusters first
     for (const cluster of renderableClusters) {
       drawSingleCluster(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
+      drawnCount++
     }
     // Fresh raw bubbles not in clusters
     const freshRaw = getRenderableBubbles(allBubbles, now, intervalMs)
       .filter(b => !allClusteredBubbleIds.has(b.id) && (now - b.timestamp) < 10_000)
     for (const bubble of freshRaw) {
       const pctl = getPercentile(bubble.notional)
+      const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+      if (!coords) { skippedNullCoord++; continue }
       drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale * 0.4, pctl)
+      drawnCount++
     }
   } else {
     // CLUSTERED — clusters only
     for (const cluster of renderableClusters) {
       drawSingleCluster(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
+      drawnCount++
     }
+    // Fallback: if no clusters but bubbles exist, draw raw bubbles
+    if (renderableClusters.length === 0 && allBubbles.length > 0) {
+      const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
+      for (const bubble of renderable) {
+        const pctl = getPercentile(bubble.notional)
+        const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+        if (!coords) { skippedNullCoord++; continue }
+        drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale, pctl)
+        drawnCount++
+      }
+    }
+  }
+
+  // DEV: Bubble stats overlay
+  if (import.meta.env.DEV && (allBubbles.length > 0 || clusters.length > 0)) {
+    const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
+    ctx.fillStyle = 'rgba(228,167,59,0.5)'
+    ctx.font = '9px "SF Mono", monospace'
+    ctx.textAlign = 'left'
+    ctx.fillText(`BUBBLES: ${allBubbles.length} total, ${renderable.length} renderable, ${drawnCount} drawn, ${skippedNullCoord} nullCoord, mode:${mode}`, 8, 24)
   }
 
   ctx.globalAlpha = 1

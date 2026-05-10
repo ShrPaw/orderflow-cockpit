@@ -126,24 +126,25 @@ export default function App() {
           } else if (health === 'DEGRADED') {
             store().setDepthConnected(true)
             store().setDepthStale(true)
-            store().setDepthError('DEGRADED — using top-20 fallback book')
+            // Don't set depthError — ConnectionStatus handles book health display
           } else if (health === 'DISCONNECTED') {
             store().setDepthConnected(false)
           } else if (health === 'BUFFERING' || health === 'SNAPSHOT_LOADING' || health === 'SYNCING') {
             store().setDepthConnected(true)
             store().setDepthStale(true)
+            // Don't set depthError — health state shown in ConnectionStatus
           } else if (health === 'STALE' || health === 'RESYNCING') {
             store().setDepthStale(true)
-            if (error) store().setDepthError(error)
+            // Don't set depthError — health state shown in ConnectionStatus
           } else if (health === 'ERROR') {
             store().setDepthConnected(false)
-            if (error) store().setDepthError(`Order book error: ${error}`)
+            store().setDepthError(`Book error: ${error}`)
           }
         },
         onStale: (reason) => {
           store().markOrderBookStale(reason)
           store().setDepthStale(true)
-          store().setDepthError(`Depth book stale — ${reason}`)
+          // Don't set depthError — stale state shown via orderBookHealth in ConnectionStatus
         },
       })
 

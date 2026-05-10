@@ -20,7 +20,6 @@ export default function Toolbar() {
   const liveChange = useMarketStore(s => s.liveChange)
   const liveChangePct = useMarketStore(s => s.liveChangePct)
   const tradeError = useMarketStore(s => s.tradeError)
-  const depthError = useMarketStore(s => s.depthError)
   const tickerError = useMarketStore(s => s.tickerError)
   const instruments = useMarketStore(s => s.instruments)
 
@@ -125,7 +124,8 @@ export default function Toolbar() {
           </div>
 
           {(() => {
-            const errors = [tradeError, depthError, tickerError].filter(Boolean)
+            // Only show trade/ticker errors in toolbar — book health shown in ConnectionStatus
+            const errors = [tradeError, tickerError].filter(Boolean)
             const connectionError = errors.length > 0 ? errors.join(' · ') : null
             return connectionError ? (
               <span className="conn-error" title={connectionError}>⚠</span>
