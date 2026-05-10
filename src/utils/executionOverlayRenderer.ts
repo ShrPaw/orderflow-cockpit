@@ -92,8 +92,8 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
   // Layer 7: Order book state badge
   drawOrderBookStateBadge(rc)
 
-  // Layer 8: LIVE / GO LIVE badge
-  drawLiveBadge(rc)
+  // Layer 8: LIVE / GO LIVE badge — drawn by caller (ExecutionChart RAF loop)
+  // to capture goLiveRect for click hit-testing. NOT drawn here to avoid double-render.
 
   ctx.restore()
 }

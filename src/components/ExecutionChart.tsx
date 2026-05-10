@@ -71,6 +71,7 @@ export default function ExecutionChart() {
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> | null>(null)
+  const lastPriceLineValueRef = useRef<number>(0)
   const lastCandleTimeRef = useRef<number>(0)
   const rafRef = useRef<number>(0)
   const goLiveRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
@@ -346,9 +347,9 @@ export default function ExecutionChart() {
         chart.timeScale().scrollToRealTime()
       }
 
-      // ─── Update price line ───
+      // ─── Update price line (only when price changes) ───
       const livePrice = livePriceRef.current
-      if (livePrice > 0) {
+      if (livePrice > 0 && livePrice !== lastPriceLineValueRef.current) {
         if (priceLineRef.current) {
           candleSeries.removePriceLine(priceLineRef.current)
           priceLineRef.current = null
@@ -363,6 +364,7 @@ export default function ExecutionChart() {
           axisLabelColor: THEME.priceLine,
           title: '',
         })
+        lastPriceLineValueRef.current = livePrice
       }
 
       // ─── Draw overlay ───
