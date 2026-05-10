@@ -93,10 +93,20 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
   if (isDebugOverlay()) {
     const allBubbleCount = frame.allCandles.reduce((n, c) => n + c.bubbles.length, 0)
     const clusterCount = frame.clusters.length
+    const renderable = getRenderableBubbles(
+      frame.allCandles.flatMap(c => c.bubbles), frame.now, frame.intervalMs
+    )
     ctx.fillStyle = 'rgba(79,195,247,0.6)'
     ctx.font = '9px "SF Mono", monospace'
     ctx.textAlign = 'left'
-    ctx.fillText(`OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles, ${clusterCount} clusters, book:${frame.orderBookHealth}, price:${frame.livePrice.toFixed(1)}`, 8, height - 8)
+    ctx.fillText(
+      `OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles (${renderable.length} renderable), ${clusterCount} clusters, book:${frame.orderBookHealth}, price:${frame.livePrice.toFixed(1)}`,
+      8, height - 24
+    )
+    ctx.fillText(
+      `ZOOM: ${visibleCandles} visible candles, alpha:${zoomAlphaScale.toFixed(2)}`,
+      8, height - 8
+    )
   }
 
   // Layer 1: Liquidity levels — uses best available book, dimmed for non-HEALTHY
@@ -394,6 +404,14 @@ function estimateSlotWidth(chart: IChartApi, intervalMs: number): number {
   return Math.max(2, pxPerSec * (intervalMs / 1000))
 }
 
+/**
+ * Snap a trade timestamp (ms) to its parent candle's open time (ms).
+ * This ensures the time exists in Lightweight Charts data for coordinate mapping.
+ */
+function snapToCandleTime(timestampMs: number, intervalMs: number): number {
+  return Math.floor(timestampMs / intervalMs) * intervalMs
+}
+
 // ═══════════════════════════════════════════
 // LAYER 4: SMART FLOW BUBBLES
 // ═══════════════════════════════════════════
@@ -441,7 +459,7 @@ function drawSmartFlowBubbles(rc: OverlayRenderContext, zoomAlphaScale: number):
 
   // Draw cluster outlines first (context layer, below raw bubbles)
   for (const cluster of renderableClusters) {
-    drawClusterOutline(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
+    drawClusterOutline(ctx, cluster, chart, candleSeries, now, zoomAlphaScale, intervalMs)
     drawnCount++
   }
 
@@ -449,7 +467,9 @@ function drawSmartFlowBubbles(rc: OverlayRenderContext, zoomAlphaScale: number):
   const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
   for (const bubble of renderable) {
     const pctl = getPercentile(bubble.notional)
-    const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+    // Use candleTime for x-coordinate (matches chart data points),
+    // not bubble.timestamp (exact trade time, may not map in LW Charts)
+    const coords = timePriceToPixel(bubble.candleTime, bubble.price, chart, candleSeries)
     if (!coords) { skippedNullCoord++; continue }
 
     // Enrich: if this bubble is part of a cluster, slightly boost visibility
@@ -482,7 +502,8 @@ function drawSingleBubble(
   zoomAlphaScale: number,
   notionalPercentile: number = 0.5
 ): void {
-  const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+  // Use candleTime for x-coordinate (matches chart data points)
+  const coords = timePriceToPixel(bubble.candleTime, bubble.price, chart, candleSeries)
   if (!coords) return
   const { x, y } = coords
 
@@ -567,9 +588,14 @@ function drawClusterOutline(
   chart: IChartApi,
   candleSeries: ISeriesApi<'Candlestick'>,
   now: number,
-  zoomAlphaScale: number
+  zoomAlphaScale: number,
+  intervalMs: number = 40_000
 ): void {
-  const coords = timePriceToPixel(cluster.endTs, cluster.vwapPrice, chart, candleSeries)
+  // Snap cluster timestamps to candle open times for coordinate mapping
+  // Cluster timestamps are trade times, not chart data points
+  const snappedTime = snapToCandleTime(cluster.endTs, intervalMs)
+  const coords = timePriceToPixel(snappedTime, cluster.vwapPrice, chart, candleSeries)
+    ?? timePriceToPixel(snapToCandleTime(cluster.startTs, intervalMs), cluster.vwapPrice, chart, candleSeries)
   if (!coords) return
   const { x, y } = coords
 
@@ -792,7 +818,8 @@ export function findClosestBubble(
 
   for (const candle of frame.allCandles) {
     for (const bubble of candle.bubbles) {
-      const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+      // Use candleTime for coordinate mapping (matches chart data)
+      const coords = timePriceToPixel(bubble.candleTime, bubble.price, chart, candleSeries)
       if (!coords) continue
       const dist = Math.hypot(coords.x - mouseX, coords.y - mouseY)
       if (dist < closestDist) {
@@ -816,7 +843,10 @@ export function findClosestCluster(
   let closestDist = 40
 
   for (const cluster of frame.clusters) {
-    const coords = timePriceToPixel(cluster.endTs, cluster.vwapPrice, chart, candleSeries)
+    // Snap to candle time for coordinate mapping
+    const snappedTime = snapToCandleTime(cluster.endTs, frame.intervalMs)
+    const coords = timePriceToPixel(snappedTime, cluster.vwapPrice, chart, candleSeries)
+      ?? timePriceToPixel(snapToCandleTime(cluster.startTs, frame.intervalMs), cluster.vwapPrice, chart, candleSeries)
     if (!coords) continue
     const dist = Math.hypot(coords.x - mouseX, coords.y - mouseY)
     if (dist < closestDist) {
