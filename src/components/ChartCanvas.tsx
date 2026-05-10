@@ -213,8 +213,27 @@ export default function ChartCanvas() {
     setFollowLive(true)
   }, [setFollowLive])
 
-  // Dynamic cursor based on zone
-  const cursor = getHoverCursor(mouseRef.current, size.width, size.height, !!viewRef.current._dragging)
+  // Click handler for GO LIVE pill hitbox
+  const onClick = useCallback((e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const pill = viewRef.current._goLivePillRect
+    if (pill && x >= pill.x && x <= pill.x + pill.w && y >= pill.y && y <= pill.y + pill.h) {
+      viewRef.current = goLive(viewRef.current)
+      setFollowLive(true)
+    }
+  }, [setFollowLive])
+
+  // Dynamic cursor based on zone — also check GO LIVE pill hover
+  const isOverGoLive = (() => {
+    const pill = viewRef.current._goLivePillRect
+    if (!pill || !mouseRef.current) return false
+    const m = mouseRef.current
+    return m.x >= pill.x && m.x <= pill.x + pill.w && m.y >= pill.y && m.y <= pill.y + pill.h
+  })()
+  const cursor = isOverGoLive ? 'pointer' : getHoverCursor(mouseRef.current, size.width, size.height, !!viewRef.current._dragging)
 
   return (
     <div ref={containerRef} className="chart-container">
@@ -227,6 +246,7 @@ export default function ChartCanvas() {
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseLeave}
         onDoubleClick={onDoubleClick}
+        onClick={onClick}
       />
     </div>
   )

@@ -68,6 +68,8 @@ export interface ViewState {
   _dragStartY?: number
   // Zone hover (for cursor)
   _hoverZone?: 'chart' | 'priceAxis' | 'timeAxis' | null
+  // GO LIVE pill hit area (set during render, read by click handler)
+  _goLivePillRect?: { x: number; y: number; w: number; h: number } | null
 }
 
 const MIN_CANDLES = 3
@@ -746,6 +748,9 @@ export function renderChart(
       ctx.fillStyle = COL.liveDot
       ctx.textAlign = 'center'
       ctx.fillText(pillText, pillX + pillW / 2, pillY + 14)
+
+      // Clear goLive pill rect (we're in live mode)
+      view._goLivePillRect = null
     }
   } else if (totalCandles > 0) {
     // ─── "Click to return to live" hint ───
@@ -766,6 +771,9 @@ export function renderChart(
     ctx.fillStyle = COL.amber
     ctx.textAlign = 'center'
     ctx.fillText(pillText, pillX + pillW / 2, pillY + 14)
+
+    // Store pill rect for click detection
+    view._goLivePillRect = { x: pillX, y: pillY, w: pillW, h: pillH }
   }
 
   ctx.restore()
