@@ -8,7 +8,6 @@ import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts'
 import type { Candle, Bubble, OrderLevel, OrderBookHealth, VolumeLevel } from './market'
 import type { AuctionCluster } from '../utils/auctionClusters'
 import type { LevelRecord } from '../utils/levelMemory'
-import type { DisplayMode } from '../utils/auctionClusters'
 
 /** Coordinate-mapped point on the overlay canvas */
 export interface PixelCoord {
@@ -32,10 +31,8 @@ export interface OverlayFrame {
   intervalMs: number
   /** Current symbol */
   symbol: string
-  /** Auction clusters */
+  /** Auction clusters (used for enrichment context in Smart Flow) */
   clusters: AuctionCluster[]
-  /** Display mode for bubbles */
-  displayMode: DisplayMode
   /** Order book health state */
   orderBookHealth: OrderBookHealth
   /** Level memory records */

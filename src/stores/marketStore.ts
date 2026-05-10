@@ -9,8 +9,7 @@ import {
 } from '../utils/aggregation'
 import { updateLevelsFromBubbles, resetLevels, type LevelRecord } from '../utils/levelMemory'
 import {
-  formClusters, type AuctionCluster, type DisplayMode, type DisplayConfig,
-  getDefaultDisplayConfig,
+  formClusters, type AuctionCluster,
 } from '../utils/auctionClusters'
 
 interface MarketState {
@@ -63,10 +62,6 @@ interface MarketState {
   // ─── Auction Clusters ───
   clusters: AuctionCluster[]
 
-  // ─── Display mode ───
-  displayMode: DisplayMode
-  displayConfig: DisplayConfig
-
   // ─── Depth health ───
   depthStale: boolean
   depthLastMessageTime: number
@@ -109,8 +104,6 @@ interface MarketState {
   setInstrumentsLoading: (loading: boolean) => void
   loadHistoricalCandles: (candles: Candle[]) => void
   updateClusters: () => void
-  setDisplayMode: (mode: DisplayMode) => void
-  setDisplayConfig: (config: Partial<DisplayConfig>) => void
   setDepthStale: (stale: boolean) => void
   setDepthLastMessageTime: (time: number) => void
   reset: () => void
@@ -160,8 +153,6 @@ function getInitialState() {
     instrumentsLoading: false,
     levelMemory: [] as LevelRecord[],
     clusters: [] as AuctionCluster[],
-    displayMode: 'CLUSTERED' as DisplayMode,
-    displayConfig: getDefaultDisplayConfig(),
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
@@ -520,8 +511,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     set({ clusters })
   },
 
-  setDisplayMode: (mode) => set({ displayMode: mode }),
-  setDisplayConfig: (config) => set({ displayConfig: { ...get().displayConfig, ...config } }),
   setDepthStale: (stale) => set({ depthStale: stale }),
   setDepthLastMessageTime: (time) => set({ depthLastMessageTime: time }),
 

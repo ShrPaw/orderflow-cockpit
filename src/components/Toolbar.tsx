@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
-import type { DisplayMode } from '../utils/auctionClusters'
 import { INSTRUMENTS } from '../types/market'
 import { fmtPrice } from '../utils/formatters'
 import AssetSelector from './AssetSelector'
@@ -25,8 +24,6 @@ export default function Toolbar() {
 
   const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
-  const displayMode = useMarketStore(s => s.displayMode)
-  const setDisplayMode = useMarketStore(s => s.setDisplayMode)
 
   const [showAssetSelector, setShowAssetSelector] = useState(false)
 
@@ -141,7 +138,7 @@ export default function Toolbar() {
           </div>
         </div>
 
-        {/* Right: Interval + Nav + Display mode */}
+        {/* Right: Interval + Nav */}
         <div className="toolbar-right">
           <select
             className="interval-select"
@@ -174,18 +171,6 @@ export default function Toolbar() {
               onClick={() => chartApi?.resetView()}
               title="Reset view (R / 0)"
             >↺ Reset</button>
-          </div>
-
-          {/* Bubble Display Mode */}
-          <div className="bubble-mode-toggle" title="Bubble display mode">
-            {(['RAW', 'CLUSTERED', 'HYBRID'] as DisplayMode[]).map(dm => (
-              <button
-                key={dm}
-                className={`engine-btn ${displayMode === dm ? 'active' : ''}`}
-                onClick={() => setDisplayMode(dm)}
-                title={dm === 'RAW' ? 'Show individual bubbles' : dm === 'CLUSTERED' ? 'Show auction cluster bubbles' : 'Clusters + freshest raw events'}
-              >{dm === 'CLUSTERED' ? 'CLU' : dm}</button>
-            ))}
           </div>
         </div>
       </div>

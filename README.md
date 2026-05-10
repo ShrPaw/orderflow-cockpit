@@ -13,12 +13,18 @@ A local live crypto orderflow visualization cockpit using Binance Futures public
 - **Live trades & bubbles** — Aggressive large-print detection with state classification (PENDING → ACCEPTED/REJECTED/ABSORBED/EXHAUSTED/RESISTANCE)
 - **Local order book & heatmap** — L2 depth visualization with quantity labels, spread indicator, and stale-data indication
 - **Footprint/orderflow** — Per-candle price-level delta visualization
-- **Strict order book sync** — Binance diff-depth methodology with DEGRADED depth20 fallback
+- **Strict order book sync** — Binance diff-depth methodology with DEGRADED depth20 fallback, timeout protection, DEBUG_BOOK diagnostics
+- **Smart Flow bubbles** — Automatic large-trade bubble rendering with cluster enrichment, no mode switching needed
 - **Symbol switching** — Switch between BTCUSDT, ETHUSDT, SOLUSDT, and 20+ Binance Futures perpetuals
 - **Connection health** — Per-stream status (trade, depth, ticker) with honest stale/error indication
 - **Chart interaction** — Deep zoom, smooth pan, price-axis scaling, time-axis compression, LIVE/GO LIVE pill
 - **Bubble hover tooltip** — Inspect aggressive flow events by hovering over bubbles
 - **Demo mode** — Simulated market data for offline testing
+
+## Debug Flags
+
+- `localStorage.setItem('DEBUG_OVERLAY', '1')` — Show overlay diagnostics on chart
+- `localStorage.setItem('DEBUG_BOOK', '1')` — Log order book sync state transitions and critical events
 
 ## Tech Stack
 

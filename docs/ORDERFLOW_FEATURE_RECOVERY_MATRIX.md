@@ -1,65 +1,56 @@
 # Orderflow Feature Recovery Matrix
 
-Post-fusion regression recovery — restoring the full orderflow cockpit feature set inside the single Lightweight-based execution chart.
+## Feature Status After Order Book Supremacy Update
 
-## Runtime Health Separation
+| Feature | Status | Book Health Dependency | Notes |
+|---------|--------|----------------------|-------|
+| Candles | ✅ Always active | None | Draws from candle data regardless of book state |
+| Bubbles | ✅ Always active | None | Trade-based, draws whenever trade data exists |
+| Time & Sales | ✅ Always active | None | Trade stream only |
+| Large Trades | ✅ Always active | None | Trade data only |
+| Footprint | ✅ Always active | None | Trade/cluster data, not book-dependent |
+| Heatmap/Liquidity | ✅ Active with dimming | Best available book | HEALTHY: full, DEGRADED: 70%, RESYNCING: 40%, STALE: 25% |
+| DOM (Order Book) | ✅ Active with dimming | Best available book | Same dimming as heatmap |
+| Spread Line | ✅ Active with dimming | Best available book | Same dimming as heatmap |
+| Level Memory | ✅ Always active | None | Bubble-derived, not book-dependent |
+| State Badges | ✅ Compact display | Book health | Shows DEGRADED/RESYNCING/STALE/SYNCING badges |
+| GO LIVE | ✅ Always active | None | Chart navigation, never disabled |
+| Crosshair | ✅ Always active | None | Lightweight Charts built-in |
+| Symbol Switch | ✅ Always active | None | Triggers full reconnect |
+| Ticker | ✅ Always active | None | Independent REST + WebSocket stream |
 
-After fusion, trade stream health and order book health were incorrectly mixed in the UI:
-- "No trades received — data may be stale" appeared when the order book had sync issues
-- Order book errors (DEGRADED, SNAPSHOT_LOADING) leaked into trade stream alerts
+## Order Book Health States
 
-**Fix**: Trade health and book health are now fully separate:
-- `tradeError` — only trade stream issues (aggTrade WebSocket)
-- `orderBookHealth` + `orderBookError` — only book sync issues
-- ConnectionStatus shows each stream independently
-- Toolbar only shows trade/ticker errors (book shown in ConnectionStatus)
+| State | Description | Heatmap | DOM | Badge |
+|-------|-------------|---------|-----|-------|
+| HEALTHY | Strict diff-depth sync active | Full brightness | Full | None |
+| DEGRADED | depth20 top-20 fallback | 70% dim | 70% dim + label | 📉 DEGRADED TOP-20 BOOK |
+| RESYNCING | Last known good book | 40% dim | 40% dim | 🔄 RESYNCING |
+| STALE | No recent updates | 25% dim | 25% dim | ⚠ STALE BOOK |
+| SYNCING | Waiting for overlap | 30% dim | 30% dim | ⏳ SYNCING… |
+| SNAPSHOT_LOADING | Fetching REST snapshot | 30% dim | 30% dim | ⏳ LOADING SNAPSHOT… |
+| BUFFERING | Stream open, waiting for snapshot | 30% dim | 30% dim | ⏳ BUFFERING… |
+| CONNECTING | WebSocket connecting | 30% dim | 30% dim | ⏳ CONNECTING… |
+| ERROR | Fatal error | 30% dim | 30% dim | ❌ BOOK ERROR |
+| DISCONNECTED | Not connected | Hidden | Hidden | None |
 
-## Bubble Rendering
+## Smart Flow Bubbles
 
-Bubbles depend on aggTrade data, NOT order book health:
-- Bubbles draw even if book is SNAPSHOT_LOADING or DEGRADED
-- Bubbles are created from trades with notional > $5000 (BTC)
-- CLUSTERED mode falls back to RAW if no cluster data exists
-- Overlay canvas has explicit z-index (10) to render above Lightweight Charts
+**Previous:** RAW / CLUSTERED / HYBRID mode selector in toolbar
+**Current:** Smart Flow — automatic, always renders
 
-## Feature Matrix
+- Raw bubbles always render when trade data exists
+- Cluster outlines provide enrichment context (subtle dashed rings)
+- Cluster trade count badges shown for 3+ trade clusters
+- No mode switch, no blank output, no user-facing complexity
 
-| Feature | Restored? | Evidence | File | Risk |
-|---|---|---|---|---|
-| Large trade circles (raw bubbles) | ✅ YES | `drawSingleBubble()` with full visual style encoding | `executionOverlayRenderer.ts` | None |
-| Raw bubble mode | ✅ YES | `mode === 'RAW'` branch in `drawBubblesAndClusters()` | `executionOverlayRenderer.ts` | None |
-| Clustered bubble mode | ✅ YES | `mode === 'CLUSTERED'` branch with `getRenderableClusters()` | `executionOverlayRenderer.ts` | None |
-| Hybrid bubble mode | ✅ YES | `mode === 'HYBRID'` — clusters + freshest raw non-clustered | `executionOverlayRenderer.ts` | None |
-| Bubble percentile sizing | ✅ YES | Per-candle notional percentile computed and passed to `getBubbleVisualStyle()` | `executionOverlayRenderer.ts` | None |
-| Bubble tooltip | ✅ YES | `drawBubbleTooltip()` — side, price, qty, notional, age | `executionOverlayRenderer.ts` | None |
-| Cluster tooltip | ✅ YES | `drawClusterTooltip()` — trades, volume, VWAP, flow type, absorption | `executionOverlayRenderer.ts` | None |
-| Cluster hit detection | ✅ YES | `findClosestCluster()` with 40px hit area | `executionOverlayRenderer.ts` | None |
-| Heatmap bands (bid/ask) | ✅ YES | `drawLiquidityLevels()` with proximity filtering | `executionOverlayRenderer.ts` | None |
-| Heatmap quantity labels | ✅ YES | `BID 1.2k` / `ASK 3.5k` format | `executionOverlayRenderer.ts` | None |
-| Heatmap range filtering | ✅ YES | 2% range threshold with fallback to global top-5 | `executionOverlayRenderer.ts` | None |
-| Heatmap state dimming | ✅ YES | `stateDimFactor` based on `orderBookHealth` | `executionOverlayRenderer.ts` | None |
-| Degraded top-20 liquidity | ✅ YES | `DEGRADED` state dimming + badge | `executionOverlayRenderer.ts` | None |
-| Resyncing last known book | ✅ YES | `RESYNCING` state dimming + badge | `executionOverlayRenderer.ts` | None |
-| Stale book dimming | ✅ YES | `STALE` state strong dimming + badge | `executionOverlayRenderer.ts` | None |
-| Spread line | ✅ YES | `drawSpreadLine()` — mid-price dashed line + spread % label | `executionOverlayRenderer.ts` | None |
-| Footprint cells | ✅ YES | `drawFootprint()` — per-candle price-level delta with zoom threshold | `executionOverlayRenderer.ts` | None |
-| Delta display | ✅ YES | `+1.2k` / `-3.5k` labels in footprint cells | `executionOverlayRenderer.ts` | None |
-| Footprint zoom threshold | ✅ YES | Hidden when `slotWidth < 12` | `executionOverlayRenderer.ts` | None |
-| Level memory | ✅ YES | `drawLevelMemory()` — REJECTED, ABSORBED, FLIPPED levels | `executionOverlayRenderer.ts` | None |
-| Crosshair | ✅ YES | Lightweight Charts native crosshair | `ExecutionChart.tsx` | None |
-| GO LIVE | ✅ YES | `drawLiveBadge()` with click hit-testing | `executionOverlayRenderer.ts` | None |
-| Symbol switch clears state | ✅ YES | `getDataResetFields()` in `marketStore.ts` | `marketStore.ts` | None |
-| Order book health states | ✅ YES | HEALTHY, DEGRADED, RESYNCING, STALE, ERROR, DISCONNECTED | `marketStore.ts` + overlay | None |
-| Toolbar controls | ✅ YES | Symbol, interval, bubble mode (RAW/CLU/HYB), nav, view | `Toolbar.tsx` | None |
-| No duplicate charts | ✅ YES | Only `ExecutionChart` in `App.tsx`, no `ChartCanvas` | `App.tsx` | None |
-| No WebSockets in chart | ✅ YES | Zero WebSocket calls in chart/overlay files | `ExecutionChart.tsx` | None |
-| Build passes | ✅ YES | `tsc && vite build` — 0 errors | Build output | None |
+## Timeout Protection
 
-## Notes
-
-- **Bubble percentile sizing** was missing after fusion — old renderer computed per-candle notional percentiles and passed them to `getBubbleVisualStyle()`. Restored in recovery.
-- **Heatmap range filtering** was missing — old renderer filtered by 2% price range. Restored with fallback.
-- **Heatmap quantity labels** showed actual quantities (e.g., "BID 1.2k") — post-fusion only showed "BID LIQ". Restored.
-- **Cluster tooltips** were not implemented — added with trade count, VWAP, flow type, absorption score.
-- **Spread line** was not in old renderer either — added as improvement.
-- **State dimming** for non-HEALTHY orderbook states was missing from heatmap — restored.
+| Timeout | Value | Triggers |
+|---------|-------|----------|
+| Snapshot request | 10s | Abort fetch, record failure |
+| SNAPSHOT_LOADING max | 20s | Force recovery |
+| SYNCING max (overlap wait) | 15s | Force recovery |
+| Strict sync attempt total | 40s | Force recovery |
+| Max consecutive failures | 3 | Enter DEGRADED |
+| DEGRADED recovery interval | 30s | Attempt strict resync |

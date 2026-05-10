@@ -8,13 +8,22 @@
  *   1. Liquidity levels (orderbook bid/ask bands)
  *   2. Level memory (horizontal dashed lines)
  *   3. Footprint cells (per-candle volume-at-price)
- *   4. Bubbles (aggressive flow events)
- *   5. Clusters (auction cluster bubbles)
- *   6. Tooltip (bubble hover info)
- *   7. Order book state badge (DEGRADED, RESYNCING, etc.)
- *   8. GO LIVE badge / LIVE indicator
+ *   4. Bubbles (aggressive flow events) — SMART FLOW: always render raw bubbles,
+ *      enrich with cluster context when available
+ *   5. Tooltip (bubble hover info)
+ *   6. Order book state badge (DEGRADED, RESYNCING, etc.)
+ *   7. GO LIVE badge / LIVE indicator
  *
  * Coordinate mapping uses Lightweight Charts APIs — no guessing.
+ *
+ * SAFETY RULES:
+ * - Overlay canvas background is always transparent
+ * - First operation per frame: clearRect
+ * - No full-screen fills except state badge tint (which uses extremely low alpha)
+ * - ctx.save()/ctx.restore() around every layer
+ * - globalAlpha reset after every layer
+ * - Invalid coordinates are skipped
+ * - Debug disabled by default (DEBUG_OVERLAY flag)
  */
 
 import type { IChartApi, ISeriesApi } from 'lightweight-charts'
@@ -68,6 +77,7 @@ function isDebugOverlay(): boolean {
 export function drawExecutionOverlay(rc: OverlayRenderContext): void {
   const { ctx, width, height, dpr, chart, candleSeries, frame } = rc
 
+  // SAFETY: Always start with transparent canvas
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, width * dpr, height * dpr)
@@ -89,7 +99,7 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
     ctx.fillText(`OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles, ${clusterCount} clusters, book:${frame.orderBookHealth}, price:${frame.livePrice.toFixed(1)}`, 8, height - 8)
   }
 
-  // Layer 1: Liquidity levels
+  // Layer 1: Liquidity levels — uses best available book, dimmed for non-HEALTHY
   if (frame.livePrice > 0 && frame.bids.length > 0 && frame.asks.length > 0) {
     drawLiquidityLevels(rc, zoomAlphaScale)
   }
@@ -104,21 +114,20 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
     drawLevelMemory(rc)
   }
 
-  // Layer 3: Footprint cells (per-candle)
+  // Layer 3: Footprint cells (per-candle) — depends on trade/cluster data, not book health
   drawFootprint(rc, zoomAlphaScale)
 
-  // Layer 4 & 5: Bubbles + Clusters
-  drawBubblesAndClusters(rc, zoomAlphaScale)
+  // Layer 4: SMART FLOW Bubbles — always render if trade data exists, regardless of book health
+  drawSmartFlowBubbles(rc, zoomAlphaScale)
 
-  // Layer 6: Tooltip (rendered on mouse move, stored in frame)
-  // Tooltip is drawn by the component's mouse handler calling drawTooltip
-
-  // Layer 7: Order book state badge
+  // Layer 5: Order book state badge — compact, non-destructive
   drawOrderBookStateBadge(rc)
 
-  // Layer 8: LIVE / GO LIVE badge — drawn by caller (ExecutionChart RAF loop)
+  // Layer 6: LIVE / GO LIVE badge — drawn by caller (ExecutionChart RAF loop)
   // to capture goLiveRect for click hit-testing. NOT drawn here to avoid double-render.
 
+  // SAFETY: Ensure globalAlpha is reset
+  ctx.globalAlpha = 1
   ctx.restore()
 }
 
@@ -134,10 +143,6 @@ function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void
   const visibleRange = chart.timeScale().getVisibleLogicalRange()
   let rangeThreshold = livePrice * 0.02 // default 2%
   if (visibleRange) {
-    // Use a fraction of the visible price range
-    const topY = 0
-    const botY = height
-    // Estimate visible price range from chart height
     const pricePerPixel = (livePrice * 0.001) // rough estimate
     rangeThreshold = Math.min(livePrice * 0.02, height * pricePerPixel * 0.3)
   }
@@ -148,7 +153,6 @@ function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
-  // If range filter is too strict (few results), fall back to global top 5
   const effectiveBids = nearbyBids.length >= 3 ? nearbyBids
     : bids.filter(b => b.price < livePrice).sort((a, b) => b.qty - a.qty).slice(0, 5)
 
@@ -162,7 +166,7 @@ function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void
 
   const maxQty = Math.max(1, ...effectiveBids.map(b => b.qty), ...effectiveAsks.map(a => a.qty))
 
-  // Dimming for non-HEALTHY states
+  // Dimming for non-HEALTHY states — book-based tool, uses best available book
   const isHealthy = orderBookHealth === 'HEALTHY'
   const stateDimFactor = isHealthy ? 1.0
     : orderBookHealth === 'DEGRADED' ? 0.7
@@ -183,7 +187,6 @@ function drawLiquidityLevels(rc: OverlayRenderContext, _zoomAlpha: number): void
     ctx.fillStyle = `rgba(45,212,160,${alpha})`
     ctx.fillRect(0, y - bandH / 2, width, bandH)
 
-    // Quantity label — show when chart is wide enough
     if (width > 250) {
       const qtyLabel = fmtCompactQty(bid.qty)
       ctx.fillStyle = `rgba(45,212,160,${Math.min(0.85, alpha + 0.3)})`
@@ -240,7 +243,6 @@ function drawSpreadLine(rc: OverlayRenderContext): void {
   ctx.stroke()
   ctx.setLineDash([])
 
-  // Spread label
   if (width > 300) {
     ctx.fillStyle = 'rgba(79,195,247,0.45)'
     ctx.font = '9px "SF Mono", monospace'
@@ -329,13 +331,11 @@ function drawFootprint(rc: OverlayRenderContext, _zoomAlpha: number): void {
     const entries = Object.entries(candle.priceMap)
     if (entries.length === 0) continue
 
-    // Get the x coordinate for this candle
     const coords = timePriceToPixel(candle.openTime, candle.close, chart, candleSeries)
     if (!coords) continue
 
-    // Estimate candle width from interval
     const slotWidth = estimateSlotWidth(chart, intervalMs)
-    if (slotWidth < 12) continue // Too small for footprint
+    if (slotWidth < 12) continue
 
     const sorted = entries
       .map(([p, l]) => ({ price: parseFloat(p), ...l }))
@@ -345,7 +345,6 @@ function drawFootprint(rc: OverlayRenderContext, _zoomAlpha: number): void {
 
     const maxLevel = Math.max(1, ...sorted.map(l => l.total))
 
-    // Clip to candle body area
     const bodyLeft = coords.x - slotWidth / 2 + 1
     const bodyRight = coords.x + slotWidth / 2 - 1
 
@@ -396,12 +395,18 @@ function estimateSlotWidth(chart: IChartApi, intervalMs: number): number {
 }
 
 // ═══════════════════════════════════════════
-// LAYER 4 & 5: BUBBLES + CLUSTERS
+// LAYER 4: SMART FLOW BUBBLES
 // ═══════════════════════════════════════════
+//
+// SMART FLOW = always render raw large trade bubbles when available.
+// If cluster data exists, enrich tooltip/outline.
+// If cluster data does not exist, raw bubbles still render.
+// No user-facing mode switch. No blank output.
+// Bubbles are trade-based — they draw regardless of orderBookHealth.
 
-function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number): void {
+function drawSmartFlowBubbles(rc: OverlayRenderContext, zoomAlphaScale: number): void {
   const { ctx, chart, candleSeries, frame } = rc
-  const { allCandles, intervalMs, displayMode, clusters, now } = frame
+  const { allCandles, intervalMs, clusters, now } = frame
 
   // Collect all bubbles from visible candles
   const allBubbles: Bubble[] = []
@@ -410,8 +415,6 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
   }
 
   if (allBubbles.length === 0 && clusters.length === 0) return
-
-  const mode = displayMode || 'CLUSTERED'
 
   // Compute per-candle notional percentiles for proper bubble sizing
   const allNotionals = allBubbles.map(b => b.notional).sort((a, b) => a - b)
@@ -422,13 +425,13 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
     return count / allNotionals.length
   }
 
-  // Compute cluster data
-  const renderableClusters = (mode === 'CLUSTERED' || mode === 'HYBRID') && clusters.length > 0
+  // Get renderable clusters (for enrichment context)
+  const renderableClusters = clusters.length > 0
     ? getRenderableClusters(clusters, now)
     : []
-  const allClusteredBubbleIds = mode === 'HYBRID'
-    ? new Set(clusters.flatMap(cl => cl.rawBubbleIds))
-    : new Set<string>()
+
+  // Build set of bubble IDs that are part of clusters (for enrichment)
+  const clusteredBubbleIds = new Set(clusters.flatMap(cl => cl.rawBubbleIds))
 
   // DEV: Track rendering stats
   let drawnCount = 0
@@ -436,58 +439,33 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
 
   ctx.save()
 
-  // Draw raw bubbles
-  if (mode === 'RAW') {
-    const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
-    for (const bubble of renderable) {
-      const pctl = getPercentile(bubble.notional)
-      const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
-      if (!coords) { skippedNullCoord++; continue }
-      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale, pctl)
-      drawnCount++
-    }
-  } else if (mode === 'HYBRID') {
-    // Clusters first
-    for (const cluster of renderableClusters) {
-      drawSingleCluster(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
-      drawnCount++
-    }
-    // Fresh raw bubbles not in clusters
-    const freshRaw = getRenderableBubbles(allBubbles, now, intervalMs)
-      .filter(b => !allClusteredBubbleIds.has(b.id) && (now - b.timestamp) < 10_000)
-    for (const bubble of freshRaw) {
-      const pctl = getPercentile(bubble.notional)
-      const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
-      if (!coords) { skippedNullCoord++; continue }
-      drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale * 0.4, pctl)
-      drawnCount++
-    }
-  } else {
-    // CLUSTERED — clusters only
-    for (const cluster of renderableClusters) {
-      drawSingleCluster(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
-      drawnCount++
-    }
-    // Fallback: if no clusters but bubbles exist, draw raw bubbles
-    if (renderableClusters.length === 0 && allBubbles.length > 0) {
-      const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
-      for (const bubble of renderable) {
-        const pctl = getPercentile(bubble.notional)
-        const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
-        if (!coords) { skippedNullCoord++; continue }
-        drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale, pctl)
-        drawnCount++
-      }
-    }
+  // Draw cluster outlines first (context layer, below raw bubbles)
+  for (const cluster of renderableClusters) {
+    drawClusterOutline(ctx, cluster, chart, candleSeries, now, zoomAlphaScale)
+    drawnCount++
+  }
+
+  // Draw raw bubbles — ALWAYS, regardless of book health
+  const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
+  for (const bubble of renderable) {
+    const pctl = getPercentile(bubble.notional)
+    const coords = timePriceToPixel(bubble.timestamp, bubble.price, chart, candleSeries)
+    if (!coords) { skippedNullCoord++; continue }
+
+    // Enrich: if this bubble is part of a cluster, slightly boost visibility
+    const inCluster = clusteredBubbleIds.has(bubble.id)
+    const alphaBoost = inCluster ? 1.1 : 1.0
+
+    drawSingleBubble(ctx, bubble, chart, candleSeries, now, intervalMs, zoomAlphaScale * alphaBoost, pctl)
+    drawnCount++
   }
 
   // DEV: Bubble stats overlay (only when DEBUG_OVERLAY enabled)
   if (isDebugOverlay() && (allBubbles.length > 0 || clusters.length > 0)) {
-    const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
     ctx.fillStyle = 'rgba(228,167,59,0.6)'
     ctx.font = '9px "SF Mono", monospace'
     ctx.textAlign = 'left'
-    ctx.fillText(`BUBBLES: ${allBubbles.length} total, ${renderable.length} renderable, ${drawnCount} drawn, ${skippedNullCoord} nullCoord, mode:${mode}`, 8, 24)
+    ctx.fillText(`SMART_FLOW: ${allBubbles.length} total, ${renderable.length} renderable, ${drawnCount} drawn, ${skippedNullCoord} nullCoord, ${renderableClusters.length} clusters`, 8, 24)
   }
 
   ctx.globalAlpha = 1
@@ -579,7 +557,11 @@ function drawSingleBubble(
   ctx.globalAlpha = 1
 }
 
-function drawSingleCluster(
+/**
+ * Draw cluster outline — lightweight visual context behind raw bubbles.
+ * Does NOT replace raw bubble rendering. Just shows cluster zone.
+ */
+function drawClusterOutline(
   ctx: CanvasRenderingContext2D,
   cluster: AuctionCluster,
   chart: IChartApi,
@@ -591,74 +573,23 @@ function drawSingleCluster(
   if (!coords) return
   const { x, y } = coords
 
-  const style = getClusterVisualStyle(cluster, now, zoomAlphaScale)
-  if (style.radius < 1 || (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01)) return
+  const style = getClusterVisualStyle(cluster, now, zoomAlphaScale * 0.3) // lower alpha for outline
+  if (style.radius < 1) return
 
+  // Draw a subtle zone ring (not a filled bubble — that's for raw bubbles)
+  ctx.save()
+  ctx.globalAlpha = Math.min(style.strokeAlpha * 0.4, 0.2)
+  ctx.strokeStyle = style.strokeColor
+  ctx.lineWidth = 1
+  ctx.setLineDash([4, 3])
   ctx.beginPath()
-  ctx.arc(x, y, style.radius, 0, Math.PI * 2)
+  ctx.arc(x, y, style.radius + 4, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.setLineDash([])
 
-  if (style.fillAlpha > 0 && !style.ringStyle) {
-    ctx.globalAlpha = style.fillAlpha
-    ctx.fillStyle = style.fillColor
-    ctx.fill()
-  } else if (style.ringStyle) {
-    ctx.globalAlpha = Math.min(style.fillAlpha, 0.04)
-    ctx.fillStyle = style.fillColor
-    ctx.fill()
-  }
-
-  if (style.strokeAlpha > 0) {
-    ctx.globalAlpha = style.strokeAlpha
-    ctx.strokeStyle = style.strokeColor
-    ctx.lineWidth = style.strokeWidth
-    if (style.dashed) ctx.setLineDash([3, 2])
-    else ctx.setLineDash([])
-    ctx.stroke()
-    ctx.setLineDash([])
-
-    if (style.brokenOutline) {
-      ctx.globalAlpha = style.strokeAlpha * 0.6
-      ctx.strokeStyle = style.strokeColor
-      ctx.lineWidth = 1
-      const xLen = style.radius * 0.6
-      ctx.beginPath()
-      ctx.moveTo(x - xLen, y - xLen)
-      ctx.lineTo(x + xLen, y + xLen)
-      ctx.moveTo(x + xLen, y - xLen)
-      ctx.lineTo(x - xLen, y + xLen)
-      ctx.stroke()
-    }
-
-    if (cluster.state === 'RESISTANCE') {
-      ctx.globalAlpha = 0.25
-      ctx.strokeStyle = '#a855f7'
-      ctx.lineWidth = 3
-      ctx.beginPath()
-      ctx.arc(x, y, style.radius + 3, 0, Math.PI * 2)
-      ctx.stroke()
-      ctx.globalAlpha = 0.4
-      ctx.strokeStyle = cluster.resistanceOrigin === 'sell' ? '#ef6461' : '#22c55e'
-      ctx.lineWidth = 1.5
-      ctx.beginPath()
-      ctx.arc(x, y, style.radius + 5, 0, Math.PI * 2)
-      ctx.stroke()
-    }
-  }
-
-  if (style.sideNotchSize > 0) {
-    ctx.globalAlpha = 0.65
-    ctx.fillStyle = style.sideAccentColor
-    ctx.beginPath()
-    const notchY = y + (style.sideDirection > 0 ? style.radius + 2 : -(style.radius + 2))
-    ctx.moveTo(x, notchY + style.sideDirection * style.sideNotchSize)
-    ctx.lineTo(x - style.sideNotchSize * 0.6, notchY)
-    ctx.lineTo(x + style.sideNotchSize * 0.6, notchY)
-    ctx.closePath()
-    ctx.fill()
-  }
-
-  if (style.showTradeBadge) {
-    ctx.globalAlpha = 0.7
+  // Trade count badge for clusters with 3+ trades
+  if (cluster.tradeCount >= 3) {
+    ctx.globalAlpha = 0.5
     ctx.fillStyle = '#0c1019'
     ctx.beginPath()
     ctx.arc(x + style.radius * 0.7, y - style.radius * 0.7, 6, 0, Math.PI * 2)
@@ -670,10 +601,11 @@ function drawSingleCluster(
   }
 
   ctx.globalAlpha = 1
+  ctx.restore()
 }
 
 // ═══════════════════════════════════════════
-// LAYER 6: TOOLTIP
+// LAYER 5: TOOLTIP
 // ═══════════════════════════════════════════
 
 export function drawBubbleTooltip(
@@ -731,7 +663,7 @@ export function drawBubbleTooltip(
 }
 
 // ═══════════════════════════════════════════
-// LAYER 7: ORDER BOOK STATE BADGE
+// LAYER 6: ORDER BOOK STATE BADGE
 // ═══════════════════════════════════════════
 
 const STATE_CONFIG: Record<string, { icon: string; color: string; bgAlpha: number; label: string }> = {
@@ -754,7 +686,7 @@ function drawOrderBookStateBadge(rc: OverlayRenderContext): void {
   const cfg = STATE_CONFIG[health]
   if (!cfg) return
 
-  // Subtle background tint — convert hex to rgba with bgAlpha
+  // SAFETY: Subtle background tint — very low alpha, only a tint NOT a fill
   ctx.save()
   const hexToRgba = (hex: string, alpha: number) => {
     const r = parseInt(hex.slice(1, 3), 16)
@@ -762,6 +694,9 @@ function drawOrderBookStateBadge(rc: OverlayRenderContext): void {
     const b = parseInt(hex.slice(5, 7), 16)
     return `rgba(${r},${g},${b},${alpha})`
   }
+
+  // SAFETY: Only draw a tiny badge, NOT a full-screen fill
+  // The bgAlpha is kept extremely low (0.03-0.06) — barely perceptible tint
   ctx.fillStyle = hexToRgba(cfg.color, cfg.bgAlpha)
   ctx.fillRect(0, 0, width, height)
 
@@ -788,7 +723,7 @@ function drawOrderBookStateBadge(rc: OverlayRenderContext): void {
 }
 
 // ═══════════════════════════════════════════
-// LAYER 8: LIVE / GO LIVE BADGE
+// LAYER 7: LIVE / GO LIVE BADGE
 // ═══════════════════════════════════════════
 
 export function drawLiveBadge(rc: OverlayRenderContext): { goLiveRect: { x: number; y: number; w: number; h: number } | null } {
@@ -797,7 +732,6 @@ export function drawLiveBadge(rc: OverlayRenderContext): { goLiveRect: { x: numb
   ctx.save()
 
   if (frame.followLive) {
-    // LIVE pill at top-right
     const pillText = 'LIVE'
     ctx.font = 'bold 10px "SF Mono", monospace'
     const pillW = ctx.measureText(pillText).width + 16
@@ -819,7 +753,6 @@ export function drawLiveBadge(rc: OverlayRenderContext): { goLiveRect: { x: numb
     ctx.restore()
     return { goLiveRect: null }
   } else {
-    // GO LIVE pill at top-right
     const pillText = '◉ GO LIVE'
     ctx.font = 'bold 10px "SF Mono", monospace'
     const pillW = ctx.measureText(pillText).width + 16
@@ -847,9 +780,6 @@ export function drawLiveBadge(rc: OverlayRenderContext): { goLiveRect: { x: numb
 // HIT TESTING
 // ═══════════════════════════════════════════
 
-/**
- * Find the closest bubble to a mouse position for tooltip display.
- */
 export function findClosestBubble(
   mouseX: number,
   mouseY: number,
@@ -858,7 +788,7 @@ export function findClosestBubble(
   candleSeries: ISeriesApi<'Candlestick'>
 ): Bubble | null {
   let closest: Bubble | null = null
-  let closestDist = 30 // max pixel distance
+  let closestDist = 30
 
   for (const candle of frame.allCandles) {
     for (const bubble of candle.bubbles) {
@@ -875,9 +805,6 @@ export function findClosestBubble(
   return closest
 }
 
-/**
- * Find the closest cluster to a mouse position for tooltip display.
- */
 export function findClosestCluster(
   mouseX: number,
   mouseY: number,
@@ -886,7 +813,7 @@ export function findClosestCluster(
   candleSeries: ISeriesApi<'Candlestick'>
 ): AuctionCluster | null {
   let closest: AuctionCluster | null = null
-  let closestDist = 40 // slightly larger hit area for clusters
+  let closestDist = 40
 
   for (const cluster of frame.clusters) {
     const coords = timePriceToPixel(cluster.endTs, cluster.vwapPrice, chart, candleSeries)
@@ -901,9 +828,6 @@ export function findClosestCluster(
   return closest
 }
 
-/**
- * Draw tooltip for a cluster.
- */
 export function drawClusterTooltip(
   ctx: CanvasRenderingContext2D,
   cluster: AuctionCluster,

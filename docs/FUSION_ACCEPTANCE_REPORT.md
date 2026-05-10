@@ -1,6 +1,7 @@
 # Fusion Acceptance Report
 
 Generated: 2026-05-11 | Branch: `main` | Commit: `7febdef` (add fusion report)
+Updated: 2026-05-11 | Order Book Supremacy + Smart Flow update
 
 ---
 
@@ -10,11 +11,15 @@ Generated: 2026-05-11 | Branch: `main` | Commit: `7febdef` (add fusion report)
 |---|---|
 | **Fusion accepted** | ✅ YES |
 | **Safe for local demo** | ✅ YES |
-| **Build passed** | ✅ YES (0 errors, 76 modules, 401.8 KB) |
-| **Latest remote commit** | `7febdef` — "add fusion report" |
+| **Build passed** | ✅ YES (0 errors, 76 modules) |
 | **Architecture** | Single chart: Lightweight Charts base + Canvas2D overlay |
 | **Chart engine toggle** | ❌ Does not exist (correct) |
 | **Active chart count** | 1 (ExecutionChart) |
+| **RAW/CLU/HYBRID in UI** | ❌ Removed — Smart Flow automatic rendering |
+| **Order book timeouts** | ✅ Implemented — no stuck SNAPSHOT_LOADING/SYNCING |
+| **DEBUG_BOOK diagnostics** | ✅ Available (disabled by default) |
+| **Trade/book health separation** | ✅ Independent per-stream error tracking |
+| **Overlay safety** | ✅ Transparent canvas, clearRect first, save/restore per layer |
 
 **Verdict: The fusion is correct and complete.** The Lightweight Charts + Canvas2D overlay architecture is the sole active chart path. No legacy chart code is imported or reachable. All orderflow overlays render on the Canvas2D layer using Lightweight Charts coordinate APIs.
 

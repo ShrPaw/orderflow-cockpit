@@ -80,6 +80,38 @@ const DEGRADED_SYNC_WINDOW_MS = 60_000
 // Periodic recovery attempt from DEGRADED → HEALTHY
 const DEGRADED_RECOVERY_INTERVAL_MS = 30_000
 
+// ─── Timeout constants to prevent stuck states ───
+const SNAPSHOT_REQUEST_TIMEOUT_MS = 10_000     // max time for REST snapshot fetch
+const SNAPSHOT_LOADING_MAX_MS = 20_000         // max time in SNAPSHOT_LOADING state
+const SYNCING_MAX_MS = 15_000                  // max time waiting for overlap in SYNCING
+const STRICT_SYNC_ATTEMPT_MAX_MS = 40_000     // max total time for one strict sync attempt
+const MAX_STRICT_FAILURES_BEFORE_DEGRADED = 3 // consecutive failures before DEGRADED
+
+// ═══════════════════════════════════════════
+// DEBUG BOOK DIAGNOSTICS
+// ═══════════════════════════════════════════
+
+let _debugBookEnabled: boolean | null = null
+function isDebugBook(): boolean {
+  if (_debugBookEnabled === null) {
+    try { _debugBookEnabled = localStorage.getItem('DEBUG_BOOK') === '1' } catch { _debugBookEnabled = false }
+  }
+  return _debugBookEnabled
+}
+
+interface DebugBookEvent {
+  type: string
+  symbol?: string
+  generation?: number
+  [key: string]: unknown
+}
+
+function debugBookEmit(event: DebugBookEvent) {
+  if (!isDebugBook()) return
+  const ts = new Date().toISOString().slice(11, 23)
+  console.log(`%c[DEBUG_BOOK ${ts}]`, 'color:#4fc3f7;font-weight:bold', event.type, event)
+}
+
 // ═══════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════
@@ -182,6 +214,13 @@ export function createLocalOrderBook(
   let syncFailureTimes: number[] = []
   let isDegraded = false
   let degradedRecoveryAttempt = 0
+  let consecutiveStrictFailures = 0
+
+  // ─── Timeout tracking ───
+  let syncStartTime = 0
+  let snapshotLoadStartTime = 0
+  let syncingStartTime = 0
+  let timeoutChecker: ReturnType<typeof setInterval> | null = null
 
   // ─── Dev logging ───
   const LOG_TAG = `[LocalBook:${symbol}]`
@@ -294,7 +333,16 @@ export function createLocalOrderBook(
       // NO VALID OVERLAPPING EVENT — cannot mark HEALTHY
       // Must wait for live stream to provide the first valid event
       devLog(`processBufferedEvents: no buffered events after snapshot (lastUpdateId=${book.lastUpdateId}), waiting for live overlap`)
+      debugBookEmit({
+        type: 'first_overlap_result',
+        symbol,
+        generation: gen,
+        snapshotLastUpdateId: book.lastUpdateId,
+        bufferedEventsCount: 0,
+        foundOverlap: false,
+      })
       setHealth('SYNCING', 'Waiting for overlapping diff event…')
+      syncingStartTime = Date.now()
       return false
     }
 
@@ -314,12 +362,34 @@ export function createLocalOrderBook(
     }
 
     if (startIdx === -1) {
+      debugBookEmit({
+        type: 'first_overlap_result',
+        symbol,
+        generation: gen,
+        snapshotLastUpdateId: L,
+        bufferedEventsCount: valid.length,
+        foundOverlap: false,
+        firstBufferedEvent: { U: valid[0].U, u: valid[0].u, pu: valid[0].pu, E: valid[0].T },
+        lastBufferedEvent: { U: valid[valid.length - 1].U, u: valid[valid.length - 1].u, pu: valid[valid.length - 1].pu, E: valid[valid.length - 1].T },
+      })
       devWarn(`processBufferedEvents: no valid first event (need U<=${L + 1}&&u>=${L + 1}), resyncing`)
       return false
     }
 
     const firstEvent = valid[startIdx]
     devLog(`first valid event: U=${firstEvent.U} u=${firstEvent.u} (snapshot L=${L})`)
+
+    debugBookEmit({
+      type: 'first_overlap_result',
+      symbol,
+      generation: gen,
+      snapshotLastUpdateId: L,
+      bufferedEventsCount: valid.length,
+      foundOverlap: true,
+      firstValidEvent: { U: firstEvent.U, u: firstEvent.u, pu: firstEvent.pu, E: firstEvent.T },
+      firstBufferedEvent: { U: valid[0].U, u: valid[0].u, pu: valid[0].pu, E: valid[0].T },
+      lastBufferedEvent: { U: valid[valid.length - 1].U, u: valid[valid.length - 1].u, pu: valid[valid.length - 1].pu, E: valid[valid.length - 1].T },
+    })
 
     // Apply from startIdx onward
     for (let i = startIdx; i < valid.length; i++) {
@@ -329,6 +399,14 @@ export function createLocalOrderBook(
       if (i > startIdx && event.pu !== undefined) {
         const prevEvent = valid[i - 1]
         if (event.pu !== prevEvent.u) {
+          debugBookEmit({
+            type: 'sequence_gap',
+            symbol,
+            generation: gen,
+            previousAppliedUpdateId: prevEvent.u,
+            event: { U: event.U, u: event.u, pu: event.pu, E: event.T },
+            action: 'resync',
+          })
           devWarn(`sequence gap in buffered events: pu=${event.pu} !== prev.u=${prevEvent.u}`)
           return false
         }
@@ -341,6 +419,7 @@ export function createLocalOrderBook(
     firstEventValidated = true
     book.reconnectAttempts = 0
     syncFailureTimes = []
+    consecutiveStrictFailures = 0
     isDegraded = false
     setHealth('HEALTHY')
     emitBook()
@@ -375,13 +454,31 @@ export function createLocalOrderBook(
         applyDiff(event)
         book.reconnectAttempts = 0
         syncFailureTimes = []
+        consecutiveStrictFailures = 0
         isDegraded = false
         setHealth('HEALTHY')
         emitBook()
         devLog(`first live event validated: U=${event.U} u=${event.u} L=${L}`)
+        debugBookEmit({
+          type: 'first_overlap_result',
+          symbol,
+          generation: gen,
+          snapshotLastUpdateId: L,
+          bufferedEventsCount: 0,
+          foundOverlap: true,
+          firstValidEvent: { U: event.U, u: event.u, pu: event.pu, E: event.T },
+        })
         return
       } else if (event.U > L + 1) {
         // Gap — we missed the overlapping event
+        debugBookEmit({
+          type: 'sequence_gap',
+          symbol,
+          generation: gen,
+          previousAppliedUpdateId: L,
+          event: { U: event.U, u: event.u, pu: event.pu, E: event.T },
+          action: 'degrade',
+        })
         devWarn(`first event gap: U=${event.U} > L+1=${L + 1}`)
         recordSyncFailure('first event gap: missing overlapping event')
         return
@@ -393,6 +490,14 @@ export function createLocalOrderBook(
     // Validate continuity via pu
     if (event.pu !== undefined) {
       if (event.pu !== lastAppliedUpdateId) {
+        debugBookEmit({
+          type: 'sequence_gap',
+          symbol,
+          generation: gen,
+          previousAppliedUpdateId: lastAppliedUpdateId,
+          event: { U: event.U, u: event.u, pu: event.pu, E: event.T },
+          action: 'reject',
+        })
         devWarn(`pu mismatch: event.pu=${event.pu} !== lastApplied=${lastAppliedUpdateId} (event.U=${event.U} u=${event.u})`)
         // REJECT: do NOT apply to healthy book
         recordSyncFailure(`pu mismatch: ${event.pu} !== ${lastAppliedUpdateId}`)
@@ -406,6 +511,7 @@ export function createLocalOrderBook(
   }
 
   // ─── Handle depth20 partial update (degraded mode) ───
+  let lastFallbackLogTime = 0
   function handleDepth20Update(msg: any, gen: number) {
     if (gen !== generation) return
     book.lastMessageTime = Date.now()
@@ -428,6 +534,23 @@ export function createLocalOrderBook(
     book.lastEventUpdateId = 0
     book.lastTransactionTime = Date.now()
 
+    // Debug: sample at most once every 5 seconds
+    const now = Date.now()
+    if (isDebugBook() && now - lastFallbackLogTime > 5_000) {
+      lastFallbackLogTime = now
+      const bestBid = bids.length > 0 ? bids[0][0] : 'N/A'
+      const bestAsk = asks.length > 0 ? asks[0][0] : 'N/A'
+      debugBookEmit({
+        type: 'fallback_update',
+        symbol,
+        bidsCount: bids.length,
+        asksCount: asks.length,
+        bestBid,
+        bestAsk,
+        lastMessageAgeMs: 0,
+      })
+    }
+
     emitBook()
   }
 
@@ -435,12 +558,13 @@ export function createLocalOrderBook(
   function recordSyncFailure(reason: string) {
     const now = Date.now()
     syncFailureTimes.push(now)
+    consecutiveStrictFailures++
     // Keep only failures within the window
     syncFailureTimes = syncFailureTimes.filter(t => now - t < DEGRADED_SYNC_WINDOW_MS)
 
-    devWarn(`sync failure (${syncFailureTimes.length}/${DEGRADED_SYNC_FAILURES}): ${reason}`)
+    devWarn(`sync failure (${syncFailureTimes.length}/${DEGRADED_SYNC_FAILURES}, consecutive=${consecutiveStrictFailures}): ${reason}`)
 
-    if (syncFailureTimes.length >= DEGRADED_SYNC_FAILURES) {
+    if (syncFailureTimes.length >= DEGRADED_SYNC_FAILURES || consecutiveStrictFailures >= MAX_STRICT_FAILURES_BEFORE_DEGRADED) {
       enterDegraded()
     } else {
       triggerResync(reason)
@@ -453,6 +577,14 @@ export function createLocalOrderBook(
     isDegraded = true
     degradedRecoveryAttempt = 0
     devLog('entering DEGRADED mode — switching to depth20 fallback')
+
+    debugBookEmit({
+      type: 'fallback_start',
+      symbol,
+      generation,
+      streamUrl: `${symbol.toLowerCase()}@depth20@100ms`,
+      reason: `Strict sync failed ${consecutiveStrictFailures} times consecutively`,
+    })
 
     // Close strict diff socket
     closeSocket()
@@ -468,6 +600,7 @@ export function createLocalOrderBook(
     firstEventValidated = false
     lastPu = null
     pendingEvents = []
+    stopTimeoutChecker()
 
     // DO NOT clear book — preserve last known good
     setHealth('DEGRADED', 'Strict sync failed — using depth20 fallback')
@@ -521,18 +654,98 @@ export function createLocalOrderBook(
     }
   }
 
+  // ─── Timeout checker — prevents stuck SNAPSHOT_LOADING / SYNCING ───
+  function startTimeoutChecker() {
+    stopTimeoutChecker()
+    timeoutChecker = setInterval(() => {
+      if (disposed) return
+      const now = Date.now()
+      const h = book.health
+
+      // SNAPSHOT_LOADING timeout
+      if (h === 'SNAPSHOT_LOADING' && snapshotLoadStartTime > 0) {
+        const elapsed = now - snapshotLoadStartTime
+        if (elapsed > SNAPSHOT_LOADING_MAX_MS) {
+          devWarn(`SNAPSHOT_LOADING timeout after ${elapsed}ms`)
+          if (snapshotAbort) {
+            snapshotAbort.abort()
+            snapshotAbort = null
+          }
+          recordSyncFailure(`Snapshot loading timeout (${Math.round(elapsed)}ms)`)
+        }
+      }
+
+      // SYNCING timeout (waiting for overlap)
+      if (h === 'SYNCING' && syncingStartTime > 0) {
+        const elapsed = now - syncingStartTime
+        if (elapsed > SYNCING_MAX_MS) {
+          devWarn(`SYNCING timeout after ${elapsed}ms — no overlapping event found`)
+          recordSyncFailure(`Overlap wait timeout (${Math.round(elapsed)}ms)`)
+        }
+      }
+
+      // Total strict sync attempt timeout
+      if ((h === 'SNAPSHOT_LOADING' || h === 'SYNCING' || h === 'BUFFERING') && syncStartTime > 0) {
+        const elapsed = now - syncStartTime
+        if (elapsed > STRICT_SYNC_ATTEMPT_MAX_MS) {
+          devWarn(`Strict sync attempt timeout after ${elapsed}ms`)
+          recordSyncFailure(`Strict sync timeout (${Math.round(elapsed)}ms)`)
+        }
+      }
+    }, 2_000) // check every 2 seconds
+  }
+
+  function stopTimeoutChecker() {
+    if (timeoutChecker) {
+      clearInterval(timeoutChecker)
+      timeoutChecker = null
+    }
+  }
+
   // ─── Fetch snapshot and initialize ───
   async function loadSnapshot(gen: number) {
+    snapshotLoadStartTime = Date.now()
     setHealth('SNAPSHOT_LOADING')
+
+    debugBookEmit({
+      type: 'strict_sync_start',
+      symbol,
+      generation: gen,
+      streamUrl: `${symbol.toLowerCase()}@depth@100ms`,
+      snapshotUrl: `${REST_SNAPSHOT_URL}?symbol=${symbol.toUpperCase()}&limit=${SNAPSHOT_LIMIT}`,
+    })
 
     // Abort controller for this snapshot
     if (snapshotAbort) snapshotAbort.abort()
     const ac = new AbortController()
     snapshotAbort = ac
 
+    // Snapshot request timeout
+    const snapshotTimeout = setTimeout(() => {
+      if (!ac.signal.aborted) {
+        ac.abort()
+      }
+    }, SNAPSHOT_REQUEST_TIMEOUT_MS)
+
     try {
+      const snapshotStart = Date.now()
       const snapshot = await fetchDepthSnapshot(symbol, ac.signal)
+      clearTimeout(snapshotTimeout)
       if (disposed || gen !== generation || ac.signal.aborted) return
+
+      const durationMs = Date.now() - snapshotStart
+      const bufferedCount = pendingEvents.length
+
+      debugBookEmit({
+        type: 'snapshot_success',
+        symbol,
+        generation: gen,
+        lastUpdateId: snapshot.lastUpdateId,
+        bidsCount: snapshot.bids.length,
+        asksCount: snapshot.asks.length,
+        durationMs,
+        bufferedEventsCount: bufferedCount,
+      })
 
       applySnapshot(snapshot)
       const ok = processBufferedEvents(gen)
@@ -542,8 +755,16 @@ export function createLocalOrderBook(
         devLog('snapshot loaded but no overlapping event yet, waiting for live stream')
       }
     } catch (err) {
+      clearTimeout(snapshotTimeout)
       if (disposed || gen !== generation) return
-      if (err instanceof DOMException && err.name === 'AbortError') return
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Could be our timeout or user abort
+        if (!disposed && gen === generation) {
+          devWarn('snapshot request aborted (timeout or generation change)')
+          recordSyncFailure('Snapshot request aborted')
+        }
+        return
+      }
       const msg = err instanceof Error ? err.message : 'Snapshot fetch failed'
       devWarn(`snapshot error: ${msg}`)
       setHealth('ERROR', msg)
@@ -569,6 +790,7 @@ export function createLocalOrderBook(
     closeSocket()
 
     const myGen = ++generation
+    syncStartTime = Date.now()
 
     // Open stream FIRST — it will buffer events while snapshot loads
     const wsSymbol = symbol.toLowerCase() + '@depth@100ms'
@@ -611,6 +833,13 @@ export function createLocalOrderBook(
       ws = null
 
       if (book.health === 'HEALTHY' || book.health === 'DEGRADED') {
+        debugBookEmit({
+          type: 'book_stale',
+          symbol,
+          previousState: book.health,
+          lastMessageAgeMs: Date.now() - book.lastMessageTime,
+          socketReadyState: socket.readyState,
+        })
         setHealth('STALE', 'Diff stream disconnected')
       }
 
@@ -637,6 +866,7 @@ export function createLocalOrderBook(
 
     // Now fetch snapshot — stream is already buffering
     loadSnapshot(myGen)
+    startTimeoutChecker()
   }
 
   // ─── Connect depth20 fallback stream ───
@@ -704,10 +934,18 @@ export function createLocalOrderBook(
       return
     }
 
+    debugBookEmit({
+      type: 'manual_resync',
+      symbol,
+      previousState: book.health,
+      reason,
+    })
+
     devLog(`triggering resync: ${reason}`)
     lastResyncTime = now
 
     cancelReconnectTimer()
+    stopTimeoutChecker()
 
     // Abort old snapshot
     if (snapshotAbort) {
@@ -763,6 +1001,13 @@ export function createLocalOrderBook(
         if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
           const reason = `No updates for ${Math.round(elapsed / 1000)}s (socket open)`
           devWarn(`stale detected: ${reason}`)
+          debugBookEmit({
+            type: 'book_stale',
+            symbol,
+            previousState: h,
+            lastMessageAgeMs: elapsed,
+            socketReadyState: activeSocket.readyState,
+          })
           callbacks.onStale(reason)
           setHealth('STALE', 'No depth updates — book stale')
         } else if (!activeSocket) {
@@ -821,6 +1066,7 @@ export function createLocalOrderBook(
     cancelReconnectTimer()
     stopStaleMonitor()
     stopRecoveryTimer()
+    stopTimeoutChecker()
     if (snapshotAbort) {
       snapshotAbort.abort()
       snapshotAbort = null
@@ -830,7 +1076,15 @@ export function createLocalOrderBook(
   }
 
   function manualResync() {
-    if (!disposed) triggerResync('manual resync requested')
+    if (!disposed) {
+      debugBookEmit({
+        type: 'manual_resync',
+        symbol,
+        previousState: book.health,
+        reason: 'User clicked Resync Book',
+      })
+      triggerResync('manual resync requested')
+    }
   }
 
   return { resync: manualResync, dispose }

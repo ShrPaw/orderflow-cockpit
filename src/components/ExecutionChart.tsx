@@ -33,7 +33,7 @@ import {
 import { useMarketStore } from '../stores/marketStore'
 import type { Candle, Bubble, OrderLevel, OrderBookHealth } from '../types/market'
 import type { OverlayFrame, ExecutionChartApi } from '../types/executionChart'
-import type { AuctionCluster, DisplayMode } from '../utils/auctionClusters'
+import type { AuctionCluster } from '../utils/auctionClusters'
 import type { LevelRecord } from '../utils/levelMemory'
 import { INTERVAL_MS } from '../types/market'
 import { adaptCandles, adaptVolumes, adaptSingleCandle, adaptSingleVolume } from '../utils/lightweightChartAdapters'
@@ -88,7 +88,6 @@ export default function ExecutionChart() {
   const asksRef = useRef<OrderLevel[]>([])
   const intervalRef = useRef<string>('40s')
   const clustersRef = useRef<AuctionCluster[]>([])
-  const displayModeRef = useRef<DisplayMode>('CLUSTERED')
   const orderBookHealthRef = useRef<OrderBookHealth>('DISCONNECTED')
   const followLiveRef = useRef(true)
   const symbolRef = useRef('BTCUSDT')
@@ -108,7 +107,6 @@ export default function ExecutionChart() {
       asksRef.current = state.asks
       intervalRef.current = state.interval
       clustersRef.current = state.clusters
-      displayModeRef.current = state.displayMode
       orderBookHealthRef.current = state.orderBookHealth
       followLiveRef.current = state.followLive
       symbolRef.current = state.symbol
@@ -122,7 +120,6 @@ export default function ExecutionChart() {
     asksRef.current = s.asks
     intervalRef.current = s.interval
     clustersRef.current = s.clusters
-    displayModeRef.current = s.displayMode
     orderBookHealthRef.current = s.orderBookHealth
     followLiveRef.current = s.followLive
     symbolRef.current = s.symbol
@@ -381,7 +378,6 @@ export default function ExecutionChart() {
           intervalMs,
           symbol: symbolRef.current,
           clusters: clustersRef.current,
-          displayMode: displayModeRef.current,
           orderBookHealth: orderBookHealthRef.current,
           levelRecords: getAllLevels(),
           followLive: followLiveRef.current,
