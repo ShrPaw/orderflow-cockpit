@@ -56,6 +56,15 @@ const BUBBLE_MAX_R = 22
  * Perform a complete overlay redraw.
  * Called from the RAF loop when overlay data changes.
  */
+// ─── Debug overlay (disabled by default, enable via localStorage) ───
+let _debugEnabled: boolean | null = null
+function isDebugOverlay(): boolean {
+  if (_debugEnabled === null) {
+    try { _debugEnabled = localStorage.getItem('DEBUG_OVERLAY') === '1' } catch { _debugEnabled = false }
+  }
+  return _debugEnabled
+}
+
 export function drawExecutionOverlay(rc: OverlayRenderContext): void {
   const { ctx, width, height, dpr, chart, candleSeries, frame } = rc
 
@@ -70,14 +79,14 @@ export function drawExecutionOverlay(rc: OverlayRenderContext): void {
     : visibleCandles > 30 ? 0.9
     : 1.0
 
-  // DEV: Overlay alive indicator (remove after verification)
-  if (import.meta.env.DEV) {
+  // DEBUG_OVERLAY: Show diagnostic info (localStorage.DEBUG_OVERLAY = '1')
+  if (isDebugOverlay()) {
     const allBubbleCount = frame.allCandles.reduce((n, c) => n + c.bubbles.length, 0)
     const clusterCount = frame.clusters.length
-    ctx.fillStyle = 'rgba(79,195,247,0.5)'
+    ctx.fillStyle = 'rgba(79,195,247,0.6)'
     ctx.font = '9px "SF Mono", monospace'
     ctx.textAlign = 'left'
-    ctx.fillText(`OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles, ${clusterCount} clusters, book:${frame.orderBookHealth}`, 8, height - 8)
+    ctx.fillText(`OVERLAY: ${frame.allCandles.length} candles, ${allBubbleCount} bubbles, ${clusterCount} clusters, book:${frame.orderBookHealth}, price:${frame.livePrice.toFixed(1)}`, 8, height - 8)
   }
 
   // Layer 1: Liquidity levels
@@ -472,10 +481,10 @@ function drawBubblesAndClusters(rc: OverlayRenderContext, zoomAlphaScale: number
     }
   }
 
-  // DEV: Bubble stats overlay
-  if (import.meta.env.DEV && (allBubbles.length > 0 || clusters.length > 0)) {
+  // DEV: Bubble stats overlay (only when DEBUG_OVERLAY enabled)
+  if (isDebugOverlay() && (allBubbles.length > 0 || clusters.length > 0)) {
     const renderable = getRenderableBubbles(allBubbles, now, intervalMs)
-    ctx.fillStyle = 'rgba(228,167,59,0.5)'
+    ctx.fillStyle = 'rgba(228,167,59,0.6)'
     ctx.font = '9px "SF Mono", monospace'
     ctx.textAlign = 'left'
     ctx.fillText(`BUBBLES: ${allBubbles.length} total, ${renderable.length} renderable, ${drawnCount} drawn, ${skippedNullCoord} nullCoord, mode:${mode}`, 8, 24)
