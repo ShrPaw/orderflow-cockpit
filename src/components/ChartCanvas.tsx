@@ -7,6 +7,7 @@ import {
   getHoverCursor,
 } from '../utils/chartRenderer'
 import type { ViewState } from '../utils/chartRenderer'
+import { INTERVAL_MS } from '../types/market'
 
 export default function ChartCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -25,6 +26,7 @@ export default function ChartCanvas() {
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
   const symbol = useMarketStore(s => s.symbol)
+  const interval = useMarketStore(s => s.interval)
 
   // Reset view state on symbol switch
   useEffect(() => {
@@ -92,11 +94,12 @@ export default function ChartCanvas() {
       canvas.style.height = size.height + 'px'
       const ctx = canvas.getContext('2d')
       if (ctx) {
+        const intervalMs = INTERVAL_MS[interval] ?? 40_000
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
           volumeProfile, mouseRef.current,
-          livePrice, bids, asks
+          livePrice, bids, asks, intervalMs
         )
         viewRef.current = result.view
       }
@@ -107,7 +110,7 @@ export default function ChartCanvas() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks])
+  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval])
 
   // ─── Mouse handlers ───
   const onWheel = useCallback((e: React.WheelEvent) => {

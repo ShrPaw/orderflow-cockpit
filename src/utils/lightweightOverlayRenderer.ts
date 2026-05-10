@@ -27,6 +27,7 @@ import {
   getBubbleVisualStyle,
   getRenderableBubbles,
 } from './bubbleMethodology'
+import { getAllLevels, type LevelRecord } from './levelMemory'
 import { INTERVAL_MS } from '../types/market'
 
 // ═══════════════════════════════════════════
@@ -163,24 +164,45 @@ export function drawHybridBubbles(
       ctx.setLineDash([])
     }
 
-    // ─── Side indicator tick ───
-    if (style.sideTick > 0) {
+    // ─── Side indicator tick + notch ───
+    if (style.sideTick > 0 || style.sideNotchSize > 0) {
       ctx.globalAlpha = 0.6
+      ctx.fillStyle = style.sideAccentColor
       ctx.strokeStyle = style.fillColor
       ctx.lineWidth = 1
-      ctx.beginPath()
 
-      if (style.sideDirection < 0) {
-        // Buy: tick above
-        ctx.moveTo(x, y - style.radius - 1)
-        ctx.lineTo(x, y - style.radius - 1 - style.sideTick)
-      } else {
-        // Sell: tick below
-        ctx.moveTo(x, y + style.radius + 1)
-        ctx.lineTo(x, y + style.radius + 1 + style.sideTick)
+      // Draw directional notch (triangle)
+      if (style.sideNotchSize > 0) {
+        ctx.beginPath()
+        const notchY = y + (style.sidePlacement > 0 ? style.radius + 2 : -(style.radius + 2))
+        const notchDir = style.sidePlacement > 0 ? 1 : -1
+        ctx.moveTo(x, notchY + notchDir * style.sideNotchSize)
+        ctx.lineTo(x - style.sideNotchSize * 0.6, notchY)
+        ctx.lineTo(x + style.sideNotchSize * 0.6, notchY)
+        ctx.closePath()
+        ctx.fill()
       }
 
-      ctx.stroke()
+      // Draw side tick (line)
+      if (style.sideTick > 0) {
+        ctx.beginPath()
+        if (style.sideDirection < 0) {
+          ctx.moveTo(x, y - style.radius - 1)
+          ctx.lineTo(x, y - style.radius - 1 - style.sideTick)
+        } else {
+          ctx.moveTo(x, y + style.radius + 1)
+          ctx.lineTo(x, y + style.radius + 1 + style.sideTick)
+        }
+        ctx.stroke()
+      }
+    }
+
+    // ─── Level interaction halo ───
+    if (bubble.levelInteraction) {
+      ctx.globalAlpha = 0.08
+      ctx.fillStyle = style.fillColor
+      const haloH = Math.max(2, style.radius * 0.5)
+      ctx.fillRect(0, y - haloH / 2, width, haloH)
     }
   }
 
@@ -276,6 +298,96 @@ export function drawHybridLiquidityLevels(
 }
 
 // ═══════════════════════════════════════════
+// LEVEL MEMORY RENDERING
+// ═══════════════════════════════════════════
+
+/**
+ * Draw level memory levels as subtle horizontal lines with labels.
+ * Only draws levels that have 2+ touches (meaningful interaction).
+ * Levels fade over time and are marked with contextual labels.
+ */
+export function drawHybridLevelMemory(
+  rc: OverlayRenderContext,
+  livePrice: number
+): void {
+  const { ctx, width, height, candleSeries } = rc
+
+  const levels = getAllLevels()
+  if (levels.length === 0) return
+
+  const now = Date.now()
+  const LEVEL_FRESH_MS = 60_000
+  const LEVEL_ACTIVE_MS = 600_000
+  const LEVEL_FADE_MS = 1_800_000
+
+  ctx.save()
+
+  for (const level of levels) {
+    // Only show meaningful levels (2+ touches)
+    if (level.touches < 2) continue
+
+    const y = candleSeries.priceToCoordinate(level.price)
+    if (y === null || !isFinite(y) || y < 0 || y > height) continue
+
+    // Age-based fading
+    const age = now - level.lastTouchedAt
+    let alpha = 0.25
+    if (age > LEVEL_FADE_MS) alpha = 0.08
+    else if (age > LEVEL_ACTIVE_MS) alpha = 0.12
+    else if (age > LEVEL_FRESH_MS) alpha = 0.18
+
+    // State-specific color
+    let color: string
+    let label: string
+    switch (level.lastState) {
+      case 'REJECTED_LEVEL':
+        color = `rgba(239,100,97,${alpha})`
+        label = 'REJ LVL'
+        break
+      case 'ABSORBED_LEVEL':
+        color = `rgba(79,195,247,${alpha})`
+        label = 'ABSORB LVL'
+        break
+      case 'FLIPPED_SUPPORT':
+        color = `rgba(45,212,160,${alpha})`
+        label = 'FLIPPED S'
+        break
+      case 'FLIPPED_RESISTANCE':
+        color = `rgba(228,167,59,${alpha})`
+        label = 'FLIPPED R'
+        break
+      case 'ACCEPTED_LEVEL':
+        color = `rgba(45,212,160,${alpha * 0.7})`
+        label = 'ACC LVL'
+        break
+      default:
+        color = `rgba(100,130,170,${alpha * 0.5})`
+        label = ''
+    }
+
+    // Draw subtle horizontal line
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 4])
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(width, y)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Draw label if readable
+    if (label && width > 250 && alpha > 0.1) {
+      ctx.fillStyle = color
+      ctx.font = '8px "SF Mono", monospace'
+      ctx.textAlign = 'right'
+      ctx.fillText(label, width - 4, y - 3)
+    }
+  }
+
+  ctx.restore()
+}
+
+// ═══════════════════════════════════════════
 // FULL OVERLAY REDRAW
 // ═══════════════════════════════════════════
 
@@ -288,9 +400,13 @@ export function drawOverlay(
   bubbles: Bubble[],
   livePrice: number,
   bids: OrderLevel[],
-  asks: OrderLevel[]
+  asks: OrderLevel[],
+  options?: { showBubbles?: boolean; showLiquidity?: boolean; showLevels?: boolean }
 ): void {
   const { ctx, width, height, dpr } = rc
+  const showBubbles = options?.showBubbles !== false
+  const showLiquidity = options?.showLiquidity !== false
+  const showLevels = options?.showLevels !== false
 
   // Clear the overlay canvas
   ctx.save()
@@ -298,7 +414,14 @@ export function drawOverlay(
   ctx.clearRect(0, 0, width * dpr, height * dpr)
   ctx.restore()
 
-  // Draw in order: liquidity first (behind), bubbles on top
-  drawHybridLiquidityLevels(rc, livePrice, bids, asks)
-  drawHybridBubbles(rc, bubbles)
+  // Draw in order: level memory (behind), liquidity, bubbles (top)
+  if (showLevels) {
+    drawHybridLevelMemory(rc, livePrice)
+  }
+  if (showLiquidity) {
+    drawHybridLiquidityLevels(rc, livePrice, bids, asks)
+  }
+  if (showBubbles) {
+    drawHybridBubbles(rc, bubbles)
+  }
 }

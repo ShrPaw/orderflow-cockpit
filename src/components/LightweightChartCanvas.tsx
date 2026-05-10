@@ -16,7 +16,7 @@
  * Lightweight remains EXPERIMENTAL — Legacy ChartCanvas remains default.
  */
 
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -79,6 +79,19 @@ const THEME = {
   lastPriceRed: '#ef6461',
 }
 
+const toolBtnStyle: React.CSSProperties = {
+  padding: '2px 8px',
+  background: 'rgba(15,20,30,0.85)',
+  border: '1px solid rgba(100,130,170,0.2)',
+  borderRadius: 3,
+  color: '#6b8098',
+  fontSize: 9,
+  fontFamily: "'SF Mono', 'Fira Code', monospace",
+  cursor: 'pointer',
+  userSelect: 'none',
+  lineHeight: '16px',
+}
+
 export default function LightweightChartCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -90,7 +103,7 @@ export default function LightweightChartCanvas() {
   const lastCandleTimeRef = useRef<number>(0)
   const overlayRafRef = useRef<number>(0)
 
-  // Store selectors
+  // Store selectors (needed before tools state for addHLine)
   const candles = useMarketStore(s => s.candles)
   const currentCandle = useMarketStore(s => s.currentCandle)
   const livePrice = useMarketStore(s => s.livePrice)
@@ -101,6 +114,42 @@ export default function LightweightChartCanvas() {
   const bubbles = useMarketStore(s => s.bubbles)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+
+  // ─── Lightweight tools state ───
+  const [showBubbles, setShowBubbles] = useState(true)
+  const [showLiquidity, setShowLiquidity] = useState(true)
+  const [showLevels, setShowLevels] = useState(true)
+  const hLineRef = useRef<Array<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>>>([])
+
+  const toggleBubbles = useCallback(() => setShowBubbles(v => !v), [])
+  const toggleLiquidity = useCallback(() => setShowLiquidity(v => !v), [])
+  const toggleLevels = useCallback(() => setShowLevels(v => !v), [])
+
+  const addHLine = useCallback(() => {
+    const candleSeries = candleSeriesRef.current
+    const price = livePrice
+    if (!candleSeries || !price || price <= 0) return
+    const line = candleSeries.createPriceLine({
+      price,
+      color: '#4fc3f7',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      axisLabelColor: '#4fc3f7',
+      title: 'H-Line',
+    })
+    hLineRef.current.push(line)
+  }, [livePrice])
+
+  const resetOverlays = useCallback(() => {
+    setShowBubbles(true)
+    setShowLiquidity(true)
+    setShowLevels(true)
+    for (const line of hLineRef.current) {
+      try { candleSeriesRef.current?.removePriceLine(line) } catch { /* ok */ }
+    }
+    hLineRef.current = []
+  }, [])
 
   // ─── Overlay redraw scheduling ───
   const scheduleOverlayRedraw = useCallback(() => {
@@ -152,9 +201,13 @@ export default function LightweightChartCanvas() {
         now, intervalMs, symbol,
       }
 
-      drawOverlay(rc, allBubbles, livePrice, bids, asks)
+      drawOverlay(rc, allBubbles, livePrice, bids, asks, {
+        showBubbles,
+        showLiquidity,
+        showLevels,
+      })
     })
-  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol])
+  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels])
 
   // ─── Chart creation & cleanup ───
   useEffect(() => {
@@ -478,6 +531,32 @@ export default function LightweightChartCanvas() {
         userSelect: 'none',
       }}>
         ⚠ EXPERIMENTAL — hybrid orderflow overlays
+      </div>
+
+      {/* Lightweight tools panel */}
+      <div className="lw-tools" style={{
+        position: 'absolute',
+        top: 8,
+        right: 90,
+        zIndex: 10,
+        display: 'flex',
+        gap: 4,
+      }}>
+        <button onClick={toggleBubbles} style={toolBtnStyle}>
+          {showBubbles ? '◉' : '○'} Bubble
+        </button>
+        <button onClick={toggleLiquidity} style={toolBtnStyle}>
+          {showLiquidity ? '◉' : '○'} Liq
+        </button>
+        <button onClick={toggleLevels} style={toolBtnStyle}>
+          {showLevels ? '◉' : '○'} Levels
+        </button>
+        <button onClick={addHLine} style={toolBtnStyle}>
+          — H-Line
+        </button>
+        <button onClick={resetOverlays} style={toolBtnStyle}>
+          ↺ Reset
+        </button>
       </div>
     </div>
   )

@@ -7,6 +7,7 @@ import { INTERVAL_MS } from '../types/market'
 import {
   newCandle, processTradeIntoCandle, classifyBubble, computeVolumeProfile,
 } from '../utils/aggregation'
+import { updateLevelsFromBubbles, resetLevels, type LevelRecord } from '../utils/levelMemory'
 
 interface MarketState {
   mode: AppMode
@@ -48,6 +49,9 @@ interface MarketState {
   // ─── Dynamic instruments ───
   instruments: Instrument[]
   instrumentsLoading: boolean
+
+  // ─── Level memory ───
+  levelMemory: LevelRecord[]
 
   // Actions
   setMode: (mode: AppMode) => void
@@ -110,6 +114,7 @@ function getInitialState() {
     lastTradeTime: 0,
     instruments: [] as Instrument[],
     instrumentsLoading: false,
+    levelMemory: [] as LevelRecord[],
   }
 }
 
@@ -149,6 +154,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   setMode: (mode) => set({ mode }),
   setSymbol: (symbol) => {
     // Clean reset of ALL data buffers — no stale state leakage
+    resetLevels()
     set({
       ...getDataResetFields(),
       symbol,
@@ -156,6 +162,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       interval: get().interval,
       instruments: get().instruments,
       instrumentsLoading: get().instrumentsLoading,
+      levelMemory: [],
     })
   },
   setInterval: (interval) => {
@@ -301,13 +308,21 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     )
 
     // Propagate updated states to the global bubbles array
-    // This is the periodic re-classification that makes bubbles change color over time
     const updatedMap = new Map(updatedCurrentBubbles.map(b => [b.id, b]))
     const updatedGlobalBubbles = state.bubbles.map(b => updatedMap.get(b.id) ?? b)
+
+    // Update level memory from bubbles + orderbook
+    const levelMemory = updateLevelsFromBubbles(
+      updatedGlobalBubbles,
+      state.bids,
+      state.asks,
+      state.livePrice
+    )
 
     set({
       currentCandle: { ...state.currentCandle, bubbles: updatedCurrentBubbles },
       bubbles: updatedGlobalBubbles,
+      levelMemory,
     })
   },
 

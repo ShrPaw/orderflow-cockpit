@@ -1,4 +1,6 @@
-import type { Candle, VolumeLevel, OrderLevel } from '../types/market'
+import type { Candle, VolumeLevel, OrderLevel, Bubble } from '../types/market'
+import { getBubbleVisualStyle, getRenderableBubbles } from './bubbleMethodology'
+import { getAllLevels } from './levelMemory'
 
 // ─── Color System — Midnight Slate ───
 const COL = {
@@ -178,7 +180,8 @@ export function renderChart(
   mousePos: { x: number; y: number } | null,
   livePrice?: number,
   bids?: OrderLevel[],
-  asks?: OrderLevel[]
+  asks?: OrderLevel[],
+  intervalMs?: number
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -239,6 +242,72 @@ export function renderChart(
       const w = (level.total / maxVol) * barMaxW
       ctx.fillStyle = level.delta >= 0 ? 'rgba(0,212,170,0.1)' : 'rgba(255,77,106,0.1)'
       ctx.fillRect(LEFT_MARGIN, y - 1, w, 2)
+    }
+  }
+
+  // ─── Level Memory overlay ───
+  // Subtle horizontal lines at meaningful price levels (2+ interactions)
+  const levelRecords = getAllLevels()
+  if (levelRecords.length > 0) {
+    const now = Date.now()
+    const LEVEL_FRESH_MS = 60_000
+    const LEVEL_ACTIVE_MS = 600_000
+    const LEVEL_FADE_MS = 1_800_000
+
+    for (const level of levelRecords) {
+      if (level.touches < 2) continue
+      const y = c.priceToY(level.price)
+      if (!isFinite(y) || y < -5 || y > c.chartH + 5) continue
+
+      const age = now - level.lastTouchedAt
+      let alpha = 0.25
+      if (age > LEVEL_FADE_MS) alpha = 0.08
+      else if (age > LEVEL_ACTIVE_MS) alpha = 0.12
+      else if (age > LEVEL_FRESH_MS) alpha = 0.18
+
+      let color: string
+      let label: string
+      switch (level.lastState) {
+        case 'REJECTED_LEVEL':
+          color = `rgba(239,100,97,${alpha})`
+          label = 'REJ LVL'
+          break
+        case 'ABSORBED_LEVEL':
+          color = `rgba(79,195,247,${alpha})`
+          label = 'ABSORB LVL'
+          break
+        case 'FLIPPED_SUPPORT':
+          color = `rgba(45,212,160,${alpha})`
+          label = 'FLIPPED S'
+          break
+        case 'FLIPPED_RESISTANCE':
+          color = `rgba(228,167,59,${alpha})`
+          label = 'FLIPPED R'
+          break
+        case 'ACCEPTED_LEVEL':
+          color = `rgba(45,212,160,${alpha * 0.7})`
+          label = 'ACC LVL'
+          break
+        default:
+          color = `rgba(100,130,170,${alpha * 0.5})`
+          label = ''
+      }
+
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      ctx.beginPath()
+      ctx.moveTo(LEFT_MARGIN, y)
+      ctx.lineTo(c.priceScaleX, y)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      if (label && c.chartW > 200 && alpha > 0.1) {
+        ctx.fillStyle = color
+        ctx.font = '8px "SF Mono", monospace'
+        ctx.textAlign = 'right'
+        ctx.fillText(label, c.priceScaleX - 4, y - 3)
+      }
     }
   }
 
@@ -339,82 +408,88 @@ export function renderChart(
       }
     }
 
-    // Bubbles — semi-transparent, state-differentiated, side-distinguishable
-    // Adaptive: reduce detail at small zoom, cap density
+    // Bubbles — methodology-driven rendering
+    // Uses getBubbleVisualStyle for state/age/side encoding
     if (candle.bubbles.length > 0 && c.bodyW > 3) {
-      // Sort so larger bubbles render behind (smaller ones on top)
-      const sorted = [...candle.bubbles].sort((a, b) => b.notional - a.notional)
-      // Cap visible bubbles to avoid overlapping blobs
-      const maxVisible = c.bodyW < 6 ? 2 : c.bodyW < 12 ? 4 : 8
-      const visible = sorted.slice(0, maxVisible)
+      const now = Date.now()
+      const intMs = intervalMs || 40_000
+
+      // Use getRenderableBubbles to filter by age and priority
+      const renderable = getRenderableBubbles(candle.bubbles, now, intMs)
 
       // Zoom-adaptive opacity scaling
       const zoomAlphaScale = c.bodyW < 6 ? 0.5 : c.bodyW < 10 ? 0.75 : 1.0
 
-      for (const bubble of visible) {
+      // Compute notional percentiles for relative sizing
+      const notionals = renderable.map(b => b.notional).sort((a, b) => a - b)
+      const getPercentile = (val: number): number => {
+        if (notionals.length === 0) return 0.5
+        let count = 0
+        for (const n of notionals) { if (n <= val) count++ }
+        return count / notionals.length
+      }
+
+      for (const bubble of renderable) {
         const by = c.priceToY(bubble.price)
         if (!isFinite(by) || by < -20 || by > c.chartH + 20) continue
-        const notionalScale = Math.min(1, Math.log10(Math.max(1, bubble.notional)) / 6)
-        const r = Math.max(BUBBLE_MIN_R, Math.min(BUBBLE_MAX_R, BUBBLE_MIN_R + notionalScale * (BUBBLE_MAX_R - BUBBLE_MIN_R)))
-        const bCol = BUBBLE_COLORS[bubble.state] || COL.bubbleExhausted
 
-        // Response strength affects stroke intensity (not predictive confidence)
-        const strength = bubble.confidence
-        const baseFillAlpha = bubble.state === 'ABSORBED' ? 0.08
-          : bubble.state === 'EXHAUSTED' ? 0.10
-          : bubble.state === 'PENDING' ? 0.18
-          : bubble.state === 'REJECTED' ? 0.20
-          : 0.15  // ACCEPTED
-        const fillAlpha = baseFillAlpha * zoomAlphaScale
+        const pctl = getPercentile(bubble.notional)
+        const style = getBubbleVisualStyle(bubble, now, intMs, zoomAlphaScale, pctl)
 
-        const strokeAlpha = Math.min(1, (0.3 + strength * 0.6) * zoomAlphaScale)
-        const lineWidth = bubble.state === 'REJECTED' ? 2.0
-          : bubble.state === 'ABSORBED' ? 2.5
-          : bubble.state === 'PENDING' ? 1.0
-          : 1.5
+        if (style.radius < 1) continue
+        if (style.fillAlpha < 0.01 && style.strokeAlpha < 0.01) continue
 
+        // ─── Draw circle ───
         ctx.beginPath()
-        ctx.arc(cx, by, r, 0, Math.PI * 2)
+        ctx.arc(cx, by, style.radius, 0, Math.PI * 2)
 
-        // Fill — always semi-transparent so candles show through
-        ctx.globalAlpha = fillAlpha
-        ctx.fillStyle = bCol
-        ctx.fill()
-        ctx.globalAlpha = 1
+        // Fill
+        if (style.fillAlpha > 0) {
+          ctx.globalAlpha = style.fillAlpha
+          ctx.fillStyle = style.fillColor
+          ctx.fill()
+        }
 
-        // Stroke — state-specific style
-        ctx.strokeStyle = bCol
-        ctx.globalAlpha = strokeAlpha
-        ctx.lineWidth = lineWidth
+        // Stroke
+        if (style.strokeAlpha > 0) {
+          ctx.globalAlpha = style.strokeAlpha
+          ctx.strokeStyle = style.strokeColor
+          ctx.lineWidth = style.strokeWidth
 
-        if (bubble.state === 'PENDING') {
-          ctx.setLineDash([3, 2])
-        } else {
+          if (style.dashed) {
+            ctx.setLineDash([3, 2])
+          } else {
+            ctx.setLineDash([])
+          }
+
+          ctx.stroke()
           ctx.setLineDash([])
         }
-        ctx.stroke()
-        ctx.setLineDash([])
-        ctx.globalAlpha = 1
 
-        // Side indicator — small directional tick (buy=up, sell=down)
-        // Only show at readable zoom
-        if (r >= 5 && c.bodyW >= 6) {
-          const tickLen = Math.min(4, r * 0.4)
-          ctx.strokeStyle = bCol
+        // ─── Side notch (directional triangle) ───
+        if (style.sideNotchSize > 0 && c.bodyW >= 6) {
           ctx.globalAlpha = 0.6
-          ctx.lineWidth = 1
+          ctx.fillStyle = style.sideAccentColor
           ctx.beginPath()
-          if (bubble.side === 'buy') {
-            ctx.moveTo(cx, by - r - 1)
-            ctx.lineTo(cx, by - r - 1 - tickLen)
-          } else {
-            ctx.moveTo(cx, by + r + 1)
-            ctx.lineTo(cx, by + r + 1 + tickLen)
-          }
-          ctx.stroke()
-          ctx.globalAlpha = 1
+          const notchY = by + (style.sidePlacement > 0 ? style.radius + 2 : -(style.radius + 2))
+          const notchDir = style.sidePlacement > 0 ? 1 : -1
+          ctx.moveTo(cx, notchY + notchDir * style.sideNotchSize)
+          ctx.lineTo(cx - style.sideNotchSize * 0.6, notchY)
+          ctx.lineTo(cx + style.sideNotchSize * 0.6, notchY)
+          ctx.closePath()
+          ctx.fill()
+        }
+
+        // ─── Level interaction halo ───
+        if (bubble.levelInteraction) {
+          ctx.globalAlpha = 0.08
+          ctx.fillStyle = style.fillColor
+          const haloH = Math.max(2, style.radius * 0.5)
+          ctx.fillRect(LEFT_MARGIN, by - haloH / 2, c.chartW, haloH)
         }
       }
+
+      ctx.globalAlpha = 1
     }
 
     // Volume bar

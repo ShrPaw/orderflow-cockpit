@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import { fmtNum, fmtPrice } from '../utils/formatters'
+import type { LevelRecord } from '../utils/levelMemory'
 
 export default function SidePanel() {
   const delta = useMarketStore(s => s.delta)
@@ -11,6 +12,7 @@ export default function SidePanel() {
   const currentCandle = useMarketStore(s => s.currentCandle)
   const largeTrades = useMarketStore(s => s.largeTrades)
   const bubbles = useMarketStore(s => s.bubbles)
+  const levelMemory = useMarketStore(s => s.levelMemory)
 
   const buyPct = totalVolume > 0 ? (buyVolume / totalVolume) * 100 : 50
 
@@ -19,6 +21,7 @@ export default function SidePanel() {
   const absorbed = bubbles.filter(b => b.state === 'ABSORBED').length
   const pending = bubbles.filter(b => b.state === 'PENDING').length
   const exhausted = bubbles.filter(b => b.state === 'EXHAUSTED').length
+  const invalidated = bubbles.filter(b => b.state === 'INVALIDATED').length
 
   const candle = currentCandle
 
@@ -109,6 +112,7 @@ export default function SidePanel() {
           <span className="legend-item"><span className="dot red" /> Rejected — price moved against it</span>
           <span className="legend-item"><span className="dot cyan" /> Absorbed — price barely moved</span>
           <span className="legend-item"><span className="dot gray" /> Exhausted — no meaningful response</span>
+          <span className="legend-item"><span className="dot" style={{ background: '#e06040' }} /> Invalidated — accepted then reversed</span>
         </div>
         <div className="stat-row">
           <span className="label">Pending</span>
@@ -130,7 +134,51 @@ export default function SidePanel() {
           <span className="label">Exhausted</span>
           <span className="value" style={{ color: '#4a5e78' }}>{exhausted}</span>
         </div>
+        <div className="stat-row">
+          <span className="label">Invalidated</span>
+          <span className="value" style={{ color: '#e06040' }}>{invalidated}</span>
+        </div>
       </div>
+
+      {/* Level Memory */}
+      {levelMemory.length > 0 && (
+        <div className="panel-section">
+          <div className="panel-title">Level Memory</div>
+          <div className="bubble-legend">
+            <span className="legend-item"><span className="dot red" /> REJ — repeated rejection</span>
+            <span className="legend-item"><span className="dot cyan" /> ABSORB — large print absorbed</span>
+            <span className="legend-item"><span className="dot green" /> FLIP S — resistance→support</span>
+            <span className="legend-item"><span className="dot yellow" /> FLIP R — support→resistance</span>
+          </div>
+          {levelMemory
+            .filter(l => l.touches >= 2)
+            .sort((a, b) => b.touches - a.touches)
+            .slice(0, 5)
+            .map(l => (
+              <div key={l.price} className="stat-row">
+                <span className="label">{fmtPrice(l.price)}</span>
+                <span className="value" style={{
+                  color: l.lastState === 'REJECTED_LEVEL' ? '#ef6461'
+                    : l.lastState === 'ABSORBED_LEVEL' ? '#4fc3f7'
+                    : l.lastState === 'FLIPPED_SUPPORT' ? '#2dd4a0'
+                    : l.lastState === 'FLIPPED_RESISTANCE' ? '#e4a73b'
+                    : '#4a5e78'
+                }}>
+                  {l.lastState === 'REJECTED_LEVEL' ? 'REJ'
+                    : l.lastState === 'ABSORBED_LEVEL' ? 'ABSORB'
+                    : l.lastState === 'FLIPPED_SUPPORT' ? 'FLIP S'
+                    : l.lastState === 'FLIPPED_RESISTANCE' ? 'FLIP R'
+                    : l.lastState === 'ACCEPTED_LEVEL' ? 'ACC'
+                    : '—'}
+                  {' '}({l.touches})
+                </span>
+              </div>
+            ))}
+          {levelMemory.filter(l => l.touches >= 2).length === 0 && (
+            <div className="empty">No meaningful levels yet</div>
+          )}
+        </div>
+      )}
 
       {/* Large Trades */}
       <div className="panel-section">

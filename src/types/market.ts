@@ -35,6 +35,14 @@ export interface PriceLevel {
   trades: number
 }
 
+export type BubbleState = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'ABSORBED' | 'EXHAUSTED' | 'INVALIDATED'
+
+export interface LevelInteraction {
+  levelPrice: number
+  levelType: 'ROUND' | 'LIQUIDITY_BID' | 'LIQUIDITY_ASK' | 'BUBBLE_CLUSTER'
+  levelState: 'TOUCHED' | 'REJECTED_LEVEL' | 'ACCEPTED_LEVEL' | 'ABSORBED_LEVEL' | 'FLIPPED_SUPPORT' | 'FLIPPED_RESISTANCE'
+}
+
 export interface Bubble {
   id: string
   timestamp: number
@@ -43,10 +51,14 @@ export interface Bubble {
   side: 'buy' | 'sell'
   volume: number
   notional: number
-  state: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'ABSORBED' | 'EXHAUSTED'
+  state: BubbleState
   confidence: number
   responseAt3s: PriceResponse | null
   responseAt10s: PriceResponse | null
+  invalidated?: boolean
+  invalidatedAt?: number
+  invalidationReason?: string
+  levelInteraction?: LevelInteraction
 }
 
 export interface PriceResponse {

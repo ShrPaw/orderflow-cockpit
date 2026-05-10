@@ -26,7 +26,7 @@
  * 10. Validation        — visual alignment, state meaning, time decay
  */
 
-import type { Bubble } from '../types/market'
+import type { Bubble, BubbleState } from '../types/market'
 
 // ═══════════════════════════════════════════
 // A. EVENT AGE PHASE
@@ -161,23 +161,31 @@ export interface BubbleVisualStyle {
   sideTick: number
   /** Side indicator direction: -1 = up (buy), 1 = down (sell) */
   sideDirection: number
+  /** Subtle accent color for side indicator */
+  sideAccentColor: string
+  /** Size of directional notch/triangle */
+  sideNotchSize: number
+  /** Vertical offset (buy: -2px above, sell: +2px below) */
+  sidePlacement: number
 }
 
 // ─── State colors ───
 // These encode the market's observed reaction to the aggressive flow event.
 
-const STATE_COLORS = {
+const STATE_COLORS: Record<BubbleState, { fill: string; stroke: string }> = {
   /** PENDING: amber — event detected, reaction not yet classified */
   PENDING: { fill: '#e4a73b', stroke: '#e4a73b' },
-  /** ACCEPTED: teal/green — price moved in the direction of aggression */
+  /** ACCEPTED: teal — price moved in the direction of aggression */
   ACCEPTED: { fill: '#2dd4a0', stroke: '#2dd4a0' },
   /** REJECTED: red — price moved against the aggression */
   REJECTED: { fill: '#ef6461', stroke: '#ef6461' },
   /** ABSORBED: cyan — large print but price barely moved (liquidity absorbed it) */
   ABSORBED: { fill: '#4fc3f7', stroke: '#4fc3f7' },
-  /** EXHAUSTED: muted gray/purple — no meaningful follow-through */
+  /** EXHAUSTED: gray-purple — no meaningful follow-through */
   EXHAUSTED: { fill: '#4a5e78', stroke: '#4a5e78' },
-} as const
+  /** INVALIDATED: orange-red — ACCEPTED bubble reversed, price returned to event level */
+  INVALIDATED: { fill: '#e06040', stroke: '#e06040' },
+}
 
 // ─── Age phase modifiers ───
 // Older bubbles become less visually prominent as their relevance decays.
@@ -191,36 +199,43 @@ const AGE_MODIFIERS = {
   EXPIRED: { fillAlphaMul: 0.0, strokeAlphaMul: 0.0, radiusMul: 0.0 },
 } as const
 
-// ─── Notional radius mapping ───
-const RADIUS_MIN = 6
-const RADIUS_MAX = 22
+// ─── Notional radius mapping (percentile-based) ───
+const RADIUS_MIN = 5
+const RADIUS_MAX = 24
+const RADIUS_WHALE = 28
 const RADIUS_LOG_MIN = 3      // log10(1000)
 const RADIUS_LOG_MAX = 6      // log10(1_000_000)
 
 // ─── State-specific base alphas ───
-const STATE_BASE_FILL_ALPHA = {
+// ABSORBED is ring-style: very low fill, strong stroke — large print, small price move
+// EXHAUSTED is faded: low fill, low stroke — no meaningful response
+// These must remain visually distinct from each other and from other states.
+const STATE_BASE_FILL_ALPHA: Record<BubbleState, number> = {
   PENDING: 0.18,
   ACCEPTED: 0.15,
-  REJECTED: 0.20,
-  ABSORBED: 0.08,
-  EXHAUSTED: 0.10,
-} as const
+  REJECTED: 0.22,
+  ABSORBED: 0.05,
+  EXHAUSTED: 0.06,
+  INVALIDATED: 0.14,
+}
 
-const STATE_BASE_STROKE_ALPHA = {
+const STATE_BASE_STROKE_ALPHA: Record<BubbleState, number> = {
   PENDING: 0.40,
   ACCEPTED: 0.55,
-  REJECTED: 0.65,
-  ABSORBED: 0.70,
-  EXHAUSTED: 0.30,
-} as const
+  REJECTED: 0.70,
+  ABSORBED: 0.80,
+  EXHAUSTED: 0.20,
+  INVALIDATED: 0.55,
+}
 
-const STATE_LINE_WIDTH = {
+const STATE_LINE_WIDTH: Record<BubbleState, number> = {
   PENDING: 1.0,
   ACCEPTED: 1.5,
   REJECTED: 2.0,
   ABSORBED: 2.5,
-  EXHAUSTED: 1.0,
-} as const
+  EXHAUSTED: 0.8,
+  INVALIDATED: 1.5,
+}
 
 /**
  * Compute the complete visual style for a bubble.
@@ -241,19 +256,31 @@ export function getBubbleVisualStyle(
   bubble: Bubble,
   now: number,
   intervalMs: number,
-  zoomAlphaScale: number = 1.0
+  zoomAlphaScale: number = 1.0,
+  notionalPercentile?: number
 ): BubbleVisualStyle {
   const phase = getBubbleAgePhase(bubble, now, intervalMs)
   const ageMod = AGE_MODIFIERS[phase]
   const stateCol = STATE_COLORS[bubble.state] || STATE_COLORS.EXHAUSTED
 
-  // ─── Radius: log-scale notional, bounded ───
-  const logNotional = Math.log10(Math.max(1, bubble.notional))
-  const normalizedNotional = Math.max(0, Math.min(1,
-    (logNotional - RADIUS_LOG_MIN) / (RADIUS_LOG_MAX - RADIUS_LOG_MIN)
-  ))
-  const baseRadius = RADIUS_MIN + normalizedNotional * (RADIUS_MAX - RADIUS_MIN)
-  const radius = Math.max(RADIUS_MIN, Math.min(RADIUS_MAX,
+  // ─── Radius: percentile-based or log-scale notional, bounded ───
+  let baseRadius: number
+  if (notionalPercentile !== undefined) {
+    // Percentile-based: 0→RADIUS_MIN, 0.95→RADIUS_MAX, 1.0→RADIUS_WHALE
+    if (notionalPercentile >= 0.95) {
+      baseRadius = RADIUS_WHALE
+    } else {
+      baseRadius = RADIUS_MIN + (notionalPercentile / 0.95) * (RADIUS_MAX - RADIUS_MIN)
+    }
+  } else {
+    // Fallback: log-scale notional
+    const logNotional = Math.log10(Math.max(1, bubble.notional))
+    const normalizedNotional = Math.max(0, Math.min(1,
+      (logNotional - RADIUS_LOG_MIN) / (RADIUS_LOG_MAX - RADIUS_LOG_MIN)
+    ))
+    baseRadius = RADIUS_MIN + normalizedNotional * (RADIUS_MAX - RADIUS_MIN)
+  }
+  const radius = Math.max(RADIUS_MIN, Math.min(RADIUS_WHALE,
     baseRadius * ageMod.radiusMul
   ))
 
@@ -273,10 +300,15 @@ export function getBubbleVisualStyle(
 
   const lineWidth = STATE_LINE_WIDTH[bubble.state] ?? 1.5
 
-  // ─── Side tick: directional indicator ───
-  // Buy aggression gets an upward tick, sell gets downward.
+  // ─── Side encoding ───
   const sideTick = radius >= 5 ? Math.min(4, radius * 0.35) : 0
   const sideDirection = bubble.side === 'buy' ? -1 : 1
+  const sideAccentColor = bubble.side === 'buy' ? '#2dd4a0' : '#ef6461'
+  const sideNotchSize = Math.max(3, Math.min(6, radius * 0.3))
+  const sidePlacement = bubble.side === 'buy' ? -2 : 2
+
+  // ─── Dashed for PENDING and INVALIDATED ───
+  const dashed = bubble.state === 'PENDING' || bubble.state === 'INVALIDATED'
 
   return {
     fillColor: stateCol.fill,
@@ -284,9 +316,12 @@ export function getBubbleVisualStyle(
     strokeColor: stateCol.stroke,
     strokeAlpha,
     strokeWidth: lineWidth,
-    dashed: bubble.state === 'PENDING',
+    dashed,
     radius,
     sideTick,
     sideDirection,
+    sideAccentColor,
+    sideNotchSize,
+    sidePlacement,
   }
 }

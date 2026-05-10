@@ -1,5 +1,6 @@
-import type { Candle, Trade, PriceLevel, Bubble } from '../types/market'
+import type { Candle, Trade, PriceLevel, Bubble, BubbleState, LevelInteraction } from '../types/market'
 import { priceBin } from './formatters'
+import { getLevelAtPrice, checkLevelInteraction, getAllLevels } from './levelMemory'
 
 let bubbleCounter = 0
 
@@ -95,15 +96,45 @@ function bubbleThreshold(price: number): number {
 }
 
 export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh: number, candleLow: number): Bubble {
-  if (bubble.state !== 'PENDING') return bubble
+  const now = Date.now()
+  const age = now - bubble.timestamp
+
+  // ─── INVALIDATED detection ───
+  // If bubble was ACCEPTED and price has returned to event price ± 0.2%
+  // Only check after 15s+ to allow reaction to form
+  if (bubble.state === 'ACCEPTED' && age >= 15_000) {
+    const returnDist = Math.abs(currentPrice - bubble.price) / bubble.price
+    if (returnDist < 0.002) {
+      const updated: Bubble = {
+        ...bubble,
+        state: 'INVALIDATED' as BubbleState,
+        invalidated: true,
+        invalidatedAt: now,
+        invalidationReason: 'Price returned to event level after acceptance',
+      }
+      // Check level interaction
+      const levels = getAllLevels()
+      const interaction = checkLevelInteraction(updated, levels, currentPrice)
+      if (interaction) updated.levelInteraction = interaction
+      return updated
+    }
+  }
+
+  if (bubble.state !== 'PENDING') {
+    // Already classified — just update level interaction
+    const updated = { ...bubble }
+    const levels = getAllLevels()
+    const interaction = checkLevelInteraction(updated, levels, currentPrice)
+    if (interaction && !updated.levelInteraction) {
+      updated.levelInteraction = interaction
+    }
+    return updated
+  }
 
   const priceChange = currentPrice - bubble.price
   const priceChangePct = bubble.price > 0 ? priceChange / bubble.price : 0
   const expectedDir = bubble.side === 'buy' ? 1 : -1
   const aligned = priceChangePct * expectedDir
-
-  const now = Date.now()
-  const age = now - bubble.timestamp
 
   const updated = { ...bubble }
 
@@ -165,6 +196,11 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
     updated.state = 'EXHAUSTED'
     updated.confidence = 0.4
   }
+
+  // Check level interaction after classification
+  const levels = getAllLevels()
+  const interaction = checkLevelInteraction(updated, levels, currentPrice)
+  if (interaction) updated.levelInteraction = interaction
 
   return updated
 }
