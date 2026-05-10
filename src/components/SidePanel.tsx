@@ -153,6 +153,14 @@ export default function SidePanel() {
       {clusters.length > 0 && (
         <div className="panel-section">
           <div className="panel-title">Auction Clusters</div>
+          <div className="stat-row">
+            <span className="label">Active</span>
+            <span className="value">{clusters.filter(c => c.agePhase !== 'EXPIRED').length}</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">Total</span>
+            <span className="value">{clusters.length}</span>
+          </div>
           <div className="bubble-legend">
             <span className="legend-item"><span className="dot green" /> Accepted auction</span>
             <span className="legend-item"><span className="dot red" /> Rejected / failed auction</span>

@@ -406,3 +406,150 @@ export function getDefaultDisplayConfig(): DisplayConfig {
     adaptiveOpacity: true,
   }
 }
+
+// ═══════════════════════════════════════════
+// CLUSTER VISUAL STYLE
+// ═══════════════════════════════════════════
+
+export interface ClusterVisualStyle {
+  fillColor: string
+  fillAlpha: number
+  strokeColor: string
+  strokeAlpha: number
+  strokeWidth: number
+  dashed: boolean
+  radius: number
+  sideDirection: number
+  sideAccentColor: string
+  sideNotchSize: number
+  ringStyle: boolean
+  brokenOutline: boolean
+  showTradeBadge: boolean
+}
+
+const CLUSTER_SIDE_STATE_COLORS: Record<string, { fill: string; stroke: string }> = {
+  'buy-FORMING':     { fill: '#34d399', stroke: '#34d399' },
+  'buy-ACCEPTED':    { fill: '#2dd4a0', stroke: '#2dd4a0' },
+  'buy-REJECTED':    { fill: '#f87171', stroke: '#ef4444' },
+  'buy-ABSORBED':    { fill: '#2dd4a0', stroke: '#4fc3f7' },
+  'buy-EXHAUSTED':   { fill: '#4a7a6a', stroke: '#3d5f52' },
+  'buy-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'buy-RESISTANCE':  { fill: '#a855f7', stroke: '#22c55e' },
+  'sell-FORMING':     { fill: '#f87171', stroke: '#f87171' },
+  'sell-ACCEPTED':    { fill: '#ef6461', stroke: '#ef6461' },
+  'sell-REJECTED':    { fill: '#34d399', stroke: '#2dd4a0' },
+  'sell-ABSORBED':    { fill: '#ef6461', stroke: '#4fc3f7' },
+  'sell-EXHAUSTED':   { fill: '#7a4a4a', stroke: '#5f3d3d' },
+  'sell-INVALIDATED': { fill: '#f97316', stroke: '#ea580c' },
+  'sell-RESISTANCE':  { fill: '#a855f7', stroke: '#ef6461' },
+}
+
+const CLUSTER_AGE_MODIFIERS: Record<AgePhase, { f: number; s: number; r: number }> = {
+  FRESH:   { f: 1.0, s: 1.0, r: 1.0 },
+  ACTIVE:  { f: 0.85, s: 0.9, r: 0.95 },
+  FADING:  { f: 0.5, s: 0.6, r: 0.85 },
+  EXPIRED: { f: 0.0, s: 0.0, r: 0.0 },
+}
+
+const CLUSTER_FILL_ALPHA: Record<string, number> = {
+  FORMING: 0.18, ACCEPTED: 0.22, REJECTED: 0.18,
+  ABSORBED: 0.06, EXHAUSTED: 0.05, INVALIDATED: 0.12, RESISTANCE: 0.14,
+}
+
+const CLUSTER_STROKE_ALPHA: Record<string, number> = {
+  FORMING: 0.40, ACCEPTED: 0.60, REJECTED: 0.70,
+  ABSORBED: 0.80, EXHAUSTED: 0.18, INVALIDATED: 0.55, RESISTANCE: 0.75,
+}
+
+const CLUSTER_LINE_WIDTH: Record<string, number> = {
+  FORMING: 1.0, ACCEPTED: 1.5, REJECTED: 2.0,
+  ABSORBED: 2.5, EXHAUSTED: 0.7, INVALIDATED: 1.5, RESISTANCE: 2.0,
+}
+
+const CLUSTER_RADIUS_MIN = 6
+const CLUSTER_RADIUS_MAX = 30
+const CLUSTER_RADIUS_LOG_MIN = 3   // log10(1000)
+const CLUSTER_RADIUS_LOG_MAX = 6   // log10(1_000_000)
+
+/**
+ * Compute the complete visual style for an auction cluster.
+ *
+ * PRIMARY IDENTITY: side (green=buy, red=sell)
+ * SECONDARY: state (accepted/rejected/absorbed/exhausted/invalidated/resistance)
+ * SIZE: cumulativeNotional (log scale, bounded)
+ * AGE: intensity modifier (does NOT erase identity)
+ */
+export function getClusterVisualStyle(
+  cluster: AuctionCluster,
+  now: number,
+  zoomAlphaScale: number = 1.0
+): ClusterVisualStyle {
+  const ageMod = CLUSTER_AGE_MODIFIERS[cluster.agePhase]
+
+  // ─── Side × State color lookup ───
+  const colorKey = `${cluster.side}-${cluster.state}`
+  const colors = CLUSTER_SIDE_STATE_COLORS[colorKey] || CLUSTER_SIDE_STATE_COLORS['buy-EXHAUSTED']
+
+  // ─── Radius: log-scale from cumulativeNotional, bounded ───
+  const logNotional = Math.log10(Math.max(1, cluster.cumulativeNotional))
+  const normalized = Math.max(0, Math.min(1,
+    (logNotional - CLUSTER_RADIUS_LOG_MIN) / (CLUSTER_RADIUS_LOG_MAX - CLUSTER_RADIUS_LOG_MIN)
+  ))
+  let baseRadius = CLUSTER_RADIUS_MIN + normalized * (CLUSTER_RADIUS_MAX - CLUSTER_RADIUS_MIN)
+  if (cluster.cumulativeNotional > 100_000) baseRadius = 34
+
+  // ─── Absorption shrink ───
+  let radiusMul = ageMod.r
+  if (cluster.state === 'ABSORBED') {
+    const absorbedAge = now - cluster.startTs
+    if (absorbedAge > 10_000) {
+      const shrinkProgress = Math.min(1, (absorbedAge - 10_000) / 110_000)
+      radiusMul *= 1 - shrinkProgress * 0.55
+    }
+  }
+
+  // ─── Trade count bonus (diminishing) ───
+  const countBonus = Math.min(1.2, 1 + (cluster.tradeCount - 1) * 0.03)
+  const radius = Math.max(CLUSTER_RADIUS_MIN, Math.min(34, baseRadius * radiusMul * countBonus))
+
+  // ─── Fill alpha ───
+  const baseFillAlpha = CLUSTER_FILL_ALPHA[cluster.state] ?? 0.15
+  const fillAlpha = Math.max(0, Math.min(1, baseFillAlpha * ageMod.f * zoomAlphaScale))
+
+  // ─── Stroke alpha ───
+  const baseStrokeAlpha = CLUSTER_STROKE_ALPHA[cluster.state] ?? 0.5
+  const strokeAlpha = Math.max(0, Math.min(1, baseStrokeAlpha * ageMod.s * zoomAlphaScale))
+  const strokeWidth = CLUSTER_LINE_WIDTH[cluster.state] ?? 1.5
+
+  // ─── Side encoding ───
+  const sideDirection = cluster.side === 'buy' ? -1 : 1
+  const sideAccentColor = cluster.side === 'buy' ? '#22c55e' : '#ef6461'
+  const sideNotchSize = Math.max(3, Math.min(6, radius * 0.3))
+
+  // ─── State-specific modifiers ───
+  const ringStyle = cluster.state === 'ABSORBED'
+  const brokenOutline = cluster.state === 'INVALIDATED'
+  const dashed = cluster.state === 'FORMING' || cluster.state === 'INVALIDATED'
+
+  // ─── Resistance origin accent ───
+  let strokeColor = colors.stroke
+  if (cluster.state === 'RESISTANCE') {
+    strokeColor = cluster.resistanceOrigin === 'sell' ? '#ef6461' : '#22c55e'
+  }
+
+  return {
+    fillColor: colors.fill,
+    fillAlpha,
+    strokeColor,
+    strokeAlpha,
+    strokeWidth,
+    dashed,
+    radius,
+    sideDirection,
+    sideAccentColor,
+    sideNotchSize,
+    ringStyle,
+    brokenOutline,
+    showTradeBadge: cluster.tradeCount >= 3,
+  }
+}
