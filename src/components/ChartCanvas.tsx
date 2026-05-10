@@ -160,7 +160,8 @@ export default function ChartCanvas() {
           isBookHealthy ? bids : undefined,
           isBookHealthy ? asks : undefined,
           intervalMs,
-          clusters, displayMode
+          clusters, displayMode,
+          orderBookHealth
         )
         viewRef.current = result.view
       }

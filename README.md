@@ -8,10 +8,12 @@ A local live crypto orderflow visualization cockpit using Binance Futures public
 
 ## Features
 
+- **Unified execution chart** — One Canvas2D surface fusing candles, footprint, bubbles, heatmap, liquidity, crosshair, and order book state into a single coherent view
 - **Live candles** — Real-time candlestick chart with footprint-style buy/sell volume at each price level
 - **Live trades & bubbles** — Aggressive large-print detection with state classification (PENDING → ACCEPTED/REJECTED/ABSORBED/EXHAUSTED/RESISTANCE)
 - **Local order book & heatmap** — L2 depth visualization with quantity labels, spread indicator, and stale-data indication
 - **Footprint/orderflow** — Per-candle price-level delta visualization
+- **Strict order book sync** — Binance diff-depth methodology with DEGRADED depth20 fallback
 - **Symbol switching** — Switch between BTCUSDT, ETHUSDT, SOLUSDT, and 20+ Binance Futures perpetuals
 - **Connection health** — Per-stream status (trade, depth, ticker) with honest stale/error indication
 - **Chart interaction** — Deep zoom, smooth pan, price-axis scaling, time-axis compression, LIVE/GO LIVE pill

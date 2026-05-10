@@ -179,7 +179,8 @@ export function renderChart(
   asks?: OrderLevel[],
   intervalMs?: number,
   clusters?: AuctionCluster[],
-  displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID'
+  displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID',
+  orderBookHealth?: string
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -774,6 +775,46 @@ export function renderChart(
 
     // Store pill rect for click detection
     view._goLivePillRect = { x: pillX, y: pillY, w: pillW, h: pillH }
+  }
+
+  // ─── Order Book State Overlay ───
+  // Show honest state labels for non-HEALTHY order book states
+  if (orderBookHealth && orderBookHealth !== 'HEALTHY' && orderBookHealth !== 'DISCONNECTED') {
+    const stateConfig: Record<string, { icon: string; color: string; bgAlpha: number; label: string }> = {
+      'DEGRADED':    { icon: '📉', color: '#ef6461', bgAlpha: 0.06, label: 'DEGRADED TOP-20 BOOK' },
+      'RESYNCING':   { icon: '🔄', color: '#e4a73b', bgAlpha: 0.04, label: 'RESYNCING — last known book' },
+      'STALE':       { icon: '⚠',  color: '#e4a73b', bgAlpha: 0.05, label: 'STALE BOOK' },
+      'ERROR':       { icon: '❌', color: '#ef6461', bgAlpha: 0.06, label: 'BOOK ERROR' },
+      'SYNCING':     { icon: '⏳', color: '#4fc3f7', bgAlpha: 0.03, label: 'SYNCING…' },
+      'BUFFERING':   { icon: '⏳', color: '#4fc3f7', bgAlpha: 0.03, label: 'BUFFERING…' },
+      'SNAPSHOT_LOADING': { icon: '⏳', color: '#4fc3f7', bgAlpha: 0.03, label: 'LOADING SNAPSHOT…' },
+      'CONNECTING':  { icon: '⏳', color: '#4fc3f7', bgAlpha: 0.03, label: 'CONNECTING…' },
+    }
+    const cfg = stateConfig[orderBookHealth]
+    if (cfg) {
+      // Subtle background tint
+      ctx.fillStyle = cfg.color.replace(')', `,${cfg.bgAlpha})`).replace('rgb', 'rgba')
+      ctx.fillRect(LEFT_MARGIN, 0, c.chartW, c.chartH)
+
+      // State badge at top-left of chart
+      const badgeText = `${cfg.icon} ${cfg.label}`
+      ctx.font = 'bold 10px "SF Mono", monospace'
+      const badgeW = ctx.measureText(badgeText).width + 16
+      const badgeH = 20
+      const badgeX = LEFT_MARGIN + 8
+      const badgeY = 8
+
+      ctx.fillStyle = 'rgba(12,16,25,0.85)'
+      ctx.strokeStyle = cfg.color.replace(')', ',0.4)').replace('rgb', 'rgba')
+      ctx.lineWidth = 1
+      roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 4)
+      ctx.fill()
+      ctx.stroke()
+
+      ctx.fillStyle = cfg.color
+      ctx.textAlign = 'left'
+      ctx.fillText(badgeText, badgeX + 8, badgeY + 14)
+    }
   }
 
   ctx.restore()

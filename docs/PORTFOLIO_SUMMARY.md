@@ -16,10 +16,12 @@ The core challenge is managing WebSocket connections to multiple concurrent data
 
 Single-page React + TypeScript app with:
 - **Zustand** for state management optimized for streaming data
-- **Canvas2D** for high-performance chart rendering (not DOM-based)
+- **Unified Canvas2D execution chart** — one chart surface fusing candles, footprint, bubbles, heatmap, liquidity, and order book state
+- **Layered rendering model** — 16 clear layers from background to state overlay
 - **Ref subscription pattern** to decouple render loops from React re-render cycles
 - **Generation tokens** on every WebSocket to prevent stale socket events
 - **Per-stream lifecycle management** with idempotent start/stop
+- **Strict diff-depth sync** with DEGRADED depth20 fallback for order book reliability
 
 ## Stability Work
 
@@ -32,6 +34,9 @@ Single-page React + TypeScript app with:
 - Connection registry for dev-mode duplicate detection
 - Per-stream error tracking (trade, depth, ticker independently)
 - Chart render loop reads from refs (no teardown/recreate on every tick)
+- Strict diff-depth sync: stream-first buffering, snapshot overlap validation, pu continuity
+- DEGRADED fallback: automatic switch to depth20 partial stream after repeated sync failures
+- Order book preserves last known good data during RESYNCING (no data wipe)
 
 ## UX Work
 

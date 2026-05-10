@@ -2,7 +2,7 @@
 
 ## Overview
 
-Orderflow Cockpit is a single-page React application that connects to Binance Futures public WebSocket streams and renders real-time market microstructure data on Canvas2D.
+Orderflow Cockpit is a single-page React application that connects to Binance Futures public WebSocket streams and renders real-time market microstructure data on a unified Canvas2D execution chart.
 
 ## Data Flow
 
@@ -13,9 +13,9 @@ Connectors (binanceAggTrade, localOrderBook, binanceTicker)
     ↓
 Zustand Store (marketStore)
     ↓
-React Components (ChartCanvas, SidePanel, DOMLite, Heatmap, TradeFlow)
+Unified Execution Chart (ChartCanvas → chartRenderer.ts)
     ↓
-Canvas2D Rendering (chartRenderer.ts)
+Canvas2D layered rendering (candles, heatmap, bubbles, footprint, state overlays)
 ```
 
 ## Binance Streams Used
@@ -23,7 +23,8 @@ Canvas2D Rendering (chartRenderer.ts)
 | Stream | URL | Purpose |
 |---|---|---|
 | Trade | `wss://fstream.binance.com/ws/{symbol}@trade` | Individual trade events |
-| Diff Depth | `wss://fstream.binance.com/ws/{symbol}@depth@100ms` | Order book diff events |
+| Diff Depth | `wss://fstream.binance.com/ws/{symbol}@depth@100ms` | Order book diff events (strict sync) |
+| Depth20 Fallback | `wss://fstream.binance.com/ws/{symbol}@depth20@100ms` | Partial depth (DEGRADED mode) |
 | Mini Ticker | `wss://fstream.binance.com/ws/{symbol}@miniTicker` | Live price updates |
 | REST Ticker | `https://fapi.binance.com/fapi/v1/ticker/24hr` | 24h stats (polled every 10s) |
 | REST Depth | `https://fapi.binance.com/fapi/v1/depth` | Order book snapshot |
@@ -94,23 +95,46 @@ When cleanup runs (symbol change, unmount, mode switch):
 
 Backoff resets to initial on successful connection.
 
-## Order Book Resync
+## Order Book — Strict Diff-Depth Sync + DEGRADED Fallback
 
-The local order book engine (`localOrderBook.ts`) implements the official Binance methodology:
+The local order book engine (`localOrderBook.ts`) implements strict Binance diff-depth synchronization:
 
-1. Open diff depth stream → buffer events
-2. Fetch REST depth snapshot
-3. Discard stale events (u < lastUpdateId)
-4. Validate first event: U <= lastUpdateId && u >= lastUpdateId
-5. Apply updates in sequence
-6. Validate continuity via pu (previous final update ID)
-7. If sequence breaks → resync (rate-limited to once per 5s)
+### Strict Sync Methodology
+1. Open diff-depth stream (`@depth@100ms`) → start buffering events
+2. Fetch REST depth snapshot (with AbortController)
+3. Let L = snapshot.lastUpdateId
+4. Drop buffered events where `event.u < L`
+5. Find first event satisfying `event.U <= L+1 && event.u >= L+1`
+6. Apply that event → book is HEALTHY
+7. For every following event: `event.pu` must equal previous `event.u`
+8. If pu mismatch → reject event, preserve good book, controlled resync
+
+### DEGRADED Fallback
+If strict sync fails 3 times within 60 seconds, the engine switches to DEGRADED mode:
+- Connects `@depth20@100ms` partial depth stream
+- Each update is an authoritative top-20 snapshot
+- Book is labeled "DEGRADED TOP-20 BOOK" in UI
+- Periodic recovery attempts every 30s
+
+### Order Book Health States
+
+| State | Meaning | Overlays |
+|---|---|---|
+| HEALTHY | Strict diff-depth sync verified | Full brightness |
+| RESYNCING | Sequence gap detected, resyncing | Last known book, dimmed |
+| DEGRADED | Strict sync failed, depth20 fallback | Top-20 book, labeled |
+| STALE | No updates for 20s+ | Strongly dimmed |
+| ERROR | Unrecoverable error | Paused |
+| DISCONNECTED | Intentionally closed | Hidden |
+| CONNECTING | Opening socket | Hidden |
+| BUFFERING | Stream open, waiting for snapshot | Hidden |
+| SNAPSHOT_LOADING | Fetching REST snapshot | Hidden |
+| SYNCING | Waiting for valid overlapping event | Hidden |
 
 ### Stale Detection
-
-- 15s threshold with 20s initial grace period
+- 20s threshold with 30s initial grace period
+- Only fires from HEALTHY or DEGRADED states
 - Verifies socket `readyState === OPEN` before marking stale
-- Does not mark stale during initial connection/sync
 
 ## Zustand Store
 
@@ -124,38 +148,64 @@ Single global store (`marketStore.ts`) with:
 
 ### Performance Pattern
 
-High-frequency data (trades, depth) updates the store on every message. Components that need this data use:
-- **Ref subscription pattern** for Canvas render loops (ChartCanvas, LightweightChartCanvas)
-- **Direct selectors** for DOM components (TradeFlow, DOMLite, SidePanel)
+High-frequency data (trades, depth) updates the store on every message. The chart component uses:
+- **Ref subscription pattern** — Zustand subscription updates refs synchronously
+- **Single RAF loop** — reads from refs, never restarts on market ticks
+- **No React re-renders** for chart data — only for toolbar/panel selectors
 
-This prevents the render loop from being torn down on every market tick.
+## Unified Execution Chart
 
-## Chart Rendering
+**One chart surface** — `ChartCanvas.tsx` → `chartRenderer.ts`
 
-### Legacy Canvas (default)
+The unified execution chart renders all orderflow visualization on a single Canvas2D with clear internal layers:
 
-`chartRenderer.ts` renders everything on a single Canvas2D:
-- Candles with wick/body scaling
-- Footprint cells (per-candle price-level volume)
-- Bubbles (aggressive flow events)
-- Liquidity levels (orderbook bid/ask bands)
-- Volume profile overlay
-- Level memory overlay
-- Crosshair with price/time labels
-- Price scale and time axis
-- LIVE/GO LIVE pill indicator
+### Layer Model
+1. **Background** — solid fill
+2. **Grid** — price/time grid lines
+3. **Liquidity** — orderbook bid/ask bands (from local order book)
+4. **Level Memory** — horizontal lines at meaningful price levels
+5. **Volume Profile** — horizontal volume bars
+6. **Candles** — body + wick with zoom-adaptive scaling
+7. **Footprint** — per-candle bid/ask volume cells (visible at high zoom)
+8. **Bubbles** — aggressive flow events with state/age encoding
+9. **Auction Clusters** — clustered bubble rendering
+10. **Live Price Line** — current price indicator
+11. **Crosshair** — price/time readout on hover
+12. **Bubble Tooltip** — detailed trade info on hover
+13. **Price Scale** — right axis with price labels
+14. **Time Axis** — bottom axis with time labels
+15. **GO LIVE** — pill indicator when detached from live edge
+16. **Order Book State** — honest status overlay for non-HEALTHY states
 
-The render loop runs via `requestAnimationFrame` at display refresh rate. Data is read from refs (not React state) to avoid tearing down the loop on every tick.
+### Coordinate System
+- One unified coordinate system (`makeCoords`)
+- One time scale (candle index → x pixel)
+- One price scale (price → y pixel)
+- One zoom/pan state (`ViewState`)
+- One crosshair state
+- One follow-live state
 
-### Lightweight Charts (experimental)
+### Data Flow
+- ChartCanvas subscribes to store via `useMarketStore.subscribe()`
+- Subscription updates refs (candles, bids, asks, bubbles, health, etc.)
+- RAF loop reads refs every frame — no React re-render
+- RAF loop depends only on `[size]` (canvas dimensions)
+- Symbol switch resets `ViewState` and refs intentionally
 
-`LightweightChartCanvas.tsx` uses TradingView Lightweight Charts v5 as the base engine with a Canvas2D overlay for bubbles and liquidity. This is experimental and not the default.
+### Interaction
+- **Wheel zoom** — horizontal (candles), vertical with Shift/Ctrl/price-axis drag
+- **Pan** — drag chart area to pan horizontally and vertically
+- **Price-axis drag** — vertical scaling
+- **Time-axis drag** — horizontal scaling
+- **GO LIVE** — click pill or press Home to return to live edge
+- **Keyboard** — Home (live), R (reset), F (recent), A (all)
 
 ## Performance Safeguards
 
-- Chart RAF loop depends only on `[size]` — reads data from refs
-- Overlay redraw reads from `overlayDataRef` — depends only on `[symbol]`
-- Zustand subscription keeps refs current without causing re-renders
-- Array sizes capped: 1500 candles, 200 trades, 100 large trades, 3000 heatmap levels, 500 bubbles
-- No unbounded timers or intervals
-- All intervals and event listeners cleaned up on unmount
+- **Single RAF loop** — starts once per mount, cleaned up on unmount
+- **No RAF restart on ticks** — loop depends only on `[size]`
+- **Ref-based data flow** — store subscription → refs → RAF reads refs
+- **Array size caps** — 1500 candles, 200 trades, 100 large trades, 3000 heatmap, 500 bubbles
+- **No unbounded timers** — all intervals cleaned up
+- **No duplicate render loops** — one chart, one RAF
+- **No dead code** — LightweightChartCanvas removed, lightweight-charts dependency removed

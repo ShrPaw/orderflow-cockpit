@@ -38,7 +38,18 @@ npm run dev
 - [ ] Console shows `[MiniTicker] Connected: BTCUSDT`
 - [ ] No repeated connect/disconnect spam
 
-## 5. Five-Minute Stability Test
+## 5. Unified Chart
+
+- [ ] Only ONE chart is visible (no chart engine toggle)
+- [ ] Chart shows candles, volume, price axis, time axis
+- [ ] Crosshair shows price/time on hover
+- [ ] Footprint cells visible at high zoom
+- [ ] Bubble tooltips appear on hover
+- [ ] Liquidity bands visible on chart
+- [ ] GO LIVE pill appears when panned away
+- [ ] Order book state overlay shows for non-HEALTHY states
+
+## 6. Five-Minute Stability Test
 
 Leave the app running for 5 minutes.
 
@@ -47,9 +58,10 @@ Leave the app running for 5 minutes.
 - [ ] Trades continue flowing in Time & Sales
 - [ ] No blank screen
 - [ ] No error messages in console
+- [ ] No progressive slowdown
 - [ ] Browser memory usage stays reasonable (< 500MB)
 
-## 6. Symbol Switch Test
+## 7. Symbol Switch Test
 
 - [ ] Click symbol selector → Asset Selector opens
 - [ ] Select ETHUSDT
@@ -60,7 +72,7 @@ Leave the app running for 5 minutes.
 - [ ] No duplicate sockets in console
 - [ ] Switch back to BTCUSDT — same clean behavior
 
-## 7. Zoom/Pan Test
+## 8. Zoom/Pan Test
 
 - [ ] Scroll wheel zooms in — candles become wider
 - [ ] Zoom to minimum (3 visible candles) — individual candles clearly readable
@@ -71,7 +83,7 @@ Leave the app running for 5 minutes.
 - [ ] No NaN/Infinity on price axis labels
 - [ ] No candles disappearing during zoom
 
-## 8. GO LIVE Test
+## 9. GO LIVE Test
 
 - [ ] Pan away from live edge — GO LIVE pill appears (top-right, amber)
 - [ ] Cursor changes to pointer when hovering GO LIVE
@@ -79,7 +91,7 @@ Leave the app running for 5 minutes.
 - [ ] Press Home key — same behavior
 - [ ] Double-click chart — returns to live edge
 
-## 9. Bubble Tooltip Test
+## 10. Bubble Tooltip Test
 
 - [ ] Wait for a large trade bubble to appear
 - [ ] Hover near the bubble — tooltip appears
@@ -87,21 +99,29 @@ Leave the app running for 5 minutes.
 - [ ] Tooltip is color-coded (green=buy, red=sell)
 - [ ] Moving mouse away hides tooltip
 
-## 10. Heatmap Stale Test
+## 11. Order Book State Test
+
+- [ ] HEALTHY: full overlays, no state badge
+- [ ] RESYNCING: chart shows "RESYNCING — last known book" badge, overlays dimmed
+- [ ] DEGRADED: chart shows "DEGRADED TOP-20 BOOK" badge, overlays visible
+- [ ] STALE: chart shows "STALE BOOK" badge, overlays dimmed
+- [ ] All states: chart does not crash, data remains visible
+
+## 12. Heatmap Stale Test
 
 - [ ] Heatmap shows liquidity bands with quantity labels
 - [ ] Spread line visible between bid/ask groups
 - [ ] If order book goes stale — heatmap dims, shows "overlays paused"
 - [ ] Stale book is NOT presented as live
 
-## 11. Refresh Test
+## 13. Refresh Test
 
 - [ ] Browser refresh (F5) starts clean
 - [ ] No stale persisted state
 - [ ] Streams reconnect automatically
 - [ ] Chart starts with fresh candles
 
-## 12. Console Error Check
+## 14. Console Error Check
 
 Open DevTools → Console. Filter by "Error" level.
 
@@ -109,3 +129,4 @@ Open DevTools → Console. Filter by "Error" level.
 - [ ] No "WebSocket connection failed" repeated
 - [ ] No React errors
 - [ ] console.error only appears for genuine stream errors (not spam)
+- [ ] No duplicate render loop warnings

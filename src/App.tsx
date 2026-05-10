@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMarketStore } from './stores/marketStore'
 import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
 import { createLocalOrderBook, type LocalOrderBookHandle } from './connectors/localOrderBook'
@@ -6,12 +6,6 @@ import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { fetchHistoricalKlines } from './connectors/binanceKlines'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
 import ChartCanvas from './components/ChartCanvas'
-import LightweightChartCanvas from './components/LightweightChartCanvas'
-
-// Chart engine toggle — 'legacy' is default, 'lightweight' is experimental
-// Lightweight Charts does not yet support orderflow overlays
-// (round levels, orderbook liquidity, rejection coloring, bubbles, heatmap, etc.)
-export type ChartEngine = 'legacy' | 'lightweight'
 import Toolbar from './components/Toolbar'
 import SidePanel from './components/SidePanel'
 import DOMLite from './components/DOMLite'
@@ -22,7 +16,6 @@ import MarketHeader from './components/MarketHeader'
 import './App.css'
 
 export default function App() {
-  const [chartEngine, setChartEngine] = useState<ChartEngine>('legacy')
   const mode = useMarketStore(s => s.mode)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
@@ -218,11 +211,11 @@ export default function App() {
   return (
     <div className="app">
       <ConnectionStatus />
-      <Toolbar chartEngine={chartEngine} onChartEngineChange={setChartEngine} />
+      <Toolbar />
       <MarketHeader />
       <div className="main-area">
         <div className="chart-panel">
-          {chartEngine === 'lightweight' ? <LightweightChartCanvas /> : <ChartCanvas />}
+          <ChartCanvas />
         </div>
         <div className="right-panels">
           <SidePanel />

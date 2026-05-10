@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Interval } from '../types/market'
-import type { ChartEngine } from '../App'
 import type { DisplayMode } from '../utils/auctionClusters'
 import { INSTRUMENTS } from '../types/market'
 import { fmtPrice } from '../utils/formatters'
@@ -9,12 +8,7 @@ import AssetSelector from './AssetSelector'
 
 const INTERVALS: Interval[] = ['10s', '20s', '40s', '1m', '3m', '5m']
 
-interface ToolbarProps {
-  chartEngine: ChartEngine
-  onChartEngineChange: (engine: ChartEngine) => void
-}
-
-export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarProps) {
+export default function Toolbar() {
   const mode = useMarketStore(s => s.mode)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
@@ -32,7 +26,6 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
 
   const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
-  const setFollowLive = useMarketStore(s => s.setFollowLive)
   const displayMode = useMarketStore(s => s.displayMode)
   const setDisplayMode = useMarketStore(s => s.setDisplayMode)
 
@@ -148,7 +141,7 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
           </div>
         </div>
 
-        {/* Right: Interval + Nav + Mode toggle */}
+        {/* Right: Interval + Nav + Display mode */}
         <div className="toolbar-right">
           <select
             className="interval-select"
@@ -183,21 +176,8 @@ export default function Toolbar({ chartEngine, onChartEngineChange }: ToolbarPro
             >↺ Reset</button>
           </div>
 
-          {/* Chart Engine Toggle */}
-          <div className="chart-engine-toggle" title="Switch chart engine">
-            <button
-              className={`engine-btn ${chartEngine === 'legacy' ? 'active' : ''}`}
-              onClick={() => onChartEngineChange('legacy')}
-            >Legacy</button>
-            <button
-              className={`engine-btn ${chartEngine === 'lightweight' ? 'active' : ''}`}
-              onClick={() => onChartEngineChange('lightweight')}
-              title="Experimental chart engine — orderflow overlays not fully migrated yet"
-            >Lightweight ⚠</button>
-          </div>
-
           {/* Bubble Display Mode */}
-          <div className="chart-engine-toggle" title="Bubble display mode">
+          <div className="bubble-mode-toggle" title="Bubble display mode">
             {(['RAW', 'CLUSTERED', 'HYBRID'] as DisplayMode[]).map(dm => (
               <button
                 key={dm}
