@@ -76,6 +76,67 @@ export interface OrderLevel {
   qty: number
 }
 
+// ═══════════════════════════════════════════
+// LOCAL ORDER BOOK — Binance diff depth engine
+// ═══════════════════════════════════════════
+
+export type OrderBookHealth =
+  | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'SYNCING'
+  | 'HEALTHY'
+  | 'STALE'
+  | 'RESYNCING'
+  | 'ERROR'
+
+export interface DiffDepthEvent {
+  /** First update ID in this event */
+  U: number
+  /** Final update ID in this event */
+  u: number
+  /** Previous final update ID (Binance Futures pu field) */
+  pu?: number
+  /** Bid updates: [price, qty] — qty "0" means delete */
+  b: [string, string][]
+  /** Ask updates: [price, qty] — qty "0" means delete */
+  a: [string, string][]
+  /** Transaction time from exchange */
+  T?: number
+}
+
+export interface DepthSnapshot {
+  lastUpdateId: number
+  bids: [string, string][]
+  asks: [string, string][]
+}
+
+export interface LocalOrderBookState {
+  /** Current validated bid levels (sorted high→low) */
+  bids: OrderLevel[]
+  /** Current validated ask levels (sorted low→high) */
+  asks: OrderLevel[]
+  /** lastUpdateId from the REST snapshot */
+  lastUpdateId: number
+  /** lastUpdateId from the most recent applied diff event */
+  lastEventUpdateId: number
+  /** Transaction time of last applied event */
+  lastTransactionTime: number
+  /** Wall-clock time of last received message */
+  lastMessageTime: number
+  /** Events buffered while snapshot is loading */
+  bufferedEvents: DiffDepthEvent[]
+  /** Current health state */
+  health: OrderBookHealth
+  /** Last error message */
+  error: string | null
+  /** Reconnect attempt counter (resets on healthy) */
+  reconnectAttempts: number
+  /** Whether the book should be considered stale for overlays */
+  isStale: boolean
+  /** Data source identifier */
+  source: 'PARTIAL_DEPTH' | 'DIFF_DEPTH_LOCAL_BOOK'
+}
+
 export interface VolumeLevel {
   price: number
   buy: number

@@ -5,6 +5,10 @@ export default function DOMLite() {
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
   const depthStale = useMarketStore(s => s.depthStale)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+
+  const isReliable = orderBookHealth === 'HEALTHY'
+  const showWarning = !isReliable || depthStale
 
   const bestBid = bids[0]?.price ?? 0
   const bestAsk = asks[0]?.price ?? 0
@@ -24,12 +28,27 @@ export default function DOMLite() {
     ? ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
     : 0
 
+  const healthLabel =
+    orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'CONNECTING' ? ' ⏳CONNECTING' :
+    orderBookHealth === 'SYNCING' ? ' ⏳SYNCING' :
+    orderBookHealth === 'RESYNCING' ? ' 🔄RESYNCING' :
+    orderBookHealth === 'STALE' ? ' ⚠STALE' :
+    orderBookHealth === 'ERROR' ? ' ❌ERROR' :
+    ' ⚠DISCONNECTED'
+
   return (
-    <div className="dom-lite" style={depthStale ? { opacity: 0.5 } : undefined}>
+    <div className="dom-lite" style={showWarning ? { opacity: 0.5 } : undefined}>
       <div className="dom-header">
-        <span className="dom-title">Order Book{depthStale ? ' ⚠STALE' : ''}</span>
+        <span className="dom-title">Order Book{healthLabel}</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
+
+      {showWarning && (
+        <div style={{ padding: '4px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          {!isReliable ? 'Liquidity overlays paused — book not synchronized' : 'Depth data stale — resyncing…'}
+        </div>
+      )}
 
       <div className="dom-asks">
         {asks.slice(0, 10).reverse().map((a, i) => (

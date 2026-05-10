@@ -25,6 +25,7 @@ export default function ChartCanvas() {
   const livePrice = useMarketStore(s => s.livePrice)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
   const clusters = useMarketStore(s => s.clusters)
@@ -97,11 +98,15 @@ export default function ChartCanvas() {
       const ctx = canvas.getContext('2d')
       if (ctx) {
         const intervalMs = INTERVAL_MS[interval] ?? 40_000
+        const isBookHealthy = orderBookHealth === 'HEALTHY'
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
           volumeProfile, mouseRef.current,
-          livePrice, bids, asks, intervalMs,
+          livePrice,
+          isBookHealthy ? bids : undefined,
+          isBookHealthy ? asks : undefined,
+          intervalMs,
           clusters, displayMode
         )
         viewRef.current = result.view
@@ -113,7 +118,7 @@ export default function ChartCanvas() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval, clusters, displayMode])
+  }, [candles, currentCandle, volumeProfile, size, livePrice, bids, asks, interval, clusters, displayMode, orderBookHealth])
 
   // ─── Mouse handlers ───
   const onWheel = useCallback((e: React.WheelEvent) => {

@@ -19,6 +19,10 @@ export default function Heatmap() {
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
   const depthStale = useMarketStore(s => s.depthStale)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+
+  const isReliable = orderBookHealth === 'HEALTHY'
+  const showWarning = !isReliable || depthStale
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -91,9 +95,23 @@ export default function Heatmap() {
     }
   }, [bids, asks])
 
+  const healthLabel =
+    orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'CONNECTING' ? ' ⏳' :
+    orderBookHealth === 'SYNCING' ? ' ⏳' :
+    orderBookHealth === 'RESYNCING' ? ' 🔄' :
+    orderBookHealth === 'STALE' ? ' ⚠STALE' :
+    orderBookHealth === 'ERROR' ? ' ❌' :
+    ' ⚠'
+
   return (
-    <div className="heatmap-container" style={depthStale ? { opacity: 0.5 } : undefined}>
-      <div className="heatmap-header">Liquidity Depth{depthStale ? ' ⚠STALE' : ''}</div>
+    <div className="heatmap-container" style={showWarning ? { opacity: 0.5 } : undefined}>
+      <div className="heatmap-header">Liquidity Depth{healthLabel}</div>
+      {showWarning && (
+        <div style={{ padding: '2px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          {!isReliable ? 'Book not synchronized — overlays paused' : 'Stale — resyncing…'}
+        </div>
+      )}
       <div className="heatmap-canvas-wrap">
         <canvas ref={canvasRef} />
       </div>

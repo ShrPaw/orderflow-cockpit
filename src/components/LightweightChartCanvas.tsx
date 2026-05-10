@@ -114,6 +114,7 @@ export default function LightweightChartCanvas() {
   const bubbles = useMarketStore(s => s.bubbles)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const clusters = useMarketStore(s => s.clusters)
   const displayMode = useMarketStore(s => s.displayMode)
 
@@ -200,15 +201,19 @@ export default function LightweightChartCanvas() {
         now, intervalMs, symbol,
       }
 
-      drawOverlay(rc, allBubbles, livePrice, bids, asks, {
+      const isBookHealthy = orderBookHealth === 'HEALTHY'
+      drawOverlay(rc, allBubbles, livePrice,
+        isBookHealthy ? bids : [],
+        isBookHealthy ? asks : [],
+        {
         showBubbles,
-        showLiquidity,
+        showLiquidity: showLiquidity && isBookHealthy,
         showLevels,
         clusters,
         displayMode,
       })
     })
-  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels, clusters, displayMode])
+  }, [bubbles, currentCandle, livePrice, bids, asks, interval, symbol, showBubbles, showLiquidity, showLevels, clusters, displayMode, orderBookHealth])
 
   // ─── Chart creation & cleanup ───
   useEffect(() => {

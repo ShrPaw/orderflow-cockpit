@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type {
   Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
-  Interval, AppMode, Ticker24h, Instrument,
+  Interval, AppMode, Ticker24h, Instrument, OrderBookHealth, DiffDepthEvent,
 } from '../types/market'
 import { INTERVAL_MS } from '../types/market'
 import {
@@ -68,6 +68,15 @@ interface MarketState {
   depthStale: boolean
   depthLastMessageTime: number
 
+  // ─── Local Order Book ───
+  orderBookHealth: OrderBookHealth
+  orderBookLastUpdateId: number
+  orderBookLastEventUpdateId: number
+  orderBookLastTransactionTime: number
+  orderBookReconnectAttempts: number
+  orderBookError: string | null
+  orderBookBufferedEvents: DiffDepthEvent[]
+
   // Actions
   setMode: (mode: AppMode) => void
   setSymbol: (symbol: string) => void
@@ -78,6 +87,12 @@ interface MarketState {
   setFollowLive: (follow: boolean) => void
   processTrade: (trade: Trade) => void
   setDepth: (bids: OrderLevel[], asks: OrderLevel[]) => void
+  setOrderBookSnapshot: (bids: OrderLevel[], asks: OrderLevel[], lastUpdateId: number) => void
+  applyOrderBookDiff: (bids: OrderLevel[], asks: OrderLevel[], lastUpdateId: number, transactionTime: number) => void
+  setOrderBookHealth: (health: OrderBookHealth, error?: string | null) => void
+  clearOrderBook: () => void
+  markOrderBookStale: (reason: string) => void
+  resyncOrderBook: () => void
   rebuildVolumeProfile: () => void
   addHeatmapSnapshot: () => void
   updateBubbles: () => void
@@ -140,6 +155,13 @@ function getInitialState() {
     displayConfig: getDefaultDisplayConfig(),
     depthStale: false,
     depthLastMessageTime: 0,
+    orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
+    orderBookLastUpdateId: 0,
+    orderBookLastEventUpdateId: 0,
+    orderBookLastTransactionTime: 0,
+    orderBookReconnectAttempts: 0,
+    orderBookError: null as string | null,
+    orderBookBufferedEvents: [] as DiffDepthEvent[],
   }
 }
 
@@ -173,6 +195,13 @@ function getDataResetFields() {
     clusters: [] as AuctionCluster[],
     depthStale: false,
     depthLastMessageTime: 0,
+    orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
+    orderBookLastUpdateId: 0,
+    orderBookLastEventUpdateId: 0,
+    orderBookLastTransactionTime: 0,
+    orderBookReconnectAttempts: 0,
+    orderBookError: null as string | null,
+    orderBookBufferedEvents: [] as DiffDepthEvent[],
   }
 }
 
@@ -291,6 +320,66 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   },
 
   setDepth: (bids, asks) => set({ bids, asks }),
+
+  setOrderBookSnapshot: (bids, asks, lastUpdateId) => set({
+    bids,
+    asks,
+    orderBookLastUpdateId: lastUpdateId,
+    orderBookLastEventUpdateId: lastUpdateId,
+    orderBookHealth: 'HEALTHY',
+    orderBookError: null,
+    orderBookReconnectAttempts: 0,
+    depthStale: false,
+    depthConnected: true,
+  }),
+
+  applyOrderBookDiff: (bids, asks, lastUpdateId, transactionTime) => set({
+    bids,
+    asks,
+    orderBookLastEventUpdateId: lastUpdateId,
+    orderBookLastTransactionTime: transactionTime,
+    orderBookHealth: 'HEALTHY',
+    depthStale: false,
+    depthLastMessageTime: Date.now(),
+  }),
+
+  setOrderBookHealth: (health, error = null) => set({
+    orderBookHealth: health,
+    orderBookError: error,
+    depthStale: health !== 'HEALTHY',
+    depthConnected: health !== 'DISCONNECTED',
+  }),
+
+  clearOrderBook: () => set({
+    bids: [],
+    asks: [],
+    orderBookLastUpdateId: 0,
+    orderBookLastEventUpdateId: 0,
+    orderBookLastTransactionTime: 0,
+    orderBookHealth: 'DISCONNECTED',
+    orderBookError: null,
+    orderBookReconnectAttempts: 0,
+    depthStale: false,
+    depthConnected: false,
+    depthLastMessageTime: 0,
+  }),
+
+  markOrderBookStale: (reason) => set({
+    orderBookHealth: 'STALE',
+    orderBookError: reason,
+    depthStale: true,
+  }),
+
+  resyncOrderBook: () => {
+    const state = get()
+    set({
+      orderBookHealth: 'RESYNCING',
+      orderBookError: 'Resyncing order book…',
+      orderBookReconnectAttempts: state.orderBookReconnectAttempts + 1,
+      depthStale: true,
+      orderBookBufferedEvents: [],
+    })
+  },
 
   rebuildVolumeProfile: () => {
     const state = get()

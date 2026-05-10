@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMarketStore } from './stores/marketStore'
 import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
-import { connectBinanceDepth, getDepthDiagnostics } from './connectors/binanceDepth'
+import { createLocalOrderBook } from './connectors/localOrderBook'
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { fetchHistoricalKlines } from './connectors/binanceKlines'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
@@ -41,6 +41,11 @@ export default function App() {
   const loadHistoricalCandles = useMarketStore(s => s.loadHistoricalCandles)
   const setDepthStale = useMarketStore(s => s.setDepthStale)
   const setDepthLastMessageTime = useMarketStore(s => s.setDepthLastMessageTime)
+  const setOrderBookSnapshot = useMarketStore(s => s.setOrderBookSnapshot)
+  const applyOrderBookDiff = useMarketStore(s => s.applyOrderBookDiff)
+  const setOrderBookHealth = useMarketStore(s => s.setOrderBookHealth)
+  const markOrderBookStale = useMarketStore(s => s.markOrderBookStale)
+  const clearOrderBook = useMarketStore(s => s.clearOrderBook)
 
   const cleanupTrade = useRef<(() => void) | null>(null)
   const cleanupDepth = useRef<(() => void) | null>(null)
@@ -54,6 +59,7 @@ export default function App() {
     // Cleanup previous
     cleanupTrade.current?.()
     cleanupDepth.current?.()
+    clearOrderBook()
     cleanupTicker.current?.()
     if (demoInterval.current) {
       clearInterval(demoInterval.current)
@@ -120,33 +126,51 @@ export default function App() {
         }
       )
 
-      // Connect depth with health tracking
-      cleanupDepth.current = connectBinanceDepth(
-        symbol,
-        (bids, asks) => setDepth(bids, asks),
-        (connected) => {
-          setDepthConnected(connected)
-          if (!connected) {
-            setConnectionError('Depth stream disconnected — auto-recovering…')
-          } else {
-            const state = useMarketStore.getState()
-            if (state.connected) setConnectionError(null)
+      // Connect local order book (diff depth stream + REST snapshot + sequence validation)
+      cleanupDepth.current = createLocalOrderBook(symbol, {
+        onSnapshot: (bids, asks, lastUpdateId) => {
+          setOrderBookSnapshot(bids, asks, lastUpdateId)
+          setDepth(bids, asks)
+          setDepthConnected(true)
+          setConnectionError(null)
+        },
+        onDiffApplied: (bids, asks, lastUpdateId, transactionTime) => {
+          applyOrderBookDiff(bids, asks, lastUpdateId, transactionTime)
+          setDepth(bids, asks)
+          setDepthStale(false)
+          setDepthLastMessageTime(Date.now())
+          const state = useMarketStore.getState()
+          if (state.connected) setConnectionError(null)
+        },
+        onHealthChange: (health, error) => {
+          setOrderBookHealth(health, error)
+          if (health === 'HEALTHY') {
+            setDepthConnected(true)
+            setDepthStale(false)
+          } else if (health === 'DISCONNECTED') {
+            setDepthConnected(false)
+          } else if (health === 'STALE' || health === 'RESYNCING') {
+            setDepthStale(true)
+            if (error) setConnectionError(error)
+          } else if (health === 'ERROR') {
+            setDepthConnected(false)
+            if (error) setConnectionError(`Order book error: ${error}`)
           }
         },
-        (stale) => {
-          setDepthStale(stale)
-          if (stale) setConnectionError('Depth data stale — waiting for fresh snapshot…')
+        onStale: (reason) => {
+          markOrderBookStale(reason)
+          setDepthStale(true)
+          setConnectionError(`Depth book stale — ${reason}`)
         },
-        (time) => setDepthLastMessageTime(time)
-      )
+      })
 
       // Periodic diagnostic log
       diagInterval.current = setInterval(() => {
         const td = getTradeDiagnostics()
-        const dd = getDepthDiagnostics()
+        const state = useMarketStore.getState()
         console.table({
           'Trade Stream': { url: td.url, opened: td.opened, messages: td.messageCount, parseErrors: td.parseErrors, lastMsg: td.lastMessageTime ? new Date(td.lastMessageTime).toLocaleTimeString() : 'never' },
-          'Depth Stream': { url: dd.url, opened: dd.opened, messages: dd.messageCount, parseErrors: dd.parseErrors, bidLevels: dd.bidLevels, askLevels: dd.askLevels, lastMsg: dd.lastMessageTime ? new Date(dd.lastMessageTime).toLocaleTimeString() : 'never' },
+          'Order Book': { health: state.orderBookHealth, lastUpdateId: state.orderBookLastUpdateId, lastEventU: state.orderBookLastEventUpdateId, bidLevels: state.bids.length, askLevels: state.asks.length, error: state.orderBookError ?? 'none' },
         })
       }, 15_000)
 
@@ -155,6 +179,7 @@ export default function App() {
       setConnected(true)
       setDepthConnected(true)
       setTickerConnected(true)
+      setOrderBookHealth('HEALTHY')
       resetDemoPrice()
 
       demoInterval.current = setInterval(() => {

@@ -8,9 +8,14 @@ export default function ConnectionStatus() {
   const tickerConnected = useMarketStore(s => s.tickerConnected)
   const connectionError = useMarketStore(s => s.connectionError)
   const setMode = useMarketStore(s => s.setMode)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookError = useMarketStore(s => s.orderBookError)
+  const resyncOrderBook = useMarketStore(s => s.resyncOrderBook)
 
   if (mode === 'live') {
     const allConnected = connected && depthConnected && tickerConnected
+    const bookHealthy = orderBookHealth === 'HEALTHY'
+    const bookProblem = orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' || orderBookHealth === 'RESYNCING'
 
     if (connectionError) {
       return (
@@ -18,23 +23,27 @@ export default function ConnectionStatus() {
           <span className="conn-bar-icon">⚠</span>
           <span className="conn-bar-text">{connectionError}</span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}{depthStale ? ' ⚠STALE' : ''}
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
           <button className="conn-bar-action" onClick={() => {
-            setMode('demo')
-            setTimeout(() => setMode('live'), 100)
+            if (bookProblem) resyncOrderBook()
+            else {
+              setMode('demo')
+              setTimeout(() => setMode('live'), 100)
+            }
           }}>Reconnect</button>
         </div>
       )
     }
-    if (depthStale) {
+    if (bookProblem) {
       return (
         <div className="conn-bar error" style={{ background: 'rgba(228,167,59,0.12)', borderColor: 'rgba(228,167,59,0.3)' }}>
           <span className="conn-bar-icon">⏳</span>
-          <span className="conn-bar-text">Depth data stale — waiting for fresh snapshot…</span>
+          <span className="conn-bar-text">Order book {orderBookHealth.toLowerCase()} — liquidity overlays paused{orderBookError ? `: ${orderBookError}` : ''}</span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'} ⚠STALE
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
+          <button className="conn-bar-action" onClick={() => resyncOrderBook()}>Resync</button>
         </div>
       )
     }
@@ -44,7 +53,7 @@ export default function ConnectionStatus() {
           <span className="conn-bar-spinner" />
           <span className="conn-bar-text">Connecting to Binance Futures...</span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} depth:{depthConnected?'✓':'✗'}
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
         </div>
       )

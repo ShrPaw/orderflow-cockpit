@@ -16,6 +16,10 @@ export default function SidePanel() {
   const levelMemory = useMarketStore(s => s.levelMemory)
   const clusters = useMarketStore(s => s.clusters)
   const depthStale = useMarketStore(s => s.depthStale)
+  const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookError = useMarketStore(s => s.orderBookError)
+  const orderBookLastUpdateId = useMarketStore(s => s.orderBookLastUpdateId)
+  const orderBookReconnectAttempts = useMarketStore(s => s.orderBookReconnectAttempts)
 
   const buyPct = totalVolume > 0 ? (buyVolume / totalVolume) * 100 : 50
 
@@ -194,16 +198,43 @@ export default function SidePanel() {
         </div>
       )}
 
-      {/* Depth Health */}
-      {depthStale && (
+      {/* Order Book Health */}
+      {orderBookHealth !== 'HEALTHY' && (
         <div className="panel-section">
-          <div className="panel-title" style={{ color: '#e4a73b' }}>⚠ Depth Health</div>
-          <div className="stat-row">
-            <span className="label" style={{ color: '#e4a73b' }}>Status</span>
-            <span className="value" style={{ color: '#e4a73b' }}>STALE</span>
+          <div className="panel-title" style={{
+            color: orderBookHealth === 'ERROR' ? '#ef6461' : '#e4a73b'
+          }}>
+            {orderBookHealth === 'ERROR' ? '❌' : '⚠'} Order Book Health
           </div>
+          <div className="stat-row">
+            <span className="label">Status</span>
+            <span className="value" style={{
+              color: orderBookHealth === 'ERROR' ? '#ef6461'
+                : orderBookHealth === 'DISCONNECTED' ? '#ef6461'
+                : '#e4a73b'
+            }}>
+              {orderBookHealth}
+            </span>
+          </div>
+          {orderBookLastUpdateId > 0 && (
+            <div className="stat-row">
+              <span className="label">Last Update ID</span>
+              <span className="value" style={{ fontSize: 10 }}>{orderBookLastUpdateId}</span>
+            </div>
+          )}
+          {orderBookReconnectAttempts > 0 && (
+            <div className="stat-row">
+              <span className="label">Reconnects</span>
+              <span className="value">{orderBookReconnectAttempts}</span>
+            </div>
+          )}
+          {orderBookError && (
+            <div className="empty" style={{ color: '#6b7d96', fontSize: 10 }}>
+              {orderBookError}
+            </div>
+          )}
           <div className="empty" style={{ color: '#6b7d96' }}>
-            Depth-dependent overlays may be unreliable. Auto-recovering…
+            Liquidity overlays paused — book not synchronized
           </div>
         </div>
       )}
