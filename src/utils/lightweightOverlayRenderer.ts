@@ -141,9 +141,13 @@ export function drawHybridBubbles(
     ctx.beginPath()
     ctx.arc(x, y, style.radius, 0, Math.PI * 2)
 
-    // Fill — semi-transparent so candles show through
-    if (style.fillAlpha > 0) {
+    // Fill — ring-style (absorbed) uses very low fill
+    if (style.fillAlpha > 0 && !style.ringStyle) {
       ctx.globalAlpha = style.fillAlpha
+      ctx.fillStyle = style.fillColor
+      ctx.fill()
+    } else if (style.ringStyle) {
+      ctx.globalAlpha = Math.min(style.fillAlpha, 0.04)
       ctx.fillStyle = style.fillColor
       ctx.fill()
     }
@@ -162,39 +166,44 @@ export function drawHybridBubbles(
 
       ctx.stroke()
       ctx.setLineDash([])
-    }
 
-    // ─── Side indicator tick + notch ───
-    if (style.sideTick > 0 || style.sideNotchSize > 0) {
-      ctx.globalAlpha = 0.6
-      ctx.fillStyle = style.sideAccentColor
-      ctx.strokeStyle = style.fillColor
-      ctx.lineWidth = 1
-
-      // Draw directional notch (triangle)
-      if (style.sideNotchSize > 0) {
+      // Broken outline for INVALIDATED
+      if (style.brokenOutline) {
+        ctx.globalAlpha = style.strokeAlpha * 0.6
+        ctx.strokeStyle = style.strokeColor
+        ctx.lineWidth = 1
+        const xLen = style.radius * 0.6
         ctx.beginPath()
-        const notchY = y + (style.sidePlacement > 0 ? style.radius + 2 : -(style.radius + 2))
-        const notchDir = style.sidePlacement > 0 ? 1 : -1
-        ctx.moveTo(x, notchY + notchDir * style.sideNotchSize)
-        ctx.lineTo(x - style.sideNotchSize * 0.6, notchY)
-        ctx.lineTo(x + style.sideNotchSize * 0.6, notchY)
-        ctx.closePath()
-        ctx.fill()
-      }
-
-      // Draw side tick (line)
-      if (style.sideTick > 0) {
-        ctx.beginPath()
-        if (style.sideDirection < 0) {
-          ctx.moveTo(x, y - style.radius - 1)
-          ctx.lineTo(x, y - style.radius - 1 - style.sideTick)
-        } else {
-          ctx.moveTo(x, y + style.radius + 1)
-          ctx.lineTo(x, y + style.radius + 1 + style.sideTick)
-        }
+        ctx.moveTo(x - xLen, y - xLen)
+        ctx.lineTo(x + xLen, y + xLen)
+        ctx.moveTo(x + xLen, y - xLen)
+        ctx.lineTo(x - xLen, y + xLen)
         ctx.stroke()
       }
+
+      // Resistance outer ring (purple halo)
+      if (bubble.state === 'RESISTANCE') {
+        ctx.globalAlpha = 0.25
+        ctx.strokeStyle = '#a855f7'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(x, y, style.radius + 3, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+    }
+
+    // ─── Side notch (directional triangle) ───
+    if (style.sideNotchSize > 0) {
+      ctx.globalAlpha = 0.65
+      ctx.fillStyle = style.sideAccentColor
+      ctx.beginPath()
+      const notchY = y + (style.sideDirection > 0 ? style.radius + 2 : -(style.radius + 2))
+      const notchDir = style.sideDirection
+      ctx.moveTo(x, notchY + notchDir * style.sideNotchSize)
+      ctx.lineTo(x - style.sideNotchSize * 0.6, notchY)
+      ctx.lineTo(x + style.sideNotchSize * 0.6, notchY)
+      ctx.closePath()
+      ctx.fill()
     }
 
     // ─── Level interaction halo ───

@@ -22,6 +22,7 @@ export default function SidePanel() {
   const pending = bubbles.filter(b => b.state === 'PENDING').length
   const exhausted = bubbles.filter(b => b.state === 'EXHAUSTED').length
   const invalidated = bubbles.filter(b => b.state === 'INVALIDATED').length
+  const resistance = bubbles.filter(b => b.state === 'RESISTANCE').length
 
   const candle = currentCandle
 
@@ -107,12 +108,13 @@ export default function SidePanel() {
       <div className="panel-section">
         <div className="panel-title">Bubble States</div>
         <div className="bubble-legend">
-          <span className="legend-item"><span className="dot yellow" /> Pending — large trade, waiting for response</span>
-          <span className="legend-item"><span className="dot green" /> Accepted — price followed the trade</span>
+          <span className="legend-item"><span className="dot yellow" /> Pending — waiting for response</span>
+          <span className="legend-item"><span className="dot green" /> Accepted — price followed aggression</span>
           <span className="legend-item"><span className="dot red" /> Rejected — price moved against it</span>
-          <span className="legend-item"><span className="dot cyan" /> Absorbed — price barely moved</span>
+          <span className="legend-item"><span className="dot cyan" /> Absorbed — liquidity neutralized it</span>
           <span className="legend-item"><span className="dot gray" /> Exhausted — no meaningful response</span>
           <span className="legend-item"><span className="dot" style={{ background: '#e06040' }} /> Invalidated — accepted then reversed</span>
+          <span className="legend-item"><span className="dot purple" /> Resistance — structural resistance context</span>
         </div>
         <div className="stat-row">
           <span className="label">Pending</span>
@@ -137,6 +139,10 @@ export default function SidePanel() {
         <div className="stat-row">
           <span className="label">Invalidated</span>
           <span className="value" style={{ color: '#e06040' }}>{invalidated}</span>
+        </div>
+        <div className="stat-row">
+          <span className="label">Resistance</span>
+          <span className="value purple">{resistance}</span>
         </div>
       </div>
 

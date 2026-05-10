@@ -35,7 +35,7 @@ export interface PriceLevel {
   trades: number
 }
 
-export type BubbleState = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'ABSORBED' | 'EXHAUSTED' | 'INVALIDATED'
+export type BubbleState = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'ABSORBED' | 'EXHAUSTED' | 'INVALIDATED' | 'RESISTANCE'
 
 export interface LevelInteraction {
   levelPrice: number
@@ -58,6 +58,8 @@ export interface Bubble {
   invalidated?: boolean
   invalidatedAt?: number
   invalidationReason?: string
+  /** Origin side when bubble became resistance (preserves buy/sell identity) */
+  resistanceOrigin?: 'buy' | 'sell'
   levelInteraction?: LevelInteraction
 }
 

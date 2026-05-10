@@ -48,14 +48,6 @@ const COL = {
   axisHover: '#0e1520',
 }
 
-const BUBBLE_COLORS: Record<string, string> = {
-  PENDING: COL.bubblePending,
-  ACCEPTED: COL.bubbleAccepted,
-  REJECTED: COL.bubbleRejected,
-  ABSORBED: COL.bubbleAbsorbed,
-  EXHAUSTED: COL.bubbleExhausted,
-}
-
 // ─── View State ───
 export interface ViewState {
   anchorIndex: number
@@ -443,14 +435,19 @@ export function renderChart(
         ctx.beginPath()
         ctx.arc(cx, by, style.radius, 0, Math.PI * 2)
 
-        // Fill
-        if (style.fillAlpha > 0) {
+        // Fill — ring-style (absorbed) uses very low fill
+        if (style.fillAlpha > 0 && !style.ringStyle) {
           ctx.globalAlpha = style.fillAlpha
+          ctx.fillStyle = style.fillColor
+          ctx.fill()
+        } else if (style.ringStyle) {
+          // Ring style: barely-there fill
+          ctx.globalAlpha = Math.min(style.fillAlpha, 0.04)
           ctx.fillStyle = style.fillColor
           ctx.fill()
         }
 
-        // Stroke
+        // Stroke — state-specific style
         if (style.strokeAlpha > 0) {
           ctx.globalAlpha = style.strokeAlpha
           ctx.strokeStyle = style.strokeColor
@@ -464,15 +461,39 @@ export function renderChart(
 
           ctx.stroke()
           ctx.setLineDash([])
+
+          // Broken outline for INVALIDATED: draw an X through the circle
+          if (style.brokenOutline) {
+            ctx.globalAlpha = style.strokeAlpha * 0.6
+            ctx.strokeStyle = style.strokeColor
+            ctx.lineWidth = 1
+            const xLen = style.radius * 0.6
+            ctx.beginPath()
+            ctx.moveTo(cx - xLen, by - xLen)
+            ctx.lineTo(cx + xLen, by + xLen)
+            ctx.moveTo(cx + xLen, by - xLen)
+            ctx.lineTo(cx - xLen, by + xLen)
+            ctx.stroke()
+          }
+
+          // Resistance outer ring (purple halo)
+          if (bubble.state === 'RESISTANCE') {
+            ctx.globalAlpha = 0.25
+            ctx.strokeStyle = '#a855f7'
+            ctx.lineWidth = 3
+            ctx.beginPath()
+            ctx.arc(cx, by, style.radius + 3, 0, Math.PI * 2)
+            ctx.stroke()
+          }
         }
 
         // ─── Side notch (directional triangle) ───
         if (style.sideNotchSize > 0 && c.bodyW >= 6) {
-          ctx.globalAlpha = 0.6
+          ctx.globalAlpha = 0.65
           ctx.fillStyle = style.sideAccentColor
           ctx.beginPath()
-          const notchY = by + (style.sidePlacement > 0 ? style.radius + 2 : -(style.radius + 2))
-          const notchDir = style.sidePlacement > 0 ? 1 : -1
+          const notchY = by + (style.sideDirection > 0 ? style.radius + 2 : -(style.radius + 2))
+          const notchDir = style.sideDirection
           ctx.moveTo(cx, notchY + notchDir * style.sideNotchSize)
           ctx.lineTo(cx - style.sideNotchSize * 0.6, notchY)
           ctx.lineTo(cx + style.sideNotchSize * 0.6, notchY)

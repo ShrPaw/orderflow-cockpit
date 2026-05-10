@@ -202,6 +202,24 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
   const interaction = checkLevelInteraction(updated, levels, currentPrice)
   if (interaction) updated.levelInteraction = interaction
 
+  // ─── RESISTANCE detection ───
+  // If a level near this bubble has 3+ rejections, mark as RESISTANCE
+  // This means the event area has become structural resistance context
+  // Origin side is preserved so viewer knows if it's buy-origin or sell-origin resistance
+  if (updated.state === 'REJECTED' || updated.state === 'ABSORBED') {
+    const tolerance = currentPrice > 0 ? currentPrice * 0.002 : 0.02
+    for (const level of levels) {
+      if (level.touches < 3) continue
+      if (Math.abs(level.price - updated.price) > tolerance) continue
+      if (level.rejectedCount >= 3 && level.rejectedCount > level.acceptedCount) {
+        updated.state = 'RESISTANCE' as BubbleState
+        updated.resistanceOrigin = updated.side
+        updated.confidence = Math.min(0.95, updated.confidence + 0.1)
+        break
+      }
+    }
+  }
+
   return updated
 }
 
