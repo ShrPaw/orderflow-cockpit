@@ -83,10 +83,13 @@ export interface OrderLevel {
 export type OrderBookHealth =
   | 'DISCONNECTED'
   | 'CONNECTING'
+  | 'BUFFERING'
+  | 'SNAPSHOT_LOADING'
   | 'SYNCING'
   | 'HEALTHY'
-  | 'STALE'
   | 'RESYNCING'
+  | 'DEGRADED'
+  | 'STALE'
   | 'ERROR'
 
 export interface DiffDepthEvent {

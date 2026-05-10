@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMarketStore } from './stores/marketStore'
 import { connectBinanceAggTrade, getTradeDiagnostics } from './connectors/binanceAggTrade'
-import { createLocalOrderBook } from './connectors/localOrderBook'
+import { createLocalOrderBook, type LocalOrderBookHandle } from './connectors/localOrderBook'
 import { fetchTicker24h, connectMiniTicker } from './connectors/binanceTicker'
 import { fetchHistoricalKlines } from './connectors/binanceKlines'
 import { generateDemoTrade, generateDemoDepth, resetDemoPrice } from './connectors/demoData'
@@ -28,7 +28,7 @@ export default function App() {
   const interval = useMarketStore(s => s.interval)
 
   const cleanupTrade = useRef<(() => void) | null>(null)
-  const cleanupDepth = useRef<(() => void) | null>(null)
+  const cleanupDepth = useRef<LocalOrderBookHandle | null>(null)
   const cleanupTicker = useRef<(() => void) | null>(null)
   const demoInterval = useRef<ReturnType<typeof setInterval> | null>(null)
   const depthDemoInterval = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -46,7 +46,7 @@ export default function App() {
     // Cleanup any previous connections
     cleanupTrade.current?.()
     cleanupTrade.current = null
-    cleanupDepth.current?.()
+    cleanupDepth.current?.dispose()
     cleanupDepth.current = null
     cleanupTicker.current?.()
     cleanupTicker.current = null
@@ -130,8 +130,15 @@ export default function App() {
             store().setDepthConnected(true)
             store().setDepthStale(false)
             store().setDepthError(null)
+          } else if (health === 'DEGRADED') {
+            store().setDepthConnected(true)
+            store().setDepthStale(true)
+            store().setDepthError('DEGRADED — using top-20 fallback book')
           } else if (health === 'DISCONNECTED') {
             store().setDepthConnected(false)
+          } else if (health === 'BUFFERING' || health === 'SNAPSHOT_LOADING' || health === 'SYNCING') {
+            store().setDepthConnected(true)
+            store().setDepthStale(true)
           } else if (health === 'STALE' || health === 'RESYNCING') {
             store().setDepthStale(true)
             if (error) store().setDepthError(error)
@@ -145,6 +152,15 @@ export default function App() {
           store().setDepthStale(true)
           store().setDepthError(`Depth book stale — ${reason}`)
         },
+      })
+
+      // Wire store's resyncOrderBook to engine
+      const origResync = useMarketStore.getState().resyncOrderBook
+      useMarketStore.setState({
+        resyncOrderBook: () => {
+          origResync()
+          cleanupDepth.current?.resync()
+        }
       })
 
       // Periodic diagnostic log
@@ -178,7 +194,7 @@ export default function App() {
     return () => {
       cleanupTrade.current?.()
       cleanupTrade.current = null
-      cleanupDepth.current?.()
+      cleanupDepth.current?.dispose()
       cleanupDepth.current = null
       cleanupTicker.current?.()
       cleanupTicker.current = null

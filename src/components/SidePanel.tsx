@@ -202,20 +202,39 @@ export default function SidePanel() {
       {orderBookHealth !== 'HEALTHY' && (
         <div className="panel-section">
           <div className="panel-title" style={{
-            color: orderBookHealth === 'ERROR' ? '#ef6461' : '#e4a73b'
+            color: orderBookHealth === 'ERROR' ? '#ef6461'
+              : orderBookHealth === 'DEGRADED' ? '#ef6461'
+              : '#e4a73b'
           }}>
-            {orderBookHealth === 'ERROR' ? '❌' : '⚠'} Order Book Health
+            {orderBookHealth === 'ERROR' ? '❌' : orderBookHealth === 'DEGRADED' ? '📉' : '⚠'} Order Book Health
           </div>
           <div className="stat-row">
             <span className="label">Status</span>
             <span className="value" style={{
               color: orderBookHealth === 'ERROR' ? '#ef6461'
                 : orderBookHealth === 'DISCONNECTED' ? '#ef6461'
+                : orderBookHealth === 'DEGRADED' ? '#ef6461'
                 : '#e4a73b'
             }}>
               {orderBookHealth}
             </span>
           </div>
+          {orderBookHealth === 'DEGRADED' && (
+            <div className="stat-row">
+              <span className="label">Mode</span>
+              <span className="value" style={{ color: '#ef6461', fontSize: 10 }}>
+                TOP-20 FALLBACK
+              </span>
+            </div>
+          )}
+          {orderBookHealth === 'RESYNCING' && (
+            <div className="stat-row">
+              <span className="label">Book</span>
+              <span className="value" style={{ color: '#e4a73b', fontSize: 10 }}>
+                last known good
+              </span>
+            </div>
+          )}
           {orderBookLastUpdateId > 0 && (
             <div className="stat-row">
               <span className="label">Last Update ID</span>
@@ -233,9 +252,21 @@ export default function SidePanel() {
               {orderBookError}
             </div>
           )}
-          <div className="empty" style={{ color: '#6b7d96' }}>
-            Liquidity overlays paused — book not synchronized
-          </div>
+          {orderBookHealth === 'DEGRADED' && (
+            <div className="empty" style={{ color: '#ef6461', fontSize: 10 }}>
+              Strict diff-depth sync unavailable — showing top-20 partial book
+            </div>
+          )}
+          {orderBookHealth === 'RESYNCING' && (
+            <div className="empty" style={{ color: '#e4a73b', fontSize: 10 }}>
+              Preserving last known book while resyncing
+            </div>
+          )}
+          {orderBookHealth !== 'DEGRADED' && orderBookHealth !== 'RESYNCING' && (
+            <div className="empty" style={{ color: '#6b7d96' }}>
+              Liquidity overlays paused — book not synchronized
+            </div>
+          )}
         </div>
       )}
 

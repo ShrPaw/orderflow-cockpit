@@ -249,7 +249,7 @@ export default function LightweightChartCanvas() {
         now, intervalMs, symbol,
       }
 
-      const isBookHealthy = data.orderBookHealth === 'HEALTHY'
+      const isBookHealthy = data.orderBookHealth === 'HEALTHY' || data.orderBookHealth === 'DEGRADED'
       drawOverlay(rc, allBubbles, data.livePrice,
         isBookHealthy ? data.bids : [],
         isBookHealthy ? data.asks : [],

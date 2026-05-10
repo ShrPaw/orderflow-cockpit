@@ -29,8 +29,10 @@ export default function Heatmap() {
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
 
-  const isReliable = orderBookHealth === 'HEALTHY'
-  const showWarning = !isReliable || depthStale
+  const isHealthy = orderBookHealth === 'HEALTHY'
+  const isDegraded = orderBookHealth === 'DEGRADED'
+  const isUsable = isHealthy || isDegraded
+  const showWarning = !isUsable || depthStale
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -47,7 +49,7 @@ export default function Heatmap() {
     canvas.style.height = h + 'px'
     ctx.scale(dpr, dpr)
 
-    // Dim background when stale
+    // Dim background when not fully live
     ctx.fillStyle = showWarning ? '#040609' : '#06090f'
     ctx.fillRect(0, 0, w, h)
 
@@ -78,7 +80,7 @@ export default function Heatmap() {
       const intensity = Math.min(1, level.qty / maxQty)
       const colorIdx = Math.min(3, Math.floor(intensity * 4))
 
-      // Bar background
+      // Bar background — dim when degraded or stale
       const barAlpha = showWarning ? 0.3 : 1.0
       ctx.globalAlpha = barAlpha
       ctx.fillStyle = level.side === 'bid' ? BID_COLORS[colorIdx] : ASK_COLORS[colorIdx]
@@ -141,7 +143,10 @@ export default function Heatmap() {
 
   const healthLabel =
     orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'DEGRADED' ? ' 📉' :
     orderBookHealth === 'CONNECTING' ? ' ⏳' :
+    orderBookHealth === 'BUFFERING' ? ' ⏳' :
+    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳' :
     orderBookHealth === 'SYNCING' ? ' ⏳' :
     orderBookHealth === 'RESYNCING' ? ' 🔄' :
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
@@ -152,7 +157,12 @@ export default function Heatmap() {
     <div className="heatmap-container" style={showWarning ? { opacity: 0.6 } : undefined}>
       <div className="heatmap-header">
         Liquidity Depth{healthLabel}
-        {showWarning && orderBookHealth !== 'HEALTHY' && (
+        {isDegraded && (
+          <span style={{ fontSize: 9, color: '#ef6461', marginLeft: 8, fontFamily: 'monospace' }}>
+            DEGRADED TOP-20
+          </span>
+        )}
+        {showWarning && !isDegraded && orderBookHealth !== 'HEALTHY' && (
           <span style={{ fontSize: 9, color: '#e4a73b', marginLeft: 8, fontFamily: 'monospace' }}>
             overlays paused
           </span>

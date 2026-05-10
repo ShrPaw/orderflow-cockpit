@@ -333,34 +333,43 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   setDepth: (bids, asks) => set({ bids, asks }),
 
-  setOrderBookSnapshot: (bids, asks, lastUpdateId) => set({
-    bids,
-    asks,
-    orderBookLastUpdateId: lastUpdateId,
-    orderBookLastEventUpdateId: lastUpdateId,
-    orderBookHealth: 'HEALTHY',
-    orderBookError: null,
-    orderBookReconnectAttempts: 0,
-    depthStale: false,
-    depthConnected: true,
-  }),
+  setOrderBookSnapshot: (bids, asks, lastUpdateId) => {
+    set({
+      bids,
+      asks,
+      orderBookLastUpdateId: lastUpdateId,
+      orderBookLastEventUpdateId: lastUpdateId,
+      orderBookError: null,
+      orderBookReconnectAttempts: 0,
+      depthStale: false,
+      depthConnected: true,
+    })
+  },
 
-  applyOrderBookDiff: (bids, asks, lastUpdateId, transactionTime) => set({
-    bids,
-    asks,
-    orderBookLastEventUpdateId: lastUpdateId,
-    orderBookLastTransactionTime: transactionTime,
-    orderBookHealth: 'HEALTHY',
-    depthStale: false,
-    depthLastMessageTime: Date.now(),
-  }),
+  applyOrderBookDiff: (bids, asks, lastUpdateId, transactionTime) => {
+    const state = get()
+    set({
+      bids,
+      asks,
+      orderBookLastEventUpdateId: lastUpdateId,
+      orderBookLastTransactionTime: transactionTime,
+      // Only set HEALTHY if currently in a syncing state (let engine control)
+      // The engine sets health via setOrderBookHealth callback
+      depthStale: false,
+      depthLastMessageTime: Date.now(),
+    })
+  },
 
-  setOrderBookHealth: (health, error = null) => set({
-    orderBookHealth: health,
-    orderBookError: error,
-    depthStale: health !== 'HEALTHY',
-    depthConnected: health !== 'DISCONNECTED',
-  }),
+  setOrderBookHealth: (health, error = null) => {
+    const isConnected = health !== 'DISCONNECTED' && health !== 'ERROR'
+    const isLive = health === 'HEALTHY' || health === 'DEGRADED'
+    set({
+      orderBookHealth: health,
+      orderBookError: error,
+      depthStale: !isLive,
+      depthConnected: isConnected,
+    })
+  },
 
   clearOrderBook: () => set({
     bids: [],

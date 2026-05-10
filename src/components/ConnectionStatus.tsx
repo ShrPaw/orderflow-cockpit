@@ -4,7 +4,6 @@ export default function ConnectionStatus() {
   const mode = useMarketStore(s => s.mode)
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
-  const depthStale = useMarketStore(s => s.depthStale)
   const tickerConnected = useMarketStore(s => s.tickerConnected)
   const tradeError = useMarketStore(s => s.tradeError)
   const depthError = useMarketStore(s => s.depthError)
@@ -23,7 +22,7 @@ export default function ConnectionStatus() {
 
   if (mode === 'live') {
     const allConnected = connected && depthConnected && tickerConnected
-    const bookProblem = orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' || orderBookHealth === 'RESYNCING'
+    const bookProblem = orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' || orderBookHealth === 'RESYNCING' || orderBookHealth === 'DEGRADED'
 
     if (connectionError) {
       return (
@@ -44,10 +43,22 @@ export default function ConnectionStatus() {
       )
     }
     if (bookProblem) {
+      const isDegraded = orderBookHealth === 'DEGRADED'
+      const isResyncing = orderBookHealth === 'RESYNCING'
       return (
-        <div className="conn-bar error" style={{ background: 'rgba(228,167,59,0.12)', borderColor: 'rgba(228,167,59,0.3)' }}>
-          <span className="conn-bar-icon">⏳</span>
-          <span className="conn-bar-text">Order book {orderBookHealth.toLowerCase()} — liquidity overlays paused{orderBookError ? `: ${orderBookError}` : ''}</span>
+        <div className="conn-bar error" style={{
+          background: isDegraded ? 'rgba(228,100,59,0.12)' : 'rgba(228,167,59,0.12)',
+          borderColor: isDegraded ? 'rgba(228,100,59,0.3)' : 'rgba(228,167,59,0.3)',
+        }}>
+          <span className="conn-bar-icon">{isDegraded ? '📉' : isResyncing ? '🔄' : '⏳'}</span>
+          <span className="conn-bar-text">
+            {isDegraded
+              ? 'DEGRADED — using top-20 fallback book'
+              : isResyncing
+                ? 'RESYNCING — showing last known book'
+                : `Order book ${orderBookHealth.toLowerCase()}`}
+            {orderBookError ? `: ${orderBookError}` : ''}
+          </span>
           <span className="conn-bar-detail">
             ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>

@@ -7,8 +7,10 @@ export default function DOMLite() {
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
 
-  const isReliable = orderBookHealth === 'HEALTHY'
-  const showWarning = !isReliable || depthStale
+  const isHealthy = orderBookHealth === 'HEALTHY'
+  const isDegraded = orderBookHealth === 'DEGRADED'
+  const isUsable = isHealthy || isDegraded
+  const showWarning = !isUsable || depthStale
 
   const bestBid = bids[0]?.price ?? 0
   const bestAsk = asks[0]?.price ?? 0
@@ -30,7 +32,10 @@ export default function DOMLite() {
 
   const healthLabel =
     orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'DEGRADED' ? ' 📉DEGRADED' :
     orderBookHealth === 'CONNECTING' ? ' ⏳CONNECTING' :
+    orderBookHealth === 'BUFFERING' ? ' ⏳BUFFERING' :
+    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳SNAPSHOT' :
     orderBookHealth === 'SYNCING' ? ' ⏳SYNCING' :
     orderBookHealth === 'RESYNCING' ? ' 🔄RESYNCING' :
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
@@ -38,15 +43,19 @@ export default function DOMLite() {
     ' ⚠DISCONNECTED'
 
   return (
-    <div className="dom-lite" style={showWarning ? { opacity: 0.5 } : undefined}>
+    <div className="dom-lite" style={showWarning ? { opacity: 0.6 } : undefined}>
       <div className="dom-header">
         <span className="dom-title">Order Book{healthLabel}</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
 
       {showWarning && (
-        <div style={{ padding: '4px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
-          {!isReliable ? 'Liquidity overlays paused — book not synchronized' : 'Depth data stale — resyncing…'}
+        <div style={{ padding: '4px 8px', fontSize: 9, color: isDegraded ? '#ef6461' : '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          {isDegraded
+            ? 'DEGRADED TOP-20 BOOK — strict sync unavailable'
+            : !isUsable
+              ? 'Liquidity overlays paused — book not synchronized'
+              : 'Depth data stale — resyncing…'}
         </div>
       )}
 
