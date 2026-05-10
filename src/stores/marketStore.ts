@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type {
   Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
-  Interval, AppMode, Ticker24h, Instrument, OrderBookHealth, DiffDepthEvent,
+  Interval, AppMode, Ticker24h, Instrument, OrderBookHealth, OrderBookSource, DiffDepthEvent,
 } from '../types/market'
 import { INTERVAL_MS } from '../types/market'
 import {
@@ -68,6 +68,7 @@ interface MarketState {
 
   // ─── Local Order Book ───
   orderBookHealth: OrderBookHealth
+  orderBookSource: OrderBookSource
   orderBookLastUpdateId: number
   orderBookLastEventUpdateId: number
   orderBookLastTransactionTime: number
@@ -88,6 +89,7 @@ interface MarketState {
   setOrderBookSnapshot: (bids: OrderLevel[], asks: OrderLevel[], lastUpdateId: number) => void
   applyOrderBookDiff: (bids: OrderLevel[], asks: OrderLevel[], lastUpdateId: number, transactionTime: number) => void
   setOrderBookHealth: (health: OrderBookHealth, error?: string | null) => void
+  setOrderBookSource: (source: OrderBookSource) => void
   clearOrderBook: () => void
   markOrderBookStale: (reason: string) => void
   resyncOrderBook: () => void
@@ -156,6 +158,7 @@ function getInitialState() {
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
+    orderBookSource: 'none' as OrderBookSource,
     orderBookLastUpdateId: 0,
     orderBookLastEventUpdateId: 0,
     orderBookLastTransactionTime: 0,
@@ -199,6 +202,7 @@ function getDataResetFields() {
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
+    orderBookSource: 'none' as OrderBookSource,
     orderBookLastUpdateId: 0,
     orderBookLastEventUpdateId: 0,
     orderBookLastTransactionTime: 0,
@@ -353,7 +357,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   setOrderBookHealth: (health, error = null) => {
     const isConnected = health !== 'DISCONNECTED' && health !== 'ERROR'
-    const isLive = health === 'HEALTHY' || health === 'DEGRADED'
+    const isLive = health === 'HEALTHY' || health === 'DEGRADED' || health === 'TOP20'
     set({
       orderBookHealth: health,
       orderBookError: error,
@@ -362,6 +366,8 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     })
   },
 
+  setOrderBookSource: (source) => set({ orderBookSource: source }),
+
   clearOrderBook: () => set({
     bids: [],
     asks: [],
@@ -369,6 +375,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     orderBookLastEventUpdateId: 0,
     orderBookLastTransactionTime: 0,
     orderBookHealth: 'DISCONNECTED',
+    orderBookSource: 'none',
     orderBookError: null,
     orderBookReconnectAttempts: 0,
     depthStale: false,

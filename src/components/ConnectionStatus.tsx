@@ -9,12 +9,13 @@ export default function ConnectionStatus() {
   const tickerError = useMarketStore(s => s.tickerError)
   const setMode = useMarketStore(s => s.setMode)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookSource = useMarketStore(s => s.orderBookSource)
   const orderBookError = useMarketStore(s => s.orderBookError)
   const resyncOrderBook = useMarketStore(s => s.resyncOrderBook)
 
   if (mode === 'live') {
     const allConnected = connected && depthConnected && tickerConnected
-    const bookProblem = orderBookHealth !== 'HEALTHY' && orderBookHealth !== 'DISCONNECTED'
+    const bookProblem = orderBookHealth !== 'HEALTHY' && orderBookHealth !== 'TOP20' && orderBookHealth !== 'DISCONNECTED'
     const tradeProblem = !connected || !!tradeError
 
     // Priority 1: Trade stream issues (separate from book)
@@ -36,7 +37,7 @@ export default function ConnectionStatus() {
       )
     }
 
-    // Priority 2: Book issues (book-specific messaging, never "No trades received")
+    // Priority 2: Book issues
     if (bookProblem) {
       const isDegraded = orderBookHealth === 'DEGRADED'
       const isResyncing = orderBookHealth === 'RESYNCING'
@@ -45,19 +46,18 @@ export default function ConnectionStatus() {
 
       let bookMsg: string
       if (isDegraded) {
-        bookMsg = 'Order book DEGRADED — using top-20 fallback'
+        bookMsg = 'Book using top-20 fallback \u2014 strict sync retrying'
       } else if (isResyncing) {
-        bookMsg = 'Order book RESYNCING — showing last known book'
+        bookMsg = 'Strict book syncing in background \u2014 top-20 book active'
       } else if (isSnapshot) {
-        bookMsg = `Order book ${orderBookHealth.toLowerCase().replace('_', ' ')}`
+        bookMsg = 'Strict book syncing in background \u2014 top-20 book active'
       } else if (isStale) {
-        bookMsg = 'Order book STALE — no recent updates'
+        bookMsg = 'Order book STALE \u2014 no recent updates'
       } else {
         bookMsg = `Order book ${orderBookHealth.toLowerCase()}`
       }
       if (orderBookError) bookMsg += `: ${orderBookError}`
 
-      // Show trade status separately if also having trade issues
       const tradeStatus = tradeProblem
         ? ` | trades: ${tradeError || 'disconnected'}`
         : ''
@@ -70,7 +70,7 @@ export default function ConnectionStatus() {
           <span className="conn-bar-icon">{isDegraded ? '📉' : isResyncing ? '🔄' : '⏳'}</span>
           <span className="conn-bar-text">{bookMsg}{tradeStatus}</span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
+            source:{orderBookSource} ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
           <button className="conn-bar-action" onClick={() => resyncOrderBook()}>Resync Book</button>
         </div>
@@ -86,7 +86,7 @@ export default function ConnectionStatus() {
             Multiple streams: {tradeError || 'trade issue'} · book:{orderBookHealth}
           </span>
           <span className="conn-bar-detail">
-            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
+            source:{orderBookSource} ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
           <button className="conn-bar-action" onClick={() => {
             resyncOrderBook()
@@ -97,7 +97,23 @@ export default function ConnectionStatus() {
       )
     }
 
-    // Priority 4: Still connecting
+    // Priority 4: TOP20 active (depth20 providing book, strict not yet healthy)
+    if (orderBookHealth === 'TOP20') {
+      return (
+        <div className="conn-bar connecting" style={{
+          background: 'rgba(79,195,247,0.08)',
+          borderColor: 'rgba(79,195,247,0.2)',
+        }}>
+          <span className="conn-bar-spinner" />
+          <span className="conn-bar-text">Book using top-20 fallback \u2014 strict sync loading</span>
+          <span className="conn-bar-detail">
+            source:{orderBookSource} ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'}
+          </span>
+        </div>
+      )
+    }
+
+    // Priority 5: Still connecting
     if (!allConnected) {
       return (
         <div className="conn-bar connecting">
@@ -116,7 +132,7 @@ export default function ConnectionStatus() {
   return (
     <div className="conn-bar demo">
       <span className="conn-bar-icon">◉</span>
-      <span className="conn-bar-text">DEMO MODE — Simulated market data for testing</span>
+      <span className="conn-bar-text">DEMO MODE \u2014 Simulated market data for testing</span>
       <button className="conn-bar-action" onClick={() => setMode('live')}>
         Switch to Live
       </button>

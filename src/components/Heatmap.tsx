@@ -28,16 +28,20 @@ export default function Heatmap() {
   const asks = useMarketStore(s => s.asks)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookSource = useMarketStore(s => s.orderBookSource)
 
   const isHealthy = orderBookHealth === 'HEALTHY'
+  const isTop20 = orderBookHealth === 'TOP20'
   const isDegraded = orderBookHealth === 'DEGRADED'
-  const isUsable = isHealthy || isDegraded
-  // Transitional states: no validated book data, stale bids/asks from previous connection
+  const isUsable = isHealthy || isTop20 || isDegraded
   const isTransitional = orderBookHealth === 'CONNECTING'
     || orderBookHealth === 'BUFFERING'
     || orderBookHealth === 'SNAPSHOT_LOADING'
     || orderBookHealth === 'SYNCING'
-  const showWarning = !isUsable || depthStale || isTransitional
+
+  // If we have data, show it (even during transitional states)
+  const hasData = bids.length > 0 || asks.length > 0
+  const showDimmed = (!isUsable && !hasData) || depthStale
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -55,7 +59,7 @@ export default function Heatmap() {
     ctx.scale(dpr, dpr)
 
     // Dim background when not fully live
-    ctx.fillStyle = showWarning ? '#040609' : '#06090f'
+    ctx.fillStyle = showDimmed ? '#040609' : '#06090f'
     ctx.fillRect(0, 0, w, h)
 
     const allLevels = [
@@ -63,24 +67,17 @@ export default function Heatmap() {
       ...asks.slice(0, 10).map(a => ({ ...a, side: 'ask' as const })),
     ]
 
-    // During transitional states, don't draw stale liquidity data
-    if (isTransitional) {
-      ctx.fillStyle = '#3d4f68'
-      ctx.font = '11px "SF Mono", monospace'
-      ctx.textAlign = 'center'
-      const msg = orderBookHealth === 'BUFFERING' ? 'Book buffering…'
-        : orderBookHealth === 'SNAPSHOT_LOADING' ? 'Snapshot loading…'
-        : orderBookHealth === 'SYNCING' ? 'Book syncing…'
-        : 'Connecting…'
-      ctx.fillText(msg, w / 2, h / 2)
-      return
-    }
-
+    // If no data, show waiting message
     if (allLevels.length === 0) {
       ctx.fillStyle = '#3d4f68'
       ctx.font = '11px "SF Mono", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText('Waiting for depth data…', w / 2, h / 2)
+      const msg = orderBookHealth === 'CONNECTING' ? 'Connecting...'
+        : orderBookHealth === 'BUFFERING' ? 'Book buffering...'
+        : orderBookHealth === 'SNAPSHOT_LOADING' ? 'Strict sync loading...'
+        : orderBookHealth === 'SYNCING' ? 'Book syncing...'
+        : 'Waiting for depth data...'
+      ctx.fillText(msg, w / 2, h / 2)
       return
     }
 
@@ -92,25 +89,24 @@ export default function Heatmap() {
     const levelCount = allLevels.length
     const barH = Math.max(8, Math.min(28, (h - 20) / levelCount))
 
+    // Moderate opacity for degraded/top20 modes
+    const barAlpha = (isTop20 || isDegraded || showDimmed) ? 0.5 : 1.0
+
     for (let i = 0; i < allLevels.length; i++) {
       const level = allLevels[i]
       const y = h - ((level.price - minPrice) / priceRange) * (h - 20) - barH - 4
       const intensity = Math.min(1, level.qty / maxQty)
       const colorIdx = Math.min(3, Math.floor(intensity * 4))
 
-      // Bar background — dim when degraded or stale
-      const barAlpha = showWarning ? 0.3 : 1.0
       ctx.globalAlpha = barAlpha
       ctx.fillStyle = level.side === 'bid' ? BID_COLORS[colorIdx] : ASK_COLORS[colorIdx]
       ctx.fillRect(0, y, w, barH)
 
-      // Volume bar (right-aligned, proportional)
       const qtyBarW = Math.max(2, (intensity * 0.55) * w)
       const qtyColor = level.side === 'bid' ? 'rgba(45,212,160,0.12)' : 'rgba(239,100,97,0.12)'
       ctx.fillStyle = qtyColor
       ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
 
-      // Border between levels
       ctx.strokeStyle = 'rgba(255,255,255,0.03)'
       ctx.lineWidth = 0.5
       ctx.beginPath()
@@ -118,14 +114,12 @@ export default function Heatmap() {
       ctx.lineTo(w, y + barH)
       ctx.stroke()
 
-      // Price label (left side)
       ctx.fillStyle = '#4a5e78'
       ctx.font = '9px "SF Mono", monospace'
       ctx.textAlign = 'left'
       const priceLabel = level.price >= 1000 ? level.price.toFixed(0) : level.price.toFixed(2)
       ctx.fillText(priceLabel, 4, y + barH - 4)
 
-      // Qty label (right side)
       ctx.fillStyle = level.side === 'bid' ? 'rgba(45,212,160,0.7)' : 'rgba(239,100,97,0.7)'
       ctx.font = '10px "SF Mono", monospace'
       ctx.textAlign = 'right'
@@ -134,7 +128,7 @@ export default function Heatmap() {
       ctx.globalAlpha = 1.0
     }
 
-    // Spread indicator between bid/ask groups
+    // Spread indicator
     if (bids.length > 0 && asks.length > 0) {
       const bestBidY = h - ((bids[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
       const bestAskY = h - ((asks[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
@@ -149,7 +143,6 @@ export default function Heatmap() {
       ctx.stroke()
       ctx.setLineDash([])
 
-      // Spread label
       const spread = asks[0].price - bids[0].price
       const spreadPct = bids[0].price > 0 ? (spread / bids[0].price * 100) : 0
       ctx.fillStyle = 'rgba(79,195,247,0.5)'
@@ -157,10 +150,15 @@ export default function Heatmap() {
       ctx.textAlign = 'center'
       ctx.fillText(`spread ${spread.toFixed(1)} (${spreadPct.toFixed(3)}%)`, w / 2, spreadMid - 3)
     }
-  }, [bids, asks, showWarning])
+  }, [bids, asks, showDimmed, isTop20, isDegraded])
+
+  const sourceLabel = orderBookSource === 'depth20' ? ' 📉TOP-20'
+    : orderBookSource === 'strict' ? ''
+    : ''
 
   const healthLabel =
     orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'TOP20' ? ' 📉' :
     orderBookHealth === 'DEGRADED' ? ' 📉' :
     orderBookHealth === 'CONNECTING' ? ' ⏳' :
     orderBookHealth === 'BUFFERING' ? ' ⏳' :
@@ -172,17 +170,12 @@ export default function Heatmap() {
     ' ⚠'
 
   return (
-    <div className="heatmap-container" style={showWarning ? { opacity: 0.6 } : undefined}>
+    <div className="heatmap-container" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="heatmap-header">
         Liquidity Depth{healthLabel}
-        {isDegraded && (
-          <span style={{ fontSize: 9, color: '#ef6461', marginLeft: 8, fontFamily: 'monospace' }}>
-            DEGRADED TOP-20
-          </span>
-        )}
-        {showWarning && !isDegraded && orderBookHealth !== 'HEALTHY' && (
-          <span style={{ fontSize: 9, color: '#e4a73b', marginLeft: 8, fontFamily: 'monospace' }}>
-            overlays paused
+        {sourceLabel && (
+          <span style={{ fontSize: 9, color: '#4fc3f7', marginLeft: 8, fontFamily: 'monospace' }}>
+            {sourceLabel}
           </span>
         )}
       </div>

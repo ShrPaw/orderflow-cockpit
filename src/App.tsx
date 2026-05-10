@@ -102,7 +102,7 @@ export default function App() {
         }
       )
 
-      // Connect local order book (diff depth stream + REST snapshot + sequence validation)
+            // Connect local order book (dual-stream: depth20 immediate + strict parallel)
       cleanupDepth.current = createLocalOrderBook(symbol, {
         onSnapshot: (bids, asks, lastUpdateId) => {
           store().setOrderBookSnapshot(bids, asks, lastUpdateId)
@@ -123,28 +123,27 @@ export default function App() {
             store().setDepthConnected(true)
             store().setDepthStale(false)
             store().setDepthError(null)
-          } else if (health === 'DEGRADED') {
+          } else if (health === 'DEGRADED' || health === 'TOP20') {
             store().setDepthConnected(true)
-            store().setDepthStale(true)
-            // Don't set depthError — ConnectionStatus handles book health display
+            store().setDepthStale(false) // depth20 is live - not stale
           } else if (health === 'DISCONNECTED') {
             store().setDepthConnected(false)
           } else if (health === 'BUFFERING' || health === 'SNAPSHOT_LOADING' || health === 'SYNCING') {
             store().setDepthConnected(true)
-            store().setDepthStale(true)
-            // Don't set depthError — health state shown in ConnectionStatus
+            // depth20 provides display book during these states
           } else if (health === 'STALE' || health === 'RESYNCING') {
             store().setDepthStale(true)
-            // Don't set depthError — health state shown in ConnectionStatus
           } else if (health === 'ERROR') {
             store().setDepthConnected(false)
             store().setDepthError(`Book error: ${error}`)
           }
         },
+        onSourceChange: (source) => {
+          store().setOrderBookSource(source)
+        },
         onStale: (reason) => {
           store().markOrderBookStale(reason)
           store().setDepthStale(true)
-          // Don't set depthError — stale state shown via orderBookHealth in ConnectionStatus
         },
       })
 
@@ -163,7 +162,7 @@ export default function App() {
         const s = useMarketStore.getState()
         console.table({
           'Trade Stream': { url: td.url, opened: td.opened, messages: td.messageCount, parseErrors: td.parseErrors, lastMsg: td.lastMessageTime ? new Date(td.lastMessageTime).toLocaleTimeString() : 'never' },
-          'Order Book': { health: s.orderBookHealth, lastUpdateId: s.orderBookLastUpdateId, lastEventU: s.orderBookLastEventUpdateId, bidLevels: s.bids.length, askLevels: s.asks.length, error: s.orderBookError ?? 'none' },
+          'Order Book': { health: s.orderBookHealth, source: s.orderBookSource, lastUpdateId: s.orderBookLastUpdateId, lastEventU: s.orderBookLastEventUpdateId, bidLevels: s.bids.length, askLevels: s.asks.length, error: s.orderBookError ?? 'none' },
         })
       }, 15_000)
 

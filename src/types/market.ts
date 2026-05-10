@@ -83,14 +83,17 @@ export interface OrderLevel {
 export type OrderBookHealth =
   | 'DISCONNECTED'
   | 'CONNECTING'
+  | 'TOP20'           // depth20 fallback active, strict not yet healthy
   | 'BUFFERING'
   | 'SNAPSHOT_LOADING'
   | 'SYNCING'
   | 'HEALTHY'
   | 'RESYNCING'
-  | 'DEGRADED'
+  | 'DEGRADED'        // strict failed, using depth20 fallback
   | 'STALE'
   | 'ERROR'
+
+export type OrderBookSource = 'strict' | 'depth20' | 'last_known' | 'none'
 
 export interface DiffDepthEvent {
   /** First update ID in this event */

@@ -6,15 +6,20 @@ export default function DOMLite() {
   const asks = useMarketStore(s => s.asks)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookSource = useMarketStore(s => s.orderBookSource)
 
   const isHealthy = orderBookHealth === 'HEALTHY'
+  const isTop20 = orderBookHealth === 'TOP20'
   const isDegraded = orderBookHealth === 'DEGRADED'
-  const isUsable = isHealthy || isDegraded
+  const isUsable = isHealthy || isTop20 || isDegraded
   const isTransitional = orderBookHealth === 'CONNECTING'
     || orderBookHealth === 'BUFFERING'
     || orderBookHealth === 'SNAPSHOT_LOADING'
     || orderBookHealth === 'SYNCING'
-  const showWarning = !isUsable || depthStale || isTransitional
+
+  // During transitional states, if we have data from depth20, still show it
+  const hasData = bids.length > 0 || asks.length > 0
+  const showDimmed = (!isUsable && !isTransitional) || depthStale
 
   const bestBid = bids[0]?.price ?? 0
   const bestAsk = asks[0]?.price ?? 0
@@ -36,10 +41,11 @@ export default function DOMLite() {
 
   const healthLabel =
     orderBookHealth === 'HEALTHY' ? '' :
+    orderBookHealth === 'TOP20' ? ' 📉TOP-20' :
     orderBookHealth === 'DEGRADED' ? ' 📉DEGRADED' :
     orderBookHealth === 'CONNECTING' ? ' ⏳CONNECTING' :
     orderBookHealth === 'BUFFERING' ? ' ⏳BUFFERING' :
-    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳SNAPSHOT' :
+    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳STRICT SYNC' :
     orderBookHealth === 'SYNCING' ? ' ⏳SYNCING' :
     orderBookHealth === 'RESYNCING' ? ' 🔄RESYNCING' :
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
@@ -47,56 +53,74 @@ export default function DOMLite() {
     ' ⚠DISCONNECTED'
 
   return (
-    <div className="dom-lite" style={showWarning ? { opacity: 0.6 } : undefined}>
+    <div className="dom-lite" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="dom-header">
         <span className="dom-title">Order Book{healthLabel}</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
 
-      {showWarning && (
-        <div style={{ padding: '4px 8px', fontSize: 9, color: isDegraded ? '#ef6461' : isTransitional ? '#4fc3f7' : '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
-          {isDegraded
-            ? 'DEGRADED TOP-20 BOOK — strict sync unavailable'
-            : isTransitional
-              ? `Book ${orderBookHealth.toLowerCase().replace('_', ' ')} — waiting for validated data`
-              : !isUsable
-                ? 'Liquidity overlays paused — book not synchronized'
-                : 'Depth data stale — resyncing…'}
+      {/* Source label */}
+      {orderBookSource === 'depth20' && hasData && (
+        <div style={{ padding: '2px 8px', fontSize: 9, color: '#4fc3f7', textAlign: 'center', fontFamily: 'monospace' }}>
+          SOURCE: TOP-20 FALLBACK
+        </div>
+      )}
+      {orderBookSource === 'strict' && (
+        <div style={{ padding: '2px 8px', fontSize: 9, color: '#2dd4a0', textAlign: 'center', fontFamily: 'monospace' }}>
+          SOURCE: STRICT DIFF-DEPTH
         </div>
       )}
 
-      <div className="dom-asks">
-        {asks.slice(0, 10).reverse().map((a, i) => (
-          <div key={i} className="dom-row ask">
-            <span className="dom-qty">{fmtNum(a.qty)}</span>
-            <div className="dom-bar ask" style={{ width: `${(a.qty / maxQty) * 100}%` }} />
-            <span className="dom-price">{fmtPrice(a.price)}</span>
+      {/* Warning for non-usable states without data */}
+      {!hasData && isTransitional && (
+        <div style={{ padding: '4px 8px', fontSize: 9, color: '#4fc3f7', textAlign: 'center', fontFamily: 'monospace' }}>
+          Book initializing...
+        </div>
+      )}
+
+      {!hasData && !isTransitional && !isUsable && (
+        <div style={{ padding: '4px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          Book unavailable — reconnecting
+        </div>
+      )}
+
+      {/* Show data if available */}
+      {hasData && (
+        <>
+          <div className="dom-asks">
+            {asks.slice(0, 10).reverse().map((a, i) => (
+              <div key={i} className="dom-row ask">
+                <span className="dom-qty">{fmtNum(a.qty)}</span>
+                <div className="dom-bar ask" style={{ width: `${(a.qty / maxQty) * 100}%` }} />
+                <span className="dom-price">{fmtPrice(a.price)}</span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
 
-      <div className="dom-spread">
-        <span>Spread: {fmtPrice(spread)} ({spreadPct.toFixed(3)}%)</span>
-      </div>
-
-      <div className="dom-bids">
-        {bids.slice(0, 10).map((b, i) => (
-          <div key={i} className="dom-row bid">
-            <span className="dom-price">{fmtPrice(b.price)}</span>
-            <div className="dom-bar bid" style={{ width: `${(b.qty / maxQty) * 100}%` }} />
-            <span className="dom-qty">{fmtNum(b.qty)}</span>
+          <div className="dom-spread">
+            <span>Spread: {fmtPrice(spread)} ({spreadPct.toFixed(3)}%)</span>
           </div>
-        ))}
-      </div>
 
-      <div className="dom-imbalance">
-        <span className={imbalance > 0 ? 'green' : imbalance < 0 ? 'red' : ''}>
-          {imbalance > 0 ? '▲' : imbalance < 0 ? '▼' : '—'} {Math.abs(imbalance).toFixed(1)}%
-        </span>
-        <span className="dom-side-hint">
-          {imbalance > 15 ? 'Bid heavy' : imbalance < -15 ? 'Ask heavy' : 'Balanced'}
-        </span>
-      </div>
+          <div className="dom-bids">
+            {bids.slice(0, 10).map((b, i) => (
+              <div key={i} className="dom-row bid">
+                <span className="dom-price">{fmtPrice(b.price)}</span>
+                <div className="dom-bar bid" style={{ width: `${(b.qty / maxQty) * 100}%` }} />
+                <span className="dom-qty">{fmtNum(b.qty)}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="dom-imbalance">
+            <span className={imbalance > 0 ? 'green' : imbalance < 0 ? 'red' : ''}>
+              {imbalance > 0 ? '▲' : imbalance < 0 ? '▼' : '—'} {Math.abs(imbalance).toFixed(1)}%
+            </span>
+            <span className="dom-side-hint">
+              {imbalance > 15 ? 'Bid heavy' : imbalance < -15 ? 'Ask heavy' : 'Balanced'}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   )
 }

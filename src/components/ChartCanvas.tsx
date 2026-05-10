@@ -147,7 +147,7 @@ export default function ChartCanvas() {
         const orderBookHealth = orderBookHealthRef.current as string
 
         const intervalMs = INTERVAL_MS[interval as keyof typeof INTERVAL_MS] ?? 40_000
-        const isBookHealthy = orderBookHealth === 'HEALTHY' || orderBookHealth === 'DEGRADED'
+        const isBookHealthy = orderBookHealth === 'HEALTHY' || orderBookHealth === 'DEGRADED' || orderBookHealth === 'TOP20'
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,

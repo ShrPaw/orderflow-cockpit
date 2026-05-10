@@ -17,6 +17,7 @@ export default function SidePanel() {
   const clusters = useMarketStore(s => s.clusters)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookSource = useMarketStore(s => s.orderBookSource)
   const orderBookError = useMarketStore(s => s.orderBookError)
   const orderBookLastUpdateId = useMarketStore(s => s.orderBookLastUpdateId)
   const orderBookReconnectAttempts = useMarketStore(s => s.orderBookReconnectAttempts)
@@ -199,19 +200,34 @@ export default function SidePanel() {
       )}
 
       {/* Order Book Health */}
-      {orderBookHealth !== 'HEALTHY' && (
+      {(orderBookHealth !== 'HEALTHY' || orderBookSource === 'depth20') && (
         <div className="panel-section">
           <div className="panel-title" style={{
             color: orderBookHealth === 'ERROR' ? '#ef6461'
               : orderBookHealth === 'DEGRADED' ? '#ef6461'
+              : orderBookHealth === 'TOP20' ? '#4fc3f7'
               : '#e4a73b'
           }}>
-            {orderBookHealth === 'ERROR' ? '❌' : orderBookHealth === 'DEGRADED' ? '📉' : '⚠'} Order Book Health
+            {orderBookHealth === 'ERROR' ? '❌' : orderBookHealth === 'DEGRADED' ? '📉' : orderBookHealth === 'TOP20' ? '📉' : '⚠'} Order Book
           </div>
           <div className="stat-row">
-            <span className="label">Status</span>
+            <span className="label">Source</span>
             <span className="value" style={{
-              color: orderBookHealth === 'ERROR' ? '#ef6461'
+              color: orderBookSource === 'strict' ? '#2dd4a0'
+                : orderBookSource === 'depth20' ? '#4fc3f7'
+                : '#6b7d96',
+              fontSize: 10,
+              fontFamily: 'monospace'
+            }}>
+              {orderBookSource === 'strict' ? 'STRICT' : orderBookSource === 'depth20' ? 'TOP-20' : orderBookSource === 'last_known' ? 'LAST KNOWN' : 'NONE'}
+            </span>
+          </div>
+          <div className="stat-row">
+            <span className="label">Health</span>
+            <span className="value" style={{
+              color: orderBookHealth === 'HEALTHY' ? '#2dd4a0'
+                : orderBookHealth === 'TOP20' ? '#4fc3f7'
+                : orderBookHealth === 'ERROR' ? '#ef6461'
                 : orderBookHealth === 'DISCONNECTED' ? '#ef6461'
                 : orderBookHealth === 'DEGRADED' ? '#ef6461'
                 : '#e4a73b'
@@ -227,11 +243,27 @@ export default function SidePanel() {
               </span>
             </div>
           )}
+          {orderBookHealth === 'TOP20' && (
+            <div className="stat-row">
+              <span className="label">Mode</span>
+              <span className="value" style={{ color: '#4fc3f7', fontSize: 10 }}>
+                TOP-20 (strict loading)
+              </span>
+            </div>
+          )}
           {orderBookHealth === 'RESYNCING' && (
             <div className="stat-row">
               <span className="label">Book</span>
               <span className="value" style={{ color: '#e4a73b', fontSize: 10 }}>
-                last known good
+                strict resyncing — top-20 active
+              </span>
+            </div>
+          )}
+          {orderBookHealth === 'SNAPSHOT_LOADING' && (
+            <div className="stat-row">
+              <span className="label">Book</span>
+              <span className="value" style={{ color: '#4fc3f7', fontSize: 10 }}>
+                strict syncing — top-20 active
               </span>
             </div>
           )}
@@ -257,20 +289,26 @@ export default function SidePanel() {
               Strict diff-depth sync unavailable — showing top-20 partial book
             </div>
           )}
-          {orderBookHealth === 'RESYNCING' && (
-            <div className="empty" style={{ color: '#e4a73b', fontSize: 10 }}>
-              Preserving last known book while resyncing
+          {orderBookHealth === 'TOP20' && (
+            <div className="empty" style={{ color: '#4fc3f7', fontSize: 10 }}>
+              Top-20 fallback active — strict sync loading in background
             </div>
           )}
-          {orderBookHealth !== 'DEGRADED' && orderBookHealth !== 'RESYNCING' && (
+          {orderBookHealth === 'RESYNCING' && (
+            <div className="empty" style={{ color: '#e4a73b', fontSize: 10 }}>
+              Preserving top-20 book while strict resyncs
+            </div>
+          )}
+          {orderBookHealth !== 'DEGRADED' && orderBookHealth !== 'TOP20' && orderBookHealth !== 'RESYNCING' && orderBookHealth !== 'HEALTHY' && (
             <div className="empty" style={{ color: '#6b7d96' }}>
-              Liquidity overlays paused — book not synchronized
+              Book initializing — top-20 fallback may be available
             </div>
           )}
         </div>
       )}
 
-      {/* Level Memory */}
+
+{/* Level Memory */}
       {levelMemory.length > 0 && (
         <div className="panel-section">
           <div className="panel-title">Level Memory</div>
