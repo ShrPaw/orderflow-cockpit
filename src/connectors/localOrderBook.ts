@@ -445,25 +445,42 @@ export function createLocalOrderBook(
     callbacks.onSnapshot(bids, asks, snapshot.lastUpdateId)
   }
 
+  /**
+   * Process buffered events from the diff stream.
+   *
+   * Called AFTER snapshot is applied. Finds the first event that spans
+   * lastUpdateId+1 (the Binance overlap condition) and applies from there.
+   *
+   * Returns true if promotion to HEALTHY succeeded.
+   * Returns false if we need to wait for live events or resync.
+   */
   function processBufferedEvents(gen: number): boolean {
     if (!snapshotLoaded) return false
     if (gen !== generation) return false
 
     const L = book.lastUpdateId
-    const valid = pendingEvents.filter(e => e.u >= L)
+
+    // STEP A: Drop stale events (u <= lastUpdateId, per Binance docs)
+    const beforeCount = pendingEvents.length
+    const valid = pendingEvents.filter(e => e.u > L)
+    const droppedCount = beforeCount - valid.length
     pendingEvents = []
 
+    devLog(`[gen=${gen}] processBufferedEvents: ${beforeCount} buffered, ${droppedCount} dropped (u <= ${L}), ${valid.length} valid`)
+
     if (valid.length === 0) {
-      devLog(`processBufferedEvents: no buffered events with u >= ${L}, waiting for live overlap`)
+      // No valid events after dropping stale ones.
+      // The diff stream started after the snapshot — need live events.
       debugBookEmit({
         type: 'overlap_check',
         symbol,
         generation: gen,
         snapshotLastUpdateId: L,
-        bufferedEventsTotal: 0,
-        validEventsAfterSnapshot: 0,
+        bufferedTotal: beforeCount,
+        droppedStale: droppedCount,
+        validRemaining: 0,
         foundOverlap: false,
-        reason: 'no buffered events yet — waiting for live stream',
+        reason: 'no valid events after dropping stale — waiting for live',
       })
       setHealth('SYNCING', 'Waiting for overlapping diff event…')
       syncingStartTime = Date.now()
@@ -475,18 +492,8 @@ export function createLocalOrderBook(
     const firstBuf = valid[0]
     const lastBuf = valid[valid.length - 1]
 
-    // DIAGNOSTIC: Log full overlap search context
-    debugBookEmit({
-      type: 'overlap_check',
-      symbol,
-      generation: gen,
-      snapshotLastUpdateId: L,
-      neededCondition: `U <= ${L + 1} && u >= ${L + 1}`,
-      bufferedEventsTotal: valid.length,
-      firstBufferedEvent: { U: firstBuf.U, u: firstBuf.u, pu: firstBuf.pu },
-      lastBufferedEvent: { U: lastBuf.U, u: lastBuf.u, pu: lastBuf.pu },
-    })
-
+    // STEP B: Find first event where U <= L+1 && u >= L+1 (Binance overlap condition)
+    // This is the event that "bridges" the snapshot to the live stream.
     let startIdx = -1
     for (let i = 0; i < valid.length; i++) {
       const e = valid[i]
@@ -496,69 +503,61 @@ export function createLocalOrderBook(
       }
     }
 
+    debugBookEmit({
+      type: 'overlap_check',
+      symbol,
+      generation: gen,
+      snapshotLastUpdateId: L,
+      condition: `U <= ${L + 1} && u >= ${L + 1}`,
+      bufferedTotal: beforeCount,
+      droppedStale: droppedCount,
+      validRemaining: valid.length,
+      firstValidEvent: { U: firstBuf.U, u: firstBuf.u, pu: firstBuf.pu },
+      lastValidEvent: { U: lastBuf.U, u: lastBuf.u, pu: lastBuf.pu },
+      foundOverlap: startIdx >= 0,
+      overlapIndex: startIdx,
+    })
+
     if (startIdx === -1) {
-      // OVERSHOOT DETECTION: If the earliest buffered event starts AFTER L+1,
-      // the buffer has moved past the snapshot. Overlap is impossible — resync now.
+      // No event spans L+1.
+      // Check if the buffer overshot: first valid event starts AFTER L+1
       if (firstBuf.U > L + 1) {
-        devWarn(`processBufferedEvents: BUFFER OVERSHOOT — earliest event U=${firstBuf.U} > snapshot L+1=${L + 1}. Gap=${firstBuf.U - L}. Resyncing.`)
+        devWarn(`[gen=${gen}] BUFFER OVERSHOOT: first valid U=${firstBuf.U} > L+1=${L + 1}. Gap=${firstBuf.U - L - 1}. Need fresh snapshot.`)
         debugBookEmit({
-          type: 'overlap_overshoot',
+          type: 'overshoot',
           symbol,
           generation: gen,
           snapshotLastUpdateId: L,
-          neededU: `<= ${L + 1}`,
-          actualFirstU: firstBuf.U,
-          gap: firstBuf.U - L,
-          bufferedEventsCount: valid.length,
-          action: 'resync — fetch fresh snapshot',
+          firstValidU: firstBuf.U,
+          gap: firstBuf.U - L - 1,
+          action: 'will timeout → resync',
         })
-        // Clear the stale buffered events
-        pendingEvents = []
-        return false  // caller will see SYNCING → timeout → resync
+        // Don't resync immediately — let the timeout handle it to avoid resync storms.
+        // The SYNCING timeout (15s) will trigger recordSyncFailure → resync.
+        setHealth('SYNCING', 'Buffer gap — waiting for fresh snapshot…')
+        syncingStartTime = Date.now()
+        return false
       }
 
-      // Buffer hasn't overshot — events are within range but no exact match yet.
-      // This can happen if events start before L+1 but don't extend past L+1.
-      devLog(`processBufferedEvents: no exact overlap yet (first U=${firstBuf.U}, last u=${lastBuf.u}, need U<=${L + 1}&&u>=${L + 1}), waiting for live`)
-      debugBookEmit({
-        type: 'overlap_check',
-        symbol,
-        generation: gen,
-        foundOverlap: false,
-        reason: `events in range but no single event spans L+1=${L + 1}`,
-      })
+      // Events exist but none span L+1 yet. Wait for live events.
+      devLog(`[gen=${gen}] no overlap yet: first U=${firstBuf.U}, last u=${lastBuf.u}, need U<=${L+1} && u>=${L+1}`)
       setHealth('SYNCING', 'Waiting for overlapping diff event…')
       syncingStartTime = Date.now()
       return false
     }
 
-    const firstEvent = valid[startIdx]
-    devLog(`OVERLAP FOUND: event[${startIdx}] U=${firstEvent.U} u=${firstEvent.u} (snapshot L=${L})`)
-
-    debugBookEmit({
-      type: 'overlap_found',
-      symbol,
-      generation: gen,
-      snapshotLastUpdateId: L,
-      overlapEvent: { U: firstEvent.U, u: firstEvent.u, pu: firstEvent.pu, T: firstEvent.T },
-      eventsToApply: valid.length - startIdx,
-    })
+    // STEP C: Found overlap — apply from startIdx onward
+    const overlapEvent = valid[startIdx]
+    devLog(`[gen=${gen}] OVERLAP FOUND at index ${startIdx}: U=${overlapEvent.U} u=${overlapEvent.u} (L=${L})`)
 
     for (let i = startIdx; i < valid.length; i++) {
       const event = valid[i]
+      // Validate pu continuity (per Binance docs: pu must equal previous u)
       if (i > startIdx && event.pu !== undefined) {
         const prevEvent = valid[i - 1]
         if (event.pu !== prevEvent.u) {
-          devWarn(`sequence gap in buffered events: pu=${event.pu} !== prev.u=${prevEvent.u}`)
-          debugBookEmit({
-            type: 'sequence_gap',
-            symbol,
-            generation: gen,
-            eventIndex: i,
-            expectedPu: prevEvent.u,
-            actualPu: event.pu,
-          })
-          recordSyncFailure(`Sequence gap at event ${i}: pu=${event.pu} != prev.u=${prevEvent.u}`)
+          devWarn(`[gen=${gen}] pu gap at index ${i}: pu=${event.pu} != prev.u=${prevEvent.u}`)
+          recordSyncFailure(`Sequence gap: pu=${event.pu} != prev.u=${prevEvent.u}`)
           return false
         }
       }
@@ -570,29 +569,30 @@ export function createLocalOrderBook(
     return true
   }
 
+  /**
+   * Handle a live diff event after the snapshot has been loaded.
+   *
+   * If strict is already healthy: apply with pu continuity check.
+   * If not yet healthy: look for the first event that spans lastUpdateId+1.
+   */
   function handleDiffEvent(event: DiffDepthEvent, gen: number) {
     if (gen !== generation) return
     book.lastMessageTime = Date.now()
 
-    // Snapshot is always loaded before WebSocket connects (new flow).
-    // Events that arrive before onopen are buffered in pendingEvents.
-    // This branch handles events after onopen.
+    // Safety buffer if snapshot not loaded yet
     if (!snapshotLoaded) {
-      // Safety: should not happen in new flow, but buffer just in case
-      if (pendingEvents.length < MAX_BUFFER_EVENTS) {
-        pendingEvents.push(event)
-      }
+      if (pendingEvents.length < MAX_BUFFER_EVENTS) pendingEvents.push(event)
       return
     }
 
-    // Drop stale events (already covered by snapshot or previously applied)
+    // Drop stale events (u <= lastUpdateId, per Binance docs)
     if (event.u <= book.lastUpdateId) return
 
-    // If strict book is already healthy, just apply and emit
+    // ── Strict book already healthy: apply with pu check ──
     if (strictHealthy) {
       if (event.pu !== undefined && event.pu !== lastAppliedUpdateId) {
-        devWarn(`pu mismatch on healthy book: event.pu=${event.pu} !== lastApplied=${lastAppliedUpdateId}`)
-        recordSyncFailure(`pu mismatch on healthy book: ${event.pu} !== ${lastAppliedUpdateId}`)
+        devWarn(`[gen=${gen}] pu mismatch on HEALTHY book: pu=${event.pu} != lastApplied=${lastAppliedUpdateId}`)
+        recordSyncFailure(`pu mismatch on healthy book: ${event.pu} != ${lastAppliedUpdateId}`)
         return
       }
       applyDiff(event)
@@ -602,18 +602,19 @@ export function createLocalOrderBook(
       return
     }
 
-    // Strict not yet healthy — looking for first overlap after snapshot
+    // ── Not yet healthy: find first overlap ──
     if (!firstEventValidated) {
       const L = book.lastUpdateId
+
       if (event.U <= L + 1 && event.u >= L + 1) {
-        // OVERLAP FOUND — this is the first event that connects to the snapshot
+        // OVERLAP FOUND — this event bridges the snapshot
         firstEventValidated = true
         lastPu = event.pu ?? null
         applyDiff(event)
         promoteToHealthy()
-        devLog(`LIVE overlap found: U=${event.U} u=${event.u} L=${L} → HEALTHY`)
+        devLog(`[gen=${gen}] LIVE overlap: U=${event.U} u=${event.u} L=${L} → HEALTHY`)
         debugBookEmit({
-          type: 'live_overlap_found',
+          type: 'live_overlap',
           symbol,
           generation: gen,
           snapshotLastUpdateId: L,
@@ -621,11 +622,12 @@ export function createLocalOrderBook(
         })
         return
       }
-      // Event doesn't overlap yet — if it's far past the snapshot, the gap is unbridgeable
+
+      // Gap: event starts too far past snapshot — unbridgeable
       if (event.U > L + 1) {
-        devWarn(`live event gap: U=${event.U} > L+1=${L + 1} (gap=${event.U - L - 1}). Impossible overlap — resyncing.`)
+        devWarn(`[gen=${gen}] live gap: U=${event.U} > L+1=${L + 1} (gap=${event.U - L - 1})`)
         debugBookEmit({
-          type: 'live_overlap_impossible',
+          type: 'live_gap',
           symbol,
           generation: gen,
           snapshotLastUpdateId: L,
@@ -635,23 +637,20 @@ export function createLocalOrderBook(
         recordSyncFailure(`Live event gap: U=${event.U} > L+1=${L + 1}`)
         return
       }
-      // Event is before snapshot — drop it (stale)
+
+      // Event starts before snapshot — stale, drop
       return
     }
 
-    // firstEventValidated is true, strict not yet healthy — apply with pu check
-    if (event.pu !== undefined) {
-      if (event.pu !== lastAppliedUpdateId) {
-        devWarn(`pu mismatch: event.pu=${event.pu} !== lastApplied=${lastAppliedUpdateId}`)
-        recordSyncFailure(`pu mismatch: ${event.pu} !== ${lastAppliedUpdateId}`)
-        return
-      }
+    // ── firstEventValidated but not yet healthy (shouldn't happen normally) ──
+    if (event.pu !== undefined && event.pu !== lastAppliedUpdateId) {
+      devWarn(`[gen=${gen}] pu mismatch: pu=${event.pu} != lastApplied=${lastAppliedUpdateId}`)
+      recordSyncFailure(`pu mismatch: ${event.pu} != ${lastAppliedUpdateId}`)
+      return
     }
 
     applyDiff(event)
     lastPu = event.pu ?? null
-
-    // Strict book is authoritative — emit and set source
     setSource('strict')
     emitBook()
   }
@@ -770,14 +769,30 @@ export function createLocalOrderBook(
   }
 
   /**
-   * FIXED SYNC FLOW (Binance official methodology):
-   * 1. Fetch REST snapshot FIRST (get recent lastUpdateId)
-   * 2. THEN connect diff stream (events arrive AFTER snapshot)
-   * 3. First event with U <= lastUpdateId+1 && u >= lastUpdateId+1 is the overlap
-   * 4. Apply from overlap onward → promote to HEALTHY
+   * CORRECT Binance Futures local order book sync (WebSocket-first):
    *
-   * Previous bug: WebSocket was connected before snapshot, so buffered events
-   * overshot the snapshot's lastUpdateId, making overlap impossible.
+   * Per https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly
+   *
+   * 1. Open diff-depth WebSocket stream → buffer events
+   * 2. Fetch REST depth snapshot
+   * 3. Drop any buffered event where u <= snapshot.lastUpdateId
+   * 4. Find first event that spans lastUpdateId+1:
+   *    event.U <= lastUpdateId+1 && event.u >= lastUpdateId+1
+   * 5. Apply snapshot, then apply from overlap event onward
+   * 6. For subsequent events, validate pu == previous.u
+   * 7. If gap detected, restart from step 2
+   *
+   * WHY snapshot-first was wrong:
+   *   Snapshot-first means the diff stream starts AFTER the snapshot.
+   *   By the time the WebSocket connects and events arrive, they've
+   *   already moved past the snapshot's lastUpdateId. The overlap
+   *   condition can never be satisfied → permanent SYNCING.
+   *
+   * WHY WebSocket-first works:
+   *   Events are buffered from the moment the stream connects.
+   *   The snapshot is fetched immediately after.
+   *   The snapshot's lastUpdateId is recent, and the buffered events
+   *   bracket it — guaranteeing an overlap exists.
    */
   async function connectStrictStreamThenSnapshot() {
     if (disposed) return
@@ -789,16 +804,64 @@ export function createLocalOrderBook(
     const myGen = ++generation
     syncStartTime = Date.now()
 
-    // ── STEP 1: Fetch REST snapshot FIRST ──
+    // ── STEP 1: Connect diff-depth WebSocket FIRST (per Binance docs) ──
+    const wsSymbol = symbol.toLowerCase() + '@depth@100ms'
+    const url = `${WS_BASE}/${wsSymbol}`
+    devLog(`[gen=${myGen}] STEP 1: connecting strict diff stream: ${url}`)
+    registryAdd(STREAM_NAME, symbol, myGen, url)
+
+    const socket = new WebSocket(url)
+    strictWs = socket
+
+    // Buffer events immediately on message (before snapshot loads)
+    socket.onmessage = (event) => {
+      if (disposed || generation !== myGen) return
+      try {
+        const msg = JSON.parse(event.data as string)
+        const diffEvent: DiffDepthEvent = {
+          U: msg.U, u: msg.u, pu: msg.pu,
+          b: msg.b ?? [], a: msg.a ?? [], T: msg.T,
+        }
+        book.lastMessageTime = Date.now()
+        // Always buffer — snapshot not loaded yet
+        if (!snapshotLoaded && pendingEvents.length < MAX_BUFFER_EVENTS) {
+          pendingEvents.push(diffEvent)
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    socket.onopen = () => {
+      if (disposed || generation !== myGen) return
+      devLog(`[gen=${myGen}] strict diff stream connected, buffered so far: ${pendingEvents.length}`)
+      setHealth('BUFFERING', 'Buffering diff events…')
+    }
+
+    socket.onclose = (ev) => {
+      if (disposed || generation !== myGen) return
+      devLog(`[gen=${myGen}] strict diff stream closed: code=${ev.code}`)
+      strictWs = null
+      if (strictHealthy) {
+        strictHealthy = false
+        setHealth('STALE', 'Strict stream disconnected')
+        setSource('depth20')
+      }
+    }
+
+    socket.onerror = () => {
+      if (disposed || generation !== myGen) return
+      socket.close()
+    }
+
+    // ── STEP 2: Fetch REST snapshot (stream is already buffering) ──
     setHealth('SNAPSHOT_LOADING', 'Loading depth snapshot…')
 
     debugBookEmit({
       type: 'strict_sync_start',
       symbol,
       generation: myGen,
-      phase: 'snapshot_first',
+      phase: 'websocket_first',
+      wsUrl: url,
       snapshotUrl: `${REST_SNAPSHOT_URL}?symbol=${symbol.toUpperCase()}&limit=${SNAPSHOT_LIMIT}`,
-      displayBookSource: book.source,
     })
 
     if (snapshotAbort) snapshotAbort.abort()
@@ -811,74 +874,40 @@ export function createLocalOrderBook(
 
     let snapshot: DepthSnapshot
     try {
-      const snapshotStart = Date.now()
+      const t0 = Date.now()
       snapshot = await fetchDepthSnapshot(symbol, ac.signal)
       clearTimeout(snapshotTimeout)
       if (disposed || myGen !== generation || ac.signal.aborted) return
 
-      const durationMs = Date.now() - snapshotStart
       debugBookEmit({
         type: 'snapshot_loaded',
         symbol,
         generation: myGen,
         lastUpdateId: snapshot.lastUpdateId,
-        bidsCount: snapshot.bids.length,
-        asksCount: snapshot.asks.length,
-        durationMs,
+        durationMs: Date.now() - t0,
+        bufferedEventsCount: pendingEvents.length,
       })
     } catch (err) {
       clearTimeout(snapshotTimeout)
       if (disposed || myGen !== generation) return
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        devWarn('snapshot request aborted (timeout or generation change)')
-        recordSyncFailure('Snapshot request timeout')
-        return
-      }
       const msg = err instanceof Error ? err.message : 'Snapshot fetch failed'
-      devWarn(`snapshot error: ${msg}`)
+      devWarn(`[gen=${myGen}] snapshot error: ${msg}`)
       recordSyncFailure(msg)
       return
     }
 
-    // ── STEP 2: Apply snapshot, THEN connect diff stream ──
-    // Snapshot is now fresh. Events from the WebSocket will arrive AFTER
-    // the snapshot's lastUpdateId, guaranteeing the overlap condition
-    // can be satisfied.
+    // ── STEP 3: Apply snapshot, then process buffered events ──
     applySnapshot(snapshot)
-
     if (disposed || myGen !== generation) return
 
-    // Connect diff stream — events will buffer while we look for overlap
-    const wsSymbol = symbol.toLowerCase() + '@depth@100ms'
-    const url = `${WS_BASE}/${wsSymbol}`
-    devLog(`connecting strict diff stream (snapshot lastUpdateId=${snapshot.lastUpdateId}): ${url}`)
-    registryAdd(STREAM_NAME, symbol, myGen, url)
-
-    const socket = new WebSocket(url)
-    strictWs = socket
-
-    socket.onopen = () => {
-      if (disposed || myGen !== generation) return
-      devLog('strict diff stream connected')
-      // Snapshot already loaded — check if any events buffered during connection
-      const ok = processBufferedEvents(myGen)
-      if (!ok && myGen === generation && !disposed) {
-        setHealth('SYNCING', 'Waiting for overlapping diff event…')
-        syncingStartTime = Date.now()
-      }
-    }
-
+    // Re-wire onmessage to the full handler (now that snapshot is loaded)
     socket.onmessage = (event) => {
-      if (disposed || myGen !== generation) return
+      if (disposed || generation !== myGen) return
       try {
         const msg = JSON.parse(event.data as string)
         const diffEvent: DiffDepthEvent = {
-          U: msg.U,
-          u: msg.u,
-          pu: msg.pu,
-          b: msg.b ?? [],
-          a: msg.a ?? [],
-          T: msg.T,
+          U: msg.U, u: msg.u, pu: msg.pu,
+          b: msg.b ?? [], a: msg.a ?? [], T: msg.T,
         }
         handleDiffEvent(diffEvent, myGen)
       } catch (err) {
@@ -886,41 +915,43 @@ export function createLocalOrderBook(
       }
     }
 
-    socket.onclose = (ev) => {
-      if (disposed || myGen !== generation) return
-      devLog(`strict diff stream closed: code=${ev.code} wasClean=${ev.wasClean}`)
-      strictWs = null
+    // Process buffered events — find overlap
+    const ok = processBufferedEvents(myGen)
+    if (ok) {
+      // HEALTHY — wired up live handler, done
+      startTimeoutChecker()
+      return
+    }
 
+    if (disposed || myGen !== generation) return
+
+    // Not yet HEALTHY — check if we need to resync (buffer overshot)
+    // processBufferedEvents already set health to SYNCING if events exist
+    // or SYNCING if no valid overlap yet
+    devLog(`[gen=${myGen}] STEP 3 result: not healthy yet, waiting for live overlap`)
+
+    // Wire up close handler for reconnect
+    socket.onclose = (ev) => {
+      if (disposed || generation !== myGen) return
+      devLog(`[gen=${myGen}] strict diff stream closed: code=${ev.code}`)
+      strictWs = null
       if (strictHealthy) {
-        // Was healthy, now disconnected — fall back to depth20
         strictHealthy = false
         setHealth('STALE', 'Strict stream disconnected')
         setSource('depth20')
       }
-
       const delay = getBackoffDelay(book.reconnectAttempts)
       book.reconnectAttempts++
       scheduleReconnect(() => {
         if (!disposed && generation === myGen) {
-          if (isDegraded) {
-            enterDegraded()
-          } else {
-            triggerStrictResync('reconnect after strict disconnect')
-          }
+          if (isDegraded) enterDegraded()
+          else triggerStrictResync('strict stream closed during sync')
         }
       }, delay)
     }
 
-    socket.onerror = (ev) => {
-      if (disposed || myGen !== generation) return
-      devWarn('strict diff stream error:', ev)
-      socket.close()
-    }
-
     startTimeoutChecker()
   }
-
-  // loadSnapshot removed — snapshot is now fetched inline in connectStrictStreamThenSnapshot
 
   // ═══════════════════════════════════════════
   // STRICT RESYNC (background, preserves display)

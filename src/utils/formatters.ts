@@ -12,7 +12,11 @@ export function fmtNum(n: number | null | undefined): string {
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B'
   if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M'
   if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toFixed(0)
+  if (Math.abs(n) >= 100) return n.toFixed(0)
+  if (Math.abs(n) >= 10) return n.toFixed(1)
+  if (Math.abs(n) >= 1) return n.toFixed(2)
+  if (Math.abs(n) >= 0.01) return n.toFixed(4)
+  return n.toFixed(6)
 }
 
 export function fmtPct(n: number | null | undefined): string {
