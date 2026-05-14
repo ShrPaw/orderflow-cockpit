@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <defs>
+    <linearGradient id="sonar-glow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0ff0e0" stop-opacity="0.0"/>
+      <stop offset="50%" stop-color="#0ff0e0" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#0ff0e0" stop-opacity="0.0"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="400" fill="#0a0e14"/>
+  
+  <!-- Sonar arcs emanating from left-center -->
+  <g transform="translate(160, 200)">
+    <!-- Outermost arc - faintest -->
+    <path d="M 0,-120 A 120,120 0 0,1 104,60" fill="none" stroke="#00d4c8" stroke-width="1.2" opacity="0.15" stroke-linecap="round"/>
+    <path d="M 0,120 A 120,120 0 0,1 -104,-60" fill="none" stroke="#00d4c8" stroke-width="1.2" opacity="0.15" stroke-linecap="round"/>
+    
+    <!-- Mid arc -->
+    <path d="M 0,-85 A 85,85 0 0,1 73.6,42.5" fill="none" stroke="#00e4d8" stroke-width="1.8" opacity="0.3" stroke-linecap="round"/>
+    <path d="M 0,85 A 85,85 0 0,1 -73.6,-42.5" fill="none" stroke="#00e4d8" stroke-width="1.8" opacity="0.3" stroke-linecap="round"/>
+    
+    <!-- Inner arc -->
+    <path d="M 0,-52 A 52,52 0 0,1 45,26" fill="none" stroke="#00f0e8" stroke-width="2.5" opacity="0.6" stroke-linecap="round"/>
+    <path d="M 0,52 A 52,52 0 0,1 -45,-26" fill="none" stroke="#00f0e8" stroke-width="2.5" opacity="0.6" stroke-linecap="round"/>
+    
+    <!-- Core pulse ring -->
+    <circle cx="0" cy="0" r="22" fill="none" stroke="#00f5ec" stroke-width="2" opacity="0.8"/>
+    
+    <!-- Central detection point -->
+    <circle cx="0" cy="0" r="5" fill="#00f5ec" opacity="0.9"/>
+    <circle cx="0" cy="0" r="10" fill="#00f5ec" opacity="0.12"/>
+    
+    <!-- Subtle scan line -->
+    <line x1="0" y1="0" x2="135" y2="-15" stroke="#00f5ec" stroke-width="0.8" opacity="0.25" stroke-dasharray="2,6"/>
+    
+    <!-- Depth dots - suggesting detected liquidity -->
+    <circle cx="95" cy="-35" r="2.5" fill="#00f5ec" opacity="0.5"/>
+    <circle cx="110" cy="20" r="1.8" fill="#00f5ec" opacity="0.35"/>
+    <circle cx="75" cy="55" r="2" fill="#00f5ec" opacity="0.4"/>
+    <circle cx="125" cy="-8" r="1.5" fill="#00f5ec" opacity="0.25"/>
+  </g>
+  
+  <!-- Wordmark -->
+  <text x="340" y="190" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="38" font-weight="300" letter-spacing="8" fill="#e8edf2">ORDERFLOW</text>
+  <text x="340" y="228" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="24" font-weight="200" letter-spacing="14" fill="#5a6a7a">COCKPIT</text>
+  
+  <!-- Subtle separator line -->
+  <line x1="340" y1="200" x2="580" y2="200" stroke="#1a2a3a" stroke-width="0.5"/>
+</svg>

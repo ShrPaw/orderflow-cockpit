@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <rect width="800" height="400" fill="#0a0e14"/>
+  
+  <!-- Tactical Flow Instrument mark -->
+  <g transform="translate(160, 200)">
+    <!-- Outer instrument frame - partial hexagon, open on right side -->
+    <path d="M -65,-37.5 L 0,-75 L 65,-37.5" fill="none" stroke="#1a3a4a" stroke-width="1.5" opacity="0.5" stroke-linecap="round"/>
+    <path d="M -65,37.5 L 0,75 L 65,37.5" fill="none" stroke="#1a3a4a" stroke-width="1.5" opacity="0.5" stroke-linecap="round"/>
+    <line x1="-65" y1="-37.5" x2="-65" y2="37.5" stroke="#1a3a4a" stroke-width="1.5" opacity="0.5" stroke-linecap="round"/>
+    
+    <!-- Inner precision ring -->
+    <circle cx="0" cy="0" r="38" fill="none" stroke="#0e6a8a" stroke-width="1" opacity="0.35"/>
+    
+    <!-- Tick marks on the ring (instrument markings) -->
+    <line x1="0" y1="-38" x2="0" y2="-32" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    <line x1="33" y1="-19" x2="28" y2="-16" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    <line x1="33" y1="19" x2="28" y2="16" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    <line x1="0" y1="38" x2="0" y2="32" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    <line x1="-33" y1="19" x2="-28" y2="16" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    <line x1="-33" y1="-19" x2="-28" y2="-16" stroke="#00b8c4" stroke-width="1.2" opacity="0.5"/>
+    
+    <!-- Flow direction indicator - abstract arrow/needle -->
+    <path d="M -20,0 L 0,-8 L 35,0 L 0,8 Z" fill="#00e8dc" opacity="0.7"/>
+    <path d="M -20,0 L 0,-8 L 35,0 L 0,8 Z" fill="none" stroke="#00f5ec" stroke-width="1.2" opacity="0.9"/>
+    
+    <!-- Detection beam extending right (open side) -->
+    <line x1="40" y1="0" x2="95" y2="0" stroke="#00f5ec" stroke-width="1.5" opacity="0.6" stroke-linecap="round"/>
+    <line x1="40" y1="0" x2="85" y2="-18" stroke="#00f5ec" stroke-width="0.6" opacity="0.25" stroke-linecap="round"/>
+    <line x1="40" y1="0" x2="85" y2="18" stroke="#00f5ec" stroke-width="0.6" opacity="0.25" stroke-linecap="round"/>
+    
+    <!-- Scattered detection points -->
+    <circle cx="80" cy="-12" r="2" fill="#00f5ec" opacity="0.4"/>
+    <circle cx="90" cy="6" r="1.5" fill="#00f5ec" opacity="0.3"/>
+    <circle cx="75" cy="15" r="1.8" fill="#00f5ec" opacity="0.35"/>
+    
+    <!-- Center instrument point -->
+    <circle cx="0" cy="0" r="4" fill="#00f5ec" opacity="0.9"/>
+    <circle cx="0" cy="0" r="2" fill="#0a0e14" opacity="1"/>
+  </g>
+  
+  <!-- Wordmark -->
+  <text x="330" y="190" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="38" font-weight="300" letter-spacing="8" fill="#e8edf2">ORDERFLOW</text>
+  <text x="330" y="228" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="24" font-weight="200" letter-spacing="14" fill="#5a6a7a">COCKPIT</text>
+  
+  <line x1="330" y1="200" x2="570" y2="200" stroke="#1a2a3a" stroke-width="0.5"/>
+</svg>
