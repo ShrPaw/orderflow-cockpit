@@ -15,12 +15,16 @@ export default function ConnectionStatus() {
   if (mode === 'live') {
     const tradeProblem = !connected || !!tradeError
     const bookRealProblem = orderBookHealth === 'STALE' || orderBookHealth === 'ERROR'
-    const bookDegraded = orderBookHealth === 'DEGRADED'
-    // Transitional states — strict sync in progress, depth20 providing data
+
+    // depth20 is providing valid live data — this is NORMAL, not degraded
+    const bookLiveTop20 = orderBookHealth === 'TOP20' || orderBookHealth === 'DEGRADED'
+
+    // Strict sync is in progress but depth20 is handling display
     const bookTransitional = orderBookHealth === 'SNAPSHOT_LOADING'
       || orderBookHealth === 'SYNCING'
       || orderBookHealth === 'BUFFERING'
       || orderBookHealth === 'RESYNCING'
+      || orderBookHealth === 'CONNECTING'
 
     // Priority 1: Real book problems (STALE / ERROR)
     if (bookRealProblem) {
@@ -57,40 +61,32 @@ export default function ConnectionStatus() {
       )
     }
 
-    // Priority 3: DEGRADED — strict sync failed, using depth20 fallback
-    // This is an honest warning, not a crisis — the book still works.
-    if (bookDegraded) {
-      return (
-        <div className="conn-bar connecting" style={{
-          background: 'rgba(228,167,59,0.08)',
-          borderColor: 'rgba(228,167,59,0.2)',
-        }}>
-          <span className="conn-bar-icon">↻</span>
-          <span className="conn-bar-text">Order book using top-20 fallback — strict sync retrying</span>
-          <span className="conn-bar-detail">
-            source:{orderBookSource} ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'}
-          </span>
-          <button className="conn-bar-action" onClick={() => resyncOrderBook()}>Resync</button>
-        </div>
-      )
+    // Priority 3: All good — ticker, trades, and display book are live
+    // depth20 as display source is perfectly normal and stable.
+    // No warning bar needed.
+    if (bookLiveTop20 && connected && tickerConnected) {
+      return null
     }
 
-    // Priority 4: Transitional states — strict sync in progress
-    // depth20 is providing live data, so this is NOT an error.
-    // Show as a subtle loading indicator, not a scary warning.
-    if (bookTransitional) {
+    // Priority 4: Strict book is healthy — even better
+    if (orderBookHealth === 'HEALTHY' && connected && tickerConnected) {
+      return null
+    }
+
+    // Priority 5: Transitional — strict sync in progress, depth20 may not be ready yet
+    if (bookTransitional && !bookLiveTop20) {
       return (
         <div className="conn-bar connecting">
           <span className="conn-bar-spinner" />
-          <span className="conn-bar-text">Order book loading…</span>
+          <span className="conn-bar-text">Connecting to Binance Futures…</span>
           <span className="conn-bar-detail">
-            source:{orderBookSource} ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'}
+            ticker:{tickerConnected?'✓':'✗'} trades:{connected?'✓':'✗'} book:{orderBookHealth}
           </span>
         </div>
       )
     }
 
-    // Priority 5: Still connecting streams
+    // Priority 6: Still connecting streams
     if (!connected || !depthConnected || !tickerConnected) {
       return (
         <div className="conn-bar connecting">
@@ -103,7 +99,7 @@ export default function ConnectionStatus() {
       )
     }
 
-    // All good — no bar
+    // Default: no bar
     return null
   }
 

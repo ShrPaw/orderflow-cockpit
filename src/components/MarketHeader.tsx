@@ -14,6 +14,7 @@ export default function MarketHeader() {
   const tradeError = useMarketStore(s => s.tradeError)
   const tickerError = useMarketStore(s => s.tickerError)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
+  const orderBookSource = useMarketStore(s => s.orderBookSource)
 
   if (mode === 'demo') return null
 
@@ -64,8 +65,8 @@ export default function MarketHeader() {
             title={tickerError || (tickerConnected ? 'Ticker connected' : 'Ticker disconnected')} />
           <span className={`mh-stream-dot ${connected ? 'ok' : 'fail'}`}
             title={tradeError || (connected ? 'Trades connected' : 'Trades disconnected')} />
-          <span className={`mh-stream-dot ${orderBookHealth === 'HEALTHY' ? 'ok' : orderBookHealth === 'DEGRADED' ? 'warn' : 'fail'}`}
-            title={`Book: ${orderBookHealth}`} />
+          <span className={`mh-stream-dot ${orderBookHealth === 'HEALTHY' || orderBookHealth === 'TOP20' || orderBookHealth === 'DEGRADED' ? 'ok' : orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' ? 'fail' : 'warn'}`}
+            title={`Book: ${orderBookHealth} (${orderBookSource})`} />
         </div>
         {!allConnected && mode === 'live' && (
           <div className="mh-conn-badge disconnected">

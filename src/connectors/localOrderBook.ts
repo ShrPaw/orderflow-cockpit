@@ -25,6 +25,7 @@ import type {
   OrderLevel, OrderBookHealth, OrderBookSource, DiffDepthEvent, DepthSnapshot,
 } from '../types/market'
 import { registryAdd, registryRemove } from './connectionRegistry'
+import { isSpreadSane, validateBookIntegrity } from '../utils/bookValidation'
 
 // ═══════════════════════════════════════════
 // TYPES
@@ -247,9 +248,29 @@ export function createLocalOrderBook(
   // HEALTH + SOURCE MANAGEMENT
   // ═══════════════════════════════════════════
 
+  // States where depth20 is providing valid display data
+  const DEPTH20_ACTIVE_STATES: OrderBookHealth[] = ['TOP20', 'DEGRADED']
+  // Strict sync transitional states that should NOT overwrite depth20-active states
+  const STRICT_TRANSITIONAL_STATES: OrderBookHealth[] = ['BUFFERING', 'SNAPSHOT_LOADING', 'SYNCING', 'RESYNCING', 'CONNECTING']
+
   function setHealth(h: OrderBookHealth, err: string | null = null) {
     const prev = book.health
     if (prev === h && book.error === err) return
+
+    // PROTECTION: Don't let strict sync transitional states downgrade
+    // a depth20-active state. If depth20 is providing valid data (TOP20 or DEGRADED),
+    // strict sync's loading states should not overwrite it.
+    if (STRICT_TRANSITIONAL_STATES.includes(h) && DEPTH20_ACTIVE_STATES.includes(prev)) {
+      debugBookEmit({
+        type: 'health_blocked',
+        symbol,
+        requested: h,
+        current: prev,
+        reason: 'depth20 active — strict transitional state blocked',
+      })
+      return
+    }
+
     book.health = h
     book.error = err
     devLog(`health: ${prev} → ${h}`, err ?? '')
@@ -345,23 +366,50 @@ export function createLocalOrderBook(
     book.lastMessageTime = Date.now()
     lastDepth20Time = Date.now()
 
-    const bids: [string, string][] = msg.bids ?? msg.b ?? []
-    const asks: [string, string][] = msg.asks ?? msg.a ?? []
+    const bidsRaw: [string, string][] = msg.bids ?? msg.b ?? []
+    const asksRaw: [string, string][] = msg.asks ?? msg.a ?? []
 
     // If strict is HEALTHY, strict owns the book — don't overwrite
     if (strictHealthy && book.health === 'HEALTHY') return
 
-    // depth20 is a full top-20 snapshot — replace book
+    // Parse and sort depth20 data (it's a full top-20 snapshot)
+    const parsedBids: [string, number][] = []
+    const parsedAsks: [string, number][] = []
+    for (const [priceStr, qtyStr] of bidsRaw) {
+      const qty = parseFloat(qtyStr as string)
+      if (qty > 0) parsedBids.push([priceStr as string, qty])
+    }
+    for (const [priceStr, qtyStr] of asksRaw) {
+      const qty = parseFloat(qtyStr as string)
+      if (qty > 0) parsedAsks.push([priceStr as string, qty])
+    }
+
+    // Sort: bids descending, asks ascending (depth20 may not always be sorted)
+    parsedBids.sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]))
+    parsedAsks.sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+
+    // Quick sanity check on spread before accepting
+    if (parsedBids.length > 0 && parsedAsks.length > 0) {
+      const bestBid = parsedBids[0][1]
+      const bestAsk = parsedAsks[0][1]
+      if (!isSpreadSane(bestBid, bestAsk)) {
+        debugBookEmit({
+          type: 'depth20_rejected',
+          symbol,
+          reason: 'unrealistic spread',
+          bestBid,
+          bestAsk,
+          spreadPct: ((bestAsk - bestBid) / bestBid * 100).toFixed(4),
+        })
+        return // Reject this update — don't corrupt the book
+      }
+    }
+
+    // Replace book atomically
     book.bids.clear()
     book.asks.clear()
-    for (const [priceStr, qtyStr] of bids) {
-      const qty = parseFloat(qtyStr as string)
-      if (qty > 0) book.bids.set(priceStr, qty)
-    }
-    for (const [priceStr, qtyStr] of asks) {
-      const qty = parseFloat(qtyStr as string)
-      if (qty > 0) book.asks.set(priceStr, qty)
-    }
+    for (const [priceStr, qty] of parsedBids) book.bids.set(priceStr, qty)
+    for (const [priceStr, qty] of parsedAsks) book.asks.set(priceStr, qty)
 
     // depth20 has no diff tracking — use 0
     book.lastUpdateId = 0
@@ -372,11 +420,20 @@ export function createLocalOrderBook(
     if (!strictHealthy || book.health !== 'HEALTHY') {
       setSource('depth20')
 
-      // If we're in a transitional state (SNAPSHOT_LOADING, SYNCING, BUFFERING, CONNECTING)
-      // and depth20 is providing data, promote to TOP20
-      const transitionalStates = ['CONNECTING', 'BUFFERING', 'SNAPSHOT_LOADING', 'SYNCING']
-      if (transitionalStates.includes(book.health) || book.health === 'DISCONNECTED') {
-        setHealth('TOP20', 'Using top-20 fallback while strict sync loads')
+      // depth20 is providing valid data — promote to TOP20.
+      // IMPORTANT: TOP20 is a valid, stable display state.
+      // Do NOT overwrite with strict sync's transitional states.
+      const health = book.health
+      const shouldPromote = health === 'CONNECTING'
+        || health === 'DISCONNECTED'
+        || health === 'TOP20'  // already TOP20, stay there
+        || health === 'SNAPSHOT_LOADING'
+        || health === 'BUFFERING'
+        || health === 'SYNCING'
+        || health === 'RESYNCING'
+
+      if (shouldPromote) {
+        setHealth('TOP20')
       }
 
       emitBook()
@@ -389,10 +446,10 @@ export function createLocalOrderBook(
       debugBookEmit({
         type: 'depth20_update',
         symbol,
-        bidsCount: bids.length,
-        asksCount: asks.length,
-        bestBid: bids.length > 0 ? bids[0][0] : 'N/A',
-        bestAsk: asks.length > 0 ? asks[0][0] : 'N/A',
+        bidsCount: parsedBids.length,
+        asksCount: parsedAsks.length,
+        bestBid: parsedBids.length > 0 ? parsedBids[0][0] : 'N/A',
+        bestAsk: parsedAsks.length > 0 ? parsedAsks[0][0] : 'N/A',
         displayBookSource: book.source,
         orderBookHealth: book.health,
       })

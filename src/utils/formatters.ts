@@ -19,6 +19,33 @@ export function fmtNum(n: number | null | undefined): string {
   return n.toFixed(6)
 }
 
+/**
+ * Format order book quantities with meaningful precision.
+ * Designed for BTC futures where quantities like 0.0010 must not display as "0".
+ *
+ * Examples:
+ *   0.0010 → "0.0010"
+ *   0.0050 → "0.0050"
+ *   0.0123 → "0.0123"
+ *   0.1234 → "0.1234"
+ *   1.2345 → "1.23"
+ *   12.5   → "12.5"
+ *   123.4  → "123"
+ *   1234   → "1.2k"
+ */
+export function fmtQty(qty: number | null | undefined): string {
+  if (qty == null || isNaN(qty)) return '—'
+  if (qty >= 1e9) return (qty / 1e9).toFixed(1) + 'B'
+  if (qty >= 1e6) return (qty / 1e6).toFixed(1) + 'M'
+  if (qty >= 1e3) return (qty / 1e3).toFixed(1) + 'K'
+  if (qty >= 100) return qty.toFixed(0)
+  if (qty >= 10) return qty.toFixed(1)
+  if (qty >= 1) return qty.toFixed(2)
+  if (qty >= 0.01) return qty.toFixed(4)
+  // Small BTC quantities — preserve 4 decimal places minimum
+  return qty.toFixed(4)
+}
+
 export function fmtPct(n: number | null | undefined): string {
   if (n == null || isNaN(n)) return '—'
   const sign = n >= 0 ? '+' : ''

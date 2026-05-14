@@ -1,5 +1,6 @@
 import { useMarketStore } from '../stores/marketStore'
-import { fmtPrice, fmtNum } from '../utils/formatters'
+import { fmtPrice, fmtQty } from '../utils/formatters'
+import { getSpreadInfo } from '../utils/bookValidation'
 
 export default function DOMLite() {
   const bids = useMarketStore(s => s.bids)
@@ -7,6 +8,7 @@ export default function DOMLite() {
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const orderBookSource = useMarketStore(s => s.orderBookSource)
+  const livePrice = useMarketStore(s => s.livePrice)
 
   const isHealthy = orderBookHealth === 'HEALTHY'
   const isTop20 = orderBookHealth === 'TOP20'
@@ -21,11 +23,12 @@ export default function DOMLite() {
   const hasData = bids.length > 0 || asks.length > 0
   const showDimmed = (!isUsable && !isTransitional) || depthStale
 
-  const bestBid = bids[0]?.price ?? 0
-  const bestAsk = asks[0]?.price ?? 0
-  const spread = bestAsk - bestBid
-  const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0
-  const midPrice = (bestBid + bestAsk) / 2
+  // Spread validation
+  const spreadInfo = getSpreadInfo(bids, asks)
+  const { spread, spreadPct, midPrice, sane: spreadSane } = spreadInfo
+
+  // Full book integrity check
+  const bookValid = hasData && spreadSane
 
   const maxQty = Math.max(
     1,
@@ -39,35 +42,36 @@ export default function DOMLite() {
     ? ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
     : 0
 
-  const healthLabel =
-    orderBookHealth === 'HEALTHY' ? '' :
-    orderBookHealth === 'TOP20' ? ' 📉TOP-20' :
-    orderBookHealth === 'DEGRADED' ? ' 📉DEGRADED' :
-    orderBookHealth === 'CONNECTING' ? ' ⏳CONNECTING' :
-    orderBookHealth === 'BUFFERING' ? ' ⏳BUFFERING' :
-    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳STRICT SYNC' :
-    orderBookHealth === 'SYNCING' ? ' ⏳SYNCING' :
-    orderBookHealth === 'RESYNCING' ? ' 🔄RESYNCING' :
+  // Source label — honest but not scary
+  const sourceLabel =
+    orderBookSource === 'strict' ? 'STRICT DEPTH' :
+    orderBookSource === 'depth20' ? 'LIVE TOP-20' :
+    ''
+
+  // Health badge — only show when something is actually wrong
+  const healthBadge =
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
     orderBookHealth === 'ERROR' ? ' ❌ERROR' :
-    ' ⚠DISCONNECTED'
+    '' // HEALTHY, TOP20, DEGRADED, transitional → no badge
 
   return (
     <div className="dom-lite" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="dom-header">
-        <span className="dom-title">Order Book{healthLabel}</span>
+        <span className="dom-title">Order Book{healthBadge}</span>
         <span className="dom-mid">{fmtPrice(midPrice)}</span>
       </div>
 
-      {/* Source label */}
-      {orderBookSource === 'depth20' && hasData && (
-        <div style={{ padding: '2px 8px', fontSize: 9, color: '#4fc3f7', textAlign: 'center', fontFamily: 'monospace' }}>
-          SOURCE: TOP-20 FALLBACK
+      {/* Source label — subtle, not alarming */}
+      {sourceLabel && hasData && (
+        <div style={{ padding: '2px 8px', fontSize: 9, color: orderBookSource === 'strict' ? '#2dd4a0' : '#4fc3f7', textAlign: 'center', fontFamily: 'monospace' }}>
+          {sourceLabel}
         </div>
       )}
-      {orderBookSource === 'strict' && (
-        <div style={{ padding: '2px 8px', fontSize: 9, color: '#2dd4a0', textAlign: 'center', fontFamily: 'monospace' }}>
-          SOURCE: STRICT DIFF-DEPTH
+
+      {/* Spread warning — only when genuinely invalid */}
+      {hasData && !spreadSane && (
+        <div style={{ padding: '2px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          Book integrity check failed — spread {spreadPct.toFixed(3)}%
         </div>
       )}
 
@@ -85,12 +89,12 @@ export default function DOMLite() {
       )}
 
       {/* Show data if available */}
-      {hasData && (
+      {hasData && bookValid && (
         <>
           <div className="dom-asks">
             {asks.slice(0, 10).reverse().map((a, i) => (
               <div key={i} className="dom-row ask">
-                <span className="dom-qty">{fmtNum(a.qty)}</span>
+                <span className="dom-qty">{fmtQty(a.qty)}</span>
                 <div className="dom-bar ask" style={{ width: `${(a.qty / maxQty) * 100}%` }} />
                 <span className="dom-price">{fmtPrice(a.price)}</span>
               </div>
@@ -106,7 +110,7 @@ export default function DOMLite() {
               <div key={i} className="dom-row bid">
                 <span className="dom-price">{fmtPrice(b.price)}</span>
                 <div className="dom-bar bid" style={{ width: `${(b.qty / maxQty) * 100}%` }} />
-                <span className="dom-qty">{fmtNum(b.qty)}</span>
+                <span className="dom-qty">{fmtQty(b.qty)}</span>
               </div>
             ))}
           </div>

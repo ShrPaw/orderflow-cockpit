@@ -1,5 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
+import { fmtQty } from '../utils/formatters'
+import { getSpreadInfo } from '../utils/bookValidation'
 
 const BID_COLORS = [
   'rgba(45,212,160,0.06)',
@@ -13,14 +15,6 @@ const ASK_COLORS = [
   'rgba(239,100,97,0.28)',
   'rgba(239,100,97,0.50)',
 ]
-
-function fmtQty(qty: number): string {
-  if (qty >= 1000) return (qty / 1000).toFixed(1) + 'k'
-  if (qty >= 100) return qty.toFixed(0)
-  if (qty >= 10) return qty.toFixed(1)
-  if (qty >= 1) return qty.toFixed(2)
-  return qty.toFixed(4)
-}
 
 export default function Heatmap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -128,51 +122,44 @@ export default function Heatmap() {
       ctx.globalAlpha = 1.0
     }
 
-    // Spread indicator
+    // Spread indicator — only if book is sane
     if (bids.length > 0 && asks.length > 0) {
-      const bestBidY = h - ((bids[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
-      const bestAskY = h - ((asks[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
-      const spreadMid = (bestBidY + bestAskY + barH) / 2
+      const spreadInfo = getSpreadInfo(bids, asks)
+      if (spreadInfo.sane) {
+        const bestBidY = h - ((bids[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
+        const bestAskY = h - ((asks[0].price - minPrice) / priceRange) * (h - 20) - barH - 4
+        const spreadMid = (bestBidY + bestAskY + barH) / 2
 
-      ctx.strokeStyle = 'rgba(79,195,247,0.2)'
-      ctx.lineWidth = 1
-      ctx.setLineDash([3, 3])
-      ctx.beginPath()
-      ctx.moveTo(0, spreadMid)
-      ctx.lineTo(w, spreadMid)
-      ctx.stroke()
-      ctx.setLineDash([])
+        ctx.strokeStyle = 'rgba(79,195,247,0.2)'
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 3])
+        ctx.beginPath()
+        ctx.moveTo(0, spreadMid)
+        ctx.lineTo(w, spreadMid)
+        ctx.stroke()
+        ctx.setLineDash([])
 
-      const spread = asks[0].price - bids[0].price
-      const spreadPct = bids[0].price > 0 ? (spread / bids[0].price * 100) : 0
-      ctx.fillStyle = 'rgba(79,195,247,0.5)'
-      ctx.font = '8px "SF Mono", monospace'
-      ctx.textAlign = 'center'
-      ctx.fillText(`spread ${spread.toFixed(1)} (${spreadPct.toFixed(3)}%)`, w / 2, spreadMid - 3)
+        ctx.fillStyle = 'rgba(79,195,247,0.5)'
+        ctx.font = '8px "SF Mono", monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText(`spread ${spreadInfo.spread.toFixed(1)} (${spreadInfo.spreadPct.toFixed(3)}%)`, w / 2, spreadMid - 3)
+      }
     }
   }, [bids, asks, showDimmed, isTop20, isDegraded])
 
-  const sourceLabel = orderBookSource === 'depth20' ? ' 📉TOP-20'
-    : orderBookSource === 'strict' ? ''
+  const sourceLabel = orderBookSource === 'strict' ? ' STRICT'
+    : orderBookSource === 'depth20' ? ' TOP-20'
     : ''
 
-  const healthLabel =
-    orderBookHealth === 'HEALTHY' ? '' :
-    orderBookHealth === 'TOP20' ? ' 📉' :
-    orderBookHealth === 'DEGRADED' ? ' 📉' :
-    orderBookHealth === 'CONNECTING' ? ' ⏳' :
-    orderBookHealth === 'BUFFERING' ? ' ⏳' :
-    orderBookHealth === 'SNAPSHOT_LOADING' ? ' ⏳' :
-    orderBookHealth === 'SYNCING' ? ' ⏳' :
-    orderBookHealth === 'RESYNCING' ? ' 🔄' :
+  const healthBadge =
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
     orderBookHealth === 'ERROR' ? ' ❌' :
-    ' ⚠'
+    ''
 
   return (
     <div className="heatmap-container" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="heatmap-header">
-        Liquidity Depth{healthLabel}
+        Liquidity Depth{healthBadge}
         {sourceLabel && (
           <span style={{ fontSize: 9, color: '#4fc3f7', marginLeft: 8, fontFamily: 'monospace' }}>
             {sourceLabel}
