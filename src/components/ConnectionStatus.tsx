@@ -41,16 +41,17 @@ export default function ConnectionStatus() {
     if (bookProblem) {
       const isDegraded = orderBookHealth === 'DEGRADED'
       const isResyncing = orderBookHealth === 'RESYNCING'
-      const isSnapshot = orderBookHealth === 'SNAPSHOT_LOADING' || orderBookHealth === 'SYNCING'
       const isStale = orderBookHealth === 'STALE'
 
       let bookMsg: string
       if (isDegraded) {
-        bookMsg = 'Book using top-20 fallback \u2014 strict sync retrying'
+        bookMsg = 'Book using top-20 fallback \u2014 strict sync failed, retrying periodically'
       } else if (isResyncing) {
-        bookMsg = 'Strict book syncing in background \u2014 top-20 book active'
-      } else if (isSnapshot) {
-        bookMsg = 'Strict book syncing in background \u2014 top-20 book active'
+        bookMsg = 'Strict book resyncing \u2014 top-20 book active'
+      } else if (orderBookHealth === 'SNAPSHOT_LOADING') {
+        bookMsg = 'Strict book loading snapshot \u2014 top-20 book active'
+      } else if (orderBookHealth === 'SYNCING') {
+        bookMsg = 'Strict book waiting for depth overlap \u2014 top-20 book active'
       } else if (isStale) {
         bookMsg = 'Order book STALE \u2014 no recent updates'
       } else {
