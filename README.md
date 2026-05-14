@@ -1,8 +1,25 @@
 # Orderflow Cockpit
 
-A local live crypto orderflow visualization cockpit using Binance Futures public WebSocket data.
+<p align="center">
+  <img src="public/brand/brand-preview.svg" alt="Orderflow Cockpit — Liquidity Field" width="100%">
+</p>
 
-**Decision-support visualization only. No trading signals. No AI predictions. No automated trading. No financial advice.**
+**Real-time market microstructure visualization dashboard.**
+
+Orderflow Cockpit reveals what ordinary charts do not show: hidden liquidity, order flow pressure, aggressive trades, depth imbalances, and live market microstructure — all streamed through Binance Futures public WebSockets.
+
+> **Decision-support visualization only.** No trading signals. No AI predictions. No automated trading. No financial advice.
+
+---
+
+## Positioning
+
+| What it is | What it is not |
+|------------|----------------|
+| Real-time order flow visualization | A trading bot |
+| Decision-support dashboard | A buy/sell signal generator |
+| Market microstructure perception | An AI prediction system |
+| Professional data visualization tool | A crypto influencer dashboard |
 
 ---
 
@@ -21,10 +38,18 @@ A local live crypto orderflow visualization cockpit using Binance Futures public
 - **Bubble hover tooltip** — Inspect aggressive flow events by hovering over bubbles
 - **Demo mode** — Simulated market data for offline testing
 
-## Debug Flags
+---
 
-- `localStorage.setItem('DEBUG_OVERLAY', '1')` — Show overlay diagnostics on chart
-- `localStorage.setItem('DEBUG_BOOK', '1')` — Log order book sync state transitions and critical events
+## What This Demonstrates (Portfolio)
+
+- **Real-time WebSocket lifecycle management** — Generation tokens, exponential backoff, stale-socket detection, and clean teardown across multiple parallel streams
+- **Canvas2D rendering under live market conditions** — High-frequency overlay rendering (bubbles, heatmap, footprint, tooltips) without frame drops
+- **Order book / depth visualization** — Local L2 book reconstruction from diff-depth streams with sequence validation and automatic resync
+- **React/TypeScript architecture** — Zustand state management optimized for market microstructure data (refs, subscriptions, no unnecessary re-renders)
+- **Professional trading-dashboard UI** — Dark terminal aesthetic with teal/cyan accents, dense but organized panels, live status indicators
+- **Frontend data visualization** — Translating raw WebSocket messages into actionable visual information in real time
+
+---
 
 ## Tech Stack
 
@@ -56,6 +81,11 @@ npm run preview
 
 The app connects to Binance Futures public WebSocket streams. No exchange account, API key, or authentication is needed. All data is public market data.
 
+## Debug Flags
+
+- `localStorage.setItem('DEBUG_OVERLAY', '1')` — Show overlay diagnostics on chart
+- `localStorage.setItem('DEBUG_BOOK', '1')` — Log order book sync state transitions and critical events
+
 ## Manual QA Checklist
 
 - [ ] `npm install` succeeds
@@ -83,36 +113,9 @@ The app connects to Binance Futures public WebSocket streams. No exchange accoun
 - aggTrade is aggregated trade data, not full tick-by-tick execution data
 - Depth stream is top-20 levels at 100ms intervals, not full order book
 
-## What This Demonstrates (Portfolio)
-
-- Real-time WebSocket lifecycle management with generation tokens, backoff, and stale-socket protection
-- Canvas2D rendering under high-frequency streaming data
-- React state management optimized for market microstructure data (Zustand + refs + subscriptions)
-- Order book sequence validation and local resync engine
-- Bubble state machine for aggressive flow classification
-- Professional dark-theme terminal UI for financial data
-
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
-
-## Post-Fusion Regression Recovery
-
-The project migrated from a dual-chart architecture (custom Canvas2D chart + Lightweight Charts experimental) to a single fused chart: TradingView Lightweight Charts as the base engine with a Canvas2D overlay for all orderflow layers.
-
-During this migration, several orderflow features regressed or were lost. These have been restored:
-
-- **Bubble percentile sizing** — per-candle notional percentile scaling for proper visual differentiation of trade sizes
-- **Heatmap range filtering** — proximity-based level selection (2% range threshold) instead of global top-N
-- **Heatmap quantity labels** — actual quantities displayed (e.g., "BID 1.2k") instead of generic labels
-- **Heatmap state dimming** — visual degradation for non-HEALTHY order book states (DEGRADED, RESYNCING, STALE)
-- **Cluster tooltips** — hover over auction clusters to see trade count, VWAP, flow type, absorption score
-- **Spread line** — mid-price reference line with spread percentage label
-- **State badges** — honest order book health indicators (DEGRADED TOP-20, RESYNCING, STALE)
-
-The single-chart architecture is preserved: Lightweight Charts handles candles, time/price scales, zoom/pan, and crosshair. The Canvas2D overlay handles bubbles, heatmap, footprint, tooltips, level memory, and state badges.
-
-See [docs/ORDERFLOW_FEATURE_RECOVERY_MATRIX.md](docs/ORDERFLOW_FEATURE_RECOVERY_MATRIX.md) for the full feature recovery matrix.
 
 ## License
 

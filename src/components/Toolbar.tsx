@@ -4,6 +4,7 @@ import type { Interval } from '../types/market'
 import { INSTRUMENTS } from '../types/market'
 import { fmtPrice } from '../utils/formatters'
 import AssetSelector from './AssetSelector'
+import '../brand.css'
 
 const INTERVALS: Interval[] = ['10s', '20s', '40s', '1m', '3m', '5m']
 
@@ -77,8 +78,24 @@ export default function Toolbar() {
   return (
     <>
       <div className="toolbar">
-        {/* Left: Symbol + Price */}
+        {/* Left: Brand + Symbol + Price */}
         <div className="toolbar-left">
+          <div className="brand-mark" title="Orderflow Cockpit">
+            <svg className="brand-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M 4,13.5 Q 24,4 44,13.5" stroke="#0d4f6e" strokeWidth="1.2" opacity="0.3" strokeLinecap="round"/>
+              <path d="M 4,34.5 Q 24,44 44,34.5" stroke="#0d4f6e" strokeWidth="1.2" opacity="0.3" strokeLinecap="round"/>
+              <path d="M 8,17 Q 24,9.5 40,17" stroke="#00b8c4" strokeWidth="1.6" opacity="0.5" strokeLinecap="round"/>
+              <path d="M 8,31 Q 24,38.5 40,31" stroke="#00b8c4" strokeWidth="1.6" opacity="0.5" strokeLinecap="round"/>
+              <path d="M 13,21 Q 24,16 35,21" stroke="#00e8dc" strokeWidth="2" opacity="0.75" strokeLinecap="round"/>
+              <path d="M 13,27 Q 24,32 35,27" stroke="#00e8dc" strokeWidth="2" opacity="0.75" strokeLinecap="round"/>
+              <circle cx="11" cy="18" r="1.5" fill="#00c8d0" opacity="0.5"/>
+              <circle cx="37" cy="30" r="1.5" fill="#00c8d0" opacity="0.5"/>
+              <circle cx="24" cy="24" r="3" fill="#00f5ec" opacity="0.9"/>
+              <circle cx="24" cy="24" r="7" stroke="#00f5ec" strokeWidth="0.5" opacity="0.2"/>
+            </svg>
+            <span className="brand-text">ORDERFLOW</span>
+          </div>
+
           <button
             className={`mode-toggle ${mode}`}
             onClick={() => setMode(mode === 'demo' ? 'live' : 'demo')}

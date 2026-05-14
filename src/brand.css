@@ -1,0 +1,62 @@
+/* ═══════════════════════════════════════════
+   ORDERFLOW COCKPIT — Brand Mark Styles
+   Liquidity Field identity system
+   ═══════════════════════════════════════════ */
+
+/* ─── Brand Mark in Toolbar ─── */
+.brand-mark {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 4px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+  cursor: default;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.brand-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  opacity: 0.85;
+  transition: opacity 0.2s;
+}
+
+.brand-mark:hover .brand-icon {
+  opacity: 1;
+}
+
+.brand-lockup {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  line-height: 1;
+}
+
+.brand-text {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 2.5px;
+  color: var(--text-primary);
+  opacity: 0.7;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+
+.brand-mark:hover .brand-text {
+  opacity: 0.9;
+}
+
+/* ─── Responsive: hide wordmark on narrow screens ─── */
+@media (max-width: 900px) {
+  .brand-lockup {
+    display: none;
+  }
+  .brand-mark {
+    padding-right: 8px;
+    margin-right: 8px;
+  }
+}

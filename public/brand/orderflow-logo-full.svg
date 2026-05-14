@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Liquidity Field mark + wordmark — full stacked -->
+  <g transform="translate(40, 40)">
+    <!-- Field lines — compact, 4 layers -->
+    <path d="M -30,-22 Q -8,-16 0,-6 Q 8,-16 30,-22" fill="none" stroke="#0d4f6e" stroke-width="1" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -30,22 Q -8,16 0,6 Q 8,16 30,22" fill="none" stroke="#0d4f6e" stroke-width="1" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -24,-15 Q -6,-11 0,-4 Q 6,-11 24,-15" fill="none" stroke="#00b8c4" stroke-width="1.4" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -24,15 Q -6,11 0,4 Q 6,11 24,15" fill="none" stroke="#00b8c4" stroke-width="1.4" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -16,-8 Q -4,-6 0,-2 Q 4,-6 16,-8" fill="none" stroke="#00e8dc" stroke-width="1.8" opacity="0.75" stroke-linecap="round"/>
+    <path d="M -16,8 Q -4,6 0,2 Q 4,6 16,8" fill="none" stroke="#00e8dc" stroke-width="1.8" opacity="0.75" stroke-linecap="round"/>
+    <!-- Density nodes -->
+    <circle cx="-20" cy="-12" r="1.5" fill="#00c8d0" opacity="0.5"/>
+    <circle cx="20" cy="12" r="1.5" fill="#00c8d0" opacity="0.5"/>
+    <!-- Gravity point -->
+    <circle cx="0" cy="0" r="3" fill="#00f5ec" opacity="0.9"/>
+    <circle cx="0" cy="0" r="7" fill="none" stroke="#00f5ec" stroke-width="0.5" opacity="0.2"/>
+  </g>
+
+  <!-- ORDERFLOW -->
+  <text x="80" y="35" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="24" font-weight="300" letter-spacing="6" fill="#e0e6ed">ORDERFLOW</text>
+  <!-- COCKPIT -->
+  <text x="80" y="55" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="200" letter-spacing="10" fill="#4a5e6e">COCKPIT</text>
+</svg>

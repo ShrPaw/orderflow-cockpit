@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <!-- Brand preview card -->
+  <rect width="800" height="400" rx="12" fill="#0a0e14"/>
+  <rect x="1" y="1" width="798" height="398" rx="11" fill="none" stroke="#182030" stroke-width="1"/>
+  
+  <!-- Logo mark — centered, large -->
+  <g transform="translate(400, 140)">
+    <path d="M -55,-40 Q -15,-30 0,-12 Q 15,-30 55,-40" fill="none" stroke="#0d4f6e" stroke-width="1.2" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -55,40 Q -15,30 0,12 Q 15,30 55,40" fill="none" stroke="#0d4f6e" stroke-width="1.2" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -44,-28 Q -12,-20 0,-7 Q 12,-20 44,-28" fill="none" stroke="#00b8c4" stroke-width="1.6" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -44,28 Q -12,20 0,7 Q 12,20 44,28" fill="none" stroke="#00b8c4" stroke-width="1.6" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -30,-15 Q -8,-11 0,-4 Q 8,-11 30,-15" fill="none" stroke="#00e8dc" stroke-width="2" opacity="0.75" stroke-linecap="round"/>
+    <path d="M -30,15 Q -8,11 0,4 Q 8,11 30,15" fill="none" stroke="#00e8dc" stroke-width="2" opacity="0.75" stroke-linecap="round"/>
+    <circle cx="-36" cy="-22" r="2" fill="#00c8d0" opacity="0.5"/>
+    <circle cx="36" cy="22" r="2" fill="#00c8d0" opacity="0.5"/>
+    <circle cx="0" cy="0" r="5" fill="#00f5ec" opacity="0.9"/>
+    <circle cx="0" cy="0" r="12" fill="none" stroke="#00f5ec" stroke-width="0.6" opacity="0.2"/>
+  </g>
+  
+  <!-- Wordmark below -->
+  <text x="400" y="220" text-anchor="middle" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="28" font-weight="300" letter-spacing="8" fill="#e0e6ed">ORDERFLOW</text>
+  <text x="400" y="244" text-anchor="middle" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="200" letter-spacing="12" fill="#4a5e6e">COCKPIT</text>
+  
+  <!-- Color palette swatches -->
+  <g transform="translate(140, 300)">
+    <rect x="0" y="0" width="40" height="40" rx="4" fill="#0a0e14" stroke="#182030" stroke-width="0.5"/>
+    <rect x="52" y="0" width="40" height="40" rx="4" fill="#0d4f6e"/>
+    <rect x="104" y="0" width="40" height="40" rx="4" fill="#00b8c4"/>
+    <rect x="156" y="0" width="40" height="40" rx="4" fill="#00e8dc"/>
+    <rect x="208" y="0" width="40" height="40" rx="4" fill="#00f5ec"/>
+    <rect x="260" y="0" width="40" height="40" rx="4" fill="#e0e6ed"/>
+    <rect x="312" y="0" width="40" height="40" rx="4" fill="#4a5e6e"/>
+    <rect x="364" y="0" width="40" height="40" rx="4" fill="#182030"/>
+    
+    <text x="20" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#0A0E14</text>
+    <text x="72" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#0D4F6E</text>
+    <text x="124" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#00B8C4</text>
+    <text x="176" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#00E8DC</text>
+    <text x="228" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#00F5EC</text>
+    <text x="280" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#E0E6ED</text>
+    <text x="332" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#4A5E6E</text>
+    <text x="384" y="56" text-anchor="middle" font-family="'Inter',sans-serif" font-size="7" fill="#4a5e6e">#182030</text>
+  </g>
+  
+  <!-- Label -->
+  <text x="400" y="385" text-anchor="middle" font-family="'Inter',sans-serif" font-size="9" font-weight="600" letter-spacing="2" fill="#3d4f68">LIQUIDITY FIELD — BRAND SYSTEM</text>
+</svg>

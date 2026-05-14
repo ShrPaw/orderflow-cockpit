@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 40" width="280" height="40">
+  <!-- Horizontal: mark left, wordmark right -->
+  <g transform="translate(20, 20)">
+    <path d="M -18,-13 Q -5,-10 0,-3.5 Q 5,-10 18,-13" fill="none" stroke="#0d4f6e" stroke-width="0.8" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -18,13 Q -5,10 0,3.5 Q 5,10 18,13" fill="none" stroke="#0d4f6e" stroke-width="0.8" opacity="0.25" stroke-linecap="round"/>
+    <path d="M -14,-9 Q -4,-7 0,-2.5 Q 4,-7 14,-9" fill="none" stroke="#00b8c4" stroke-width="1.2" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -14,9 Q -4,7 0,2.5 Q 4,7 14,9" fill="none" stroke="#00b8c4" stroke-width="1.2" opacity="0.45" stroke-linecap="round"/>
+    <path d="M -9,-5 Q -2,-3.5 0,-1.2 Q 2,-3.5 9,-5" fill="none" stroke="#00e8dc" stroke-width="1.4" opacity="0.75" stroke-linecap="round"/>
+    <path d="M -9,5 Q -2,3.5 0,1.2 Q 2,3.5 9,5" fill="none" stroke="#00e8dc" stroke-width="1.4" opacity="0.75" stroke-linecap="round"/>
+    <circle cx="-12" cy="-7" r="1" fill="#00c8d0" opacity="0.5"/>
+    <circle cx="12" cy="7" r="1" fill="#00c8d0" opacity="0.5"/>
+    <circle cx="0" cy="0" r="2" fill="#00f5ec" opacity="0.9"/>
+    <circle cx="0" cy="0" r="4.5" fill="none" stroke="#00f5ec" stroke-width="0.4" opacity="0.2"/>
+  </g>
+  <line x1="42" y1="6" x2="42" y2="34" stroke="#182030" stroke-width="0.6"/>
+  <text x="52" y="18" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="300" letter-spacing="4" fill="#e0e6ed">ORDERFLOW</text>
+  <text x="52" y="32" font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="9" font-weight="200" letter-spacing="6" fill="#4a5e6e">COCKPIT</text>
+</svg>
