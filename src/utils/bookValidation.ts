@@ -204,3 +204,145 @@ export function getSpreadInfo(bids: OrderLevel[], asks: OrderLevel[], symbol?: s
   const warning = spreadPct > thresholds.warn
   return { spread, spreadPct, midPrice, sane, warning, thresholds }
 }
+
+// ─── Single source of truth for book display state ───
+
+export type BookDisplayStatus =
+  | 'LIVE_TOP20'
+  | 'STRICT_DEPTH'
+  | 'VALIDATION_PENDING'
+  | 'STALE'
+  | 'INVALID'
+  | 'DISCONNECTED'
+
+export interface BookDisplayState {
+  status: BookDisplayStatus
+  valid: boolean
+  spread: number
+  spreadPct: number
+  midPrice: number
+  warning: boolean
+  invalidReason: string | null
+  thresholds: SpreadThresholds
+  canShowBookMetrics: boolean
+  sourceLabel: string
+}
+
+/**
+ * Single source of truth for whether book data should be displayed.
+ * All panels (Market Snapshot, Order Book, etc.) must use this
+ * instead of computing their own validation.
+ */
+export function getBookDisplayState({
+  bids,
+  asks,
+  symbol,
+  orderBookSource,
+  orderBookHealth,
+  depthStale,
+}: {
+  bids: OrderLevel[]
+  asks: OrderLevel[]
+  symbol: string
+  orderBookSource: string
+  orderBookHealth: string
+  depthStale: boolean
+}): BookDisplayState {
+  const thresholds = getSpreadThresholds(symbol)
+
+  // No data at all
+  if (bids.length === 0 || asks.length === 0) {
+    const status: BookDisplayStatus =
+      orderBookHealth === 'DISCONNECTED' ? 'DISCONNECTED' :
+      orderBookHealth === 'ERROR' ? 'INVALID' :
+      'VALIDATION_PENDING'
+    return {
+      status,
+      valid: false,
+      spread: 0,
+      spreadPct: 0,
+      midPrice: 0,
+      warning: false,
+      invalidReason: null,
+      thresholds,
+      canShowBookMetrics: false,
+      sourceLabel: status === 'DISCONNECTED' ? 'Disconnected' : 'Validation Pending',
+    }
+  }
+
+  // Stale book
+  if (depthStale) {
+    return {
+      status: 'STALE',
+      valid: false,
+      spread: 0,
+      spreadPct: 0,
+      midPrice: 0,
+      warning: false,
+      invalidReason: 'Book data may be stale',
+      thresholds,
+      canShowBookMetrics: false,
+      sourceLabel: 'Stale',
+    }
+  }
+
+  // Compute spread
+  const bestBid = bids[0].price
+  const bestAsk = asks[0].price
+  const spread = bestAsk - bestBid
+  const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0
+  const midPrice = (bestBid + bestAsk) / 2
+
+  // Invalid spread
+  if (spreadPct > thresholds.invalid) {
+    return {
+      status: 'INVALID',
+      valid: false,
+      spread,
+      spreadPct,
+      midPrice,
+      warning: true,
+      invalidReason: `Spread ${spreadPct.toFixed(4)}% exceeds ${symbol} limit ${thresholds.invalid}%`,
+      thresholds,
+      canShowBookMetrics: false,
+      sourceLabel: 'Validation Failed',
+    }
+  }
+
+  // Warning spread (valid but abnormal)
+  const warning = spreadPct > thresholds.warn
+
+  // Determine display status based on source + health
+  let status: BookDisplayStatus
+  let sourceLabel: string
+
+  if (orderBookSource === 'strict' && orderBookHealth === 'HEALTHY') {
+    status = 'STRICT_DEPTH'
+    sourceLabel = 'Strict Depth'
+  } else if (orderBookHealth === 'TOP20' || orderBookHealth === 'DEGRADED' || orderBookHealth === 'HEALTHY') {
+    status = 'LIVE_TOP20'
+    sourceLabel = 'Live Top-20'
+  } else if (orderBookHealth === 'STALE') {
+    status = 'STALE'
+    sourceLabel = 'Stale'
+  } else if (orderBookHealth === 'ERROR') {
+    status = 'INVALID'
+    sourceLabel = 'Error'
+  } else {
+    status = 'VALIDATION_PENDING'
+    sourceLabel = 'Validation Pending'
+  }
+
+  return {
+    status,
+    valid: !warning,     // valid for display only if not in warning range
+    spread,
+    spreadPct,
+    midPrice,
+    warning,
+    invalidReason: warning ? `Spread ${spreadPct.toFixed(4)}% — abnormal for ${symbol}` : null,
+    thresholds,
+    canShowBookMetrics: !warning,  // hide book metrics if spread is abnormal
+    sourceLabel,
+  }
+}

@@ -9,6 +9,7 @@ export default function MarketSnapshotPanel() {
   const recentTrades = useMarketStore(s => s.recentTrades)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const symbol = useMarketStore(s => s.symbol)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const orderBookSource = useMarketStore(s => s.orderBookSource)
   const connected = useMarketStore(s => s.connected)
@@ -23,6 +24,7 @@ export default function MarketSnapshotPanel() {
     recentTrades,
     bids,
     asks,
+    symbol,
     orderBookHealth,
     orderBookSource,
     connected,
@@ -30,10 +32,11 @@ export default function MarketSnapshotPanel() {
     depthConnected,
     lastTradeTime,
     depthStale,
-  }), [livePrice, ticker, recentTrades, bids, asks, orderBookHealth, orderBookSource,
+  }), [livePrice, ticker, recentTrades, bids, asks, symbol, orderBookHealth, orderBookSource,
        connected, tickerConnected, depthConnected, lastTradeTime, depthStale])
 
   const priceColor = snap.change24h >= 0 ? 'green' : 'red'
+  const book = snap.bookDisplay
 
   return (
     <div className="panel-section">
@@ -61,39 +64,54 @@ export default function MarketSnapshotPanel() {
         </div>
       )}
 
-      {/* Book context */}
+      {/* Book context — uses shared BookDisplayState */}
       <div className="snapshot-divider" />
       <div className="stat-row">
         <span className="label">Book Source</span>
         <span className="value" style={{
-          color: snap.bookSourceLabel === 'STRICT DEPTH' ? '#2dd4a0'
-            : snap.bookSourceLabel === 'LIVE TOP-20' ? '#4fc3f7'
-            : snap.bookSourceLabel === 'STALE' || snap.bookSourceLabel === 'ERROR' ? '#ef6461'
+          color: book.status === 'STRICT_DEPTH' ? '#2dd4a0'
+            : book.status === 'LIVE_TOP20' ? '#4fc3f7'
+            : book.status === 'INVALID' ? '#ef6461'
             : '#6b7d96',
           fontSize: 10,
           fontFamily: 'monospace',
         }}>
-          {snap.bookSourceLabel}
+          {book.sourceLabel}
         </span>
       </div>
-      <div className="stat-row">
-        <span className="label">Spread</span>
-        <span className="value">{fmtPrice(snap.spread)} ({snap.spreadPct.toFixed(3)}%)</span>
-      </div>
-      <div className="stat-row">
-        <span className="label">Book Imbalance</span>
-        <span className={`value ${snap.bidAskImbalance > 15 ? 'green' : snap.bidAskImbalance < -15 ? 'red' : ''}`}>
-          {snap.bidAskImbalance > 0 ? '+' : ''}{snap.bidAskImbalance.toFixed(1)}%
-          {' '}
-          {snap.bidAskImbalance > 15 ? 'Bid heavy' : snap.bidAskImbalance < -15 ? 'Ask heavy' : 'Balanced'}
-        </span>
-      </div>
-      <div className="stat-row">
-        <span className="label">Top Bid / Ask</span>
-        <span className="value" style={{ fontSize: 10 }}>
-          {snap.topBidQty > 0 ? snap.topBidQty.toFixed(4) : '—'} / {snap.topAskQty > 0 ? snap.topAskQty.toFixed(4) : '—'}
-        </span>
-      </div>
+
+      {book.canShowBookMetrics ? (
+        <>
+          <div className="stat-row">
+            <span className="label">Spread</span>
+            <span className="value">{fmtPrice(book.spread)} ({book.spreadPct.toFixed(4)}%)</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">Book Imbalance</span>
+            <span className={`value ${book.spread > 0 ? (bids.reduce((s,b)=>s+b.qty,0) > asks.reduce((s,a)=>s+a.qty,0) ? 'green' : 'red') : ''}`}>
+              {(() => {
+                const bidTotal = bids.reduce((s, b) => s + b.qty, 0)
+                const askTotal = asks.reduce((s, a) => s + a.qty, 0)
+                if (bidTotal + askTotal === 0) return '—'
+                const imb = ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
+                return `${imb > 0 ? '+' : ''}${imb.toFixed(1)}% ${imb > 15 ? 'Bid heavy' : imb < -15 ? 'Ask heavy' : 'Balanced'}`
+              })()}
+            </span>
+          </div>
+          <div className="stat-row">
+            <span className="label">Top Bid / Ask</span>
+            <span className="value" style={{ fontSize: 10 }}>
+              {(bids[0]?.qty ?? 0) > 0 ? bids[0]!.qty.toFixed(4) : '—'} / {(asks[0]?.qty ?? 0) > 0 ? asks[0]!.qty.toFixed(4) : '—'}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="stat-row">
+          <span className="label" style={{ color: book.status === 'INVALID' ? '#ef6461' : '#6b7d96', fontSize: 10, fontStyle: 'italic' }}>
+            {book.invalidReason ?? 'Book data pending'}
+          </span>
+        </div>
+      )}
 
       {/* Flow context */}
       <div className="snapshot-divider" />
@@ -127,7 +145,7 @@ export default function MarketSnapshotPanel() {
       <div className="snapshot-health">
         <span className={`health-dot ${snap.tickerOk ? 'ok' : 'fail'}`} title="Ticker" />
         <span className={`health-dot ${snap.tradesOk ? 'ok' : 'fail'}`} title="Trades" />
-        <span className={`health-dot ${snap.bookOk ? 'ok' : 'fail'}`} title="Order Book" />
+        <span className={`health-dot ${book.valid ? 'ok' : 'fail'}`} title="Order Book" />
         {snap.staleWarning && (
           <span className="health-warning">{snap.staleWarning}</span>
         )}

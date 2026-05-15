@@ -2,11 +2,13 @@
  * marketSnapshot.ts
  *
  * Derives compact market context from existing store data.
+ * Uses getBookDisplayState as single source of truth for book validity.
  * All metrics are observational — no predictions, no signals.
  */
 
 import type { Trade, OrderLevel, Ticker24h } from '../types/market'
 import type { OrderBookHealth, OrderBookSource } from '../types/market'
+import { getBookDisplayState, type BookDisplayState } from './bookValidation'
 
 // ─── Constants ───
 const FLOW_WINDOW_MS = 60_000       // 60s rolling window for flow metrics
@@ -22,16 +24,8 @@ export interface MarketSnapshot {
   sessionLow: number
   rangePosition: number | null  // 0-100% through session range
 
-  // Book context
-  bookSource: OrderBookHealth
-  bookSourceLabel: string
-  spread: number
-  spreadPct: number
-  bidAskImbalance: number  // -100 to +100
-  topBidQty: number
-  topAskQty: number
-  bidTotal: number
-  askTotal: number
+  // Book context — from shared BookDisplayState
+  bookDisplay: BookDisplayState
 
   // Flow context
   buyPressure: number      // aggressive buy volume in window
@@ -47,7 +41,6 @@ export interface MarketSnapshot {
   // Health context
   tickerOk: boolean
   tradesOk: boolean
-  bookOk: boolean
   staleWarning: string | null
 }
 
@@ -60,6 +53,7 @@ export function computeMarketSnapshot({
   recentTrades,
   bids,
   asks,
+  symbol,
   orderBookHealth,
   orderBookSource,
   connected,
@@ -73,6 +67,7 @@ export function computeMarketSnapshot({
   recentTrades: Trade[]
   bids: OrderLevel[]
   asks: OrderLevel[]
+  symbol: string
   orderBookHealth: OrderBookHealth
   orderBookSource: OrderBookSource
   connected: boolean
@@ -96,23 +91,15 @@ export function computeMarketSnapshot({
     rangePosition = Math.max(0, Math.min(100, rangePosition))
   }
 
-  // ── Book context ──
-  const bestBid = bids[0]?.price ?? 0
-  const bestAsk = asks[0]?.price ?? 0
-  const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : 0
-  const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0
-  const bidTotal = bids.reduce((s, b) => s + b.qty, 0)
-  const askTotal = asks.reduce((s, a) => s + a.qty, 0)
-  const imbalance = bidTotal + askTotal > 0
-    ? ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
-    : 0
-
-  const bookSourceLabel =
-    orderBookSource === 'strict' ? 'STRICT DEPTH' :
-    orderBookSource === 'depth20' ? 'LIVE TOP-20' :
-    orderBookHealth === 'STALE' ? 'STALE' :
-    orderBookHealth === 'ERROR' ? 'ERROR' :
-    '—'
+  // ── Book context — single source of truth ──
+  const bookDisplay = getBookDisplayState({
+    bids,
+    asks,
+    symbol,
+    orderBookSource,
+    orderBookHealth,
+    depthStale,
+  })
 
   // ── Flow context (60s window) ──
   const windowTrades = recentTrades.filter(t => (now - t.time) < FLOW_WINDOW_MS)
@@ -141,11 +128,9 @@ export function computeMarketSnapshot({
   // ── Health context ──
   const tickerOk = tickerConnected && !!ticker
   const tradesOk = connected && (now - lastTradeTime) < 15_000
-  const bookOk = depthConnected && !depthStale && orderBookHealth !== 'ERROR' && orderBookHealth !== 'STALE'
 
   let staleWarning: string | null = null
   if (!tradesOk && connected) staleWarning = 'Trade stream may be stale'
-  else if (depthStale) staleWarning = 'Order book data may be stale'
   else if (!tickerOk) staleWarning = 'Ticker disconnected'
 
   return {
@@ -155,22 +140,13 @@ export function computeMarketSnapshot({
     sessionHigh,
     sessionLow,
     rangePosition,
-    bookSource: orderBookHealth,
-    bookSourceLabel,
-    spread: spread,
-    spreadPct: spreadPct,
-    bidAskImbalance: imbalance,
-    topBidQty: bids[0]?.qty ?? 0,
-    topAskQty: asks[0]?.qty ?? 0,
-    bidTotal,
-    askTotal,
+    bookDisplay,
     buyPressure,
     sellPressure,
     netFlow,
     lastLargePrint,
     tickerOk,
     tradesOk,
-    bookOk,
     staleWarning,
   }
 }

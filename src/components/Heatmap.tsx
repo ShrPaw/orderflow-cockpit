@@ -12,7 +12,6 @@ export default function Heatmap() {
   const livePrice = useMarketStore(s => s.livePrice)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
-  const orderBookSource = useMarketStore(s => s.orderBookSource)
 
   const isHealthy = orderBookHealth === 'HEALTHY'
   const isTop20 = orderBookHealth === 'TOP20'
@@ -138,16 +137,17 @@ export default function Heatmap() {
 
   }, [vpResult, showDimmed])
 
-  const sourceLabel = orderBookSource === 'strict' ? ' STRICT'
-    : orderBookSource === 'depth20' ? ' TOP-20'
+  // VP data source label — separate from order book source
+  const vpSourceLabel = vpResult?.metadata.hasFootprint ? 'Footprint'
+    : vpResult ? 'Candle Approx'
     : ''
 
   return (
     <div className="heatmap-container" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="heatmap-header">
-        Volume Profile{sourceLabel && (
-          <span style={{ fontSize: 9, color: '#4fc3f7', marginLeft: 8, fontFamily: 'monospace' }}>
-            {sourceLabel}
+        Volume Profile{vpSourceLabel && (
+          <span style={{ fontSize: 9, color: '#6b7d96', marginLeft: 8, fontFamily: 'monospace' }}>
+            {vpSourceLabel}
           </span>
         )}
       </div>
