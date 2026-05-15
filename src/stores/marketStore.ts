@@ -11,6 +11,10 @@ import { updateLevelsFromBubbles, resetLevels, type LevelRecord } from '../utils
 import {
   formClusters, type AuctionCluster,
 } from '../utils/auctionClusters'
+import type { FlowEvent } from '../utils/flowEvents'
+import { deriveFlowEvents } from '../utils/flowEvents'
+import type { AlertRule } from '../utils/alerts'
+import { loadAlertRules, saveAlertRules, getDefaultRules, evaluateAlerts } from '../utils/alerts'
 
 interface MarketState {
   mode: AppMode
@@ -62,6 +66,12 @@ interface MarketState {
   // ─── Auction Clusters ───
   clusters: AuctionCluster[]
 
+  // ─── Flow Events ───
+  flowEvents: FlowEvent[]
+
+  // ─── Alert Rules ───
+  alertRules: AlertRule[]
+
   // ─── Depth health ───
   depthStale: boolean
   depthLastMessageTime: number
@@ -108,6 +118,13 @@ interface MarketState {
   updateClusters: () => void
   setDepthStale: (stale: boolean) => void
   setDepthLastMessageTime: (time: number) => void
+
+  // Flow Events & Alerts
+  tickFlowEvents: () => void
+  toggleAlertRule: (ruleId: string) => void
+  updateAlertRule: (ruleId: string, patch: Partial<AlertRule>) => void
+  resetAlertRules: () => void
+
   reset: () => void
 }
 
@@ -155,6 +172,8 @@ function getInitialState() {
     instrumentsLoading: false,
     levelMemory: [] as LevelRecord[],
     clusters: [] as AuctionCluster[],
+    flowEvents: [] as FlowEvent[],
+    alertRules: loadAlertRules() as AlertRule[],
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
@@ -199,6 +218,7 @@ function getDataResetFields() {
     tickerError: null as string | null,
     lastTradeTime: 0,
     clusters: [] as AuctionCluster[],
+    flowEvents: [] as FlowEvent[],
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
@@ -520,6 +540,74 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 
   setDepthStale: (stale) => set({ depthStale: stale }),
   setDepthLastMessageTime: (time) => set({ depthLastMessageTime: time }),
+
+  // ─── Flow Events & Alerts ───
+  tickFlowEvents: () => {
+    const state = get()
+    const now = Date.now()
+
+    // Get spread info inline (avoid circular import)
+    let spreadPct = 0
+    if (state.bids.length > 0 && state.asks.length > 0) {
+      const bestBid = state.bids[0].price
+      const bestAsk = state.asks[0].price
+      if (bestBid > 0 && bestAsk > bestBid) {
+        spreadPct = ((bestAsk - bestBid) / bestBid) * 100
+      }
+    }
+
+    // Derive flow events from market activity
+    const newFlowEvents = deriveFlowEvents({
+      recentTrades: state.recentTrades,
+      bids: state.bids,
+      asks: state.asks,
+      bubbles: state.bubbles,
+      livePrice: state.livePrice,
+      spreadPct,
+      previousEvents: state.flowEvents,
+      now,
+    })
+
+    // Evaluate alert rules
+    const { events: alertEvents } = evaluateAlerts({
+      rules: state.alertRules,
+      recentTrades: state.recentTrades,
+      bids: state.bids,
+      asks: state.asks,
+      livePrice: state.livePrice,
+      spreadPct,
+      now,
+    })
+
+    // Merge alert events into flow events
+    const merged = alertEvents.length > 0
+      ? [...alertEvents, ...newFlowEvents].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30)
+      : newFlowEvents
+
+    set({ flowEvents: merged })
+  },
+
+  toggleAlertRule: (ruleId) => {
+    const rules = get().alertRules.map(r =>
+      r.id === ruleId ? { ...r, enabled: !r.enabled } : r
+    )
+    saveAlertRules(rules)
+    set({ alertRules: rules })
+  },
+
+  updateAlertRule: (ruleId, patch) => {
+    const rules = get().alertRules.map(r =>
+      r.id === ruleId ? { ...r, ...patch } : r
+    )
+    saveAlertRules(rules)
+    set({ alertRules: rules })
+  },
+
+  resetAlertRules: () => {
+    const defaults = getDefaultRules()
+    saveAlertRules(defaults)
+    set({ alertRules: defaults })
+  },
 
   reset: () => set(getInitialState()),
 }))

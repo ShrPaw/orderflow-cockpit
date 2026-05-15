@@ -198,12 +198,13 @@ export default function App() {
     }
   }, [mode, symbol, interval])
 
-  // Periodic volume profile rebuild
+  // Periodic volume profile rebuild + flow events
   useEffect(() => {
     const iv = setInterval(() => {
       useMarketStore.getState().rebuildVolumeProfile()
       useMarketStore.getState().addHeatmapSnapshot()
       useMarketStore.getState().updateBubbles()
+      useMarketStore.getState().tickFlowEvents()
     }, 2000)
     return () => clearInterval(iv)
   }, [])
