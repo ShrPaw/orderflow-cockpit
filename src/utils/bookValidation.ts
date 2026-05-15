@@ -1,8 +1,12 @@
 /**
  * bookValidation.ts
  *
- * Shared order book integrity validation.
- * Used by localOrderBook.ts and display components.
+ * Symbol-aware order book integrity validation.
+ * Spread thresholds are calibrated per-symbol based on typical market microstructure.
+ *
+ * BTCUSDT / ETHUSDT: extremely tight spreads (~0.001–0.01%)
+ * SOLUSDT / liquid large caps: tight spreads (~0.01–0.05%)
+ * Smaller alts: wider spreads (~0.02–0.10%)
  */
 
 import type { OrderLevel } from '../types/market'
@@ -13,11 +17,46 @@ export interface BookIntegrityResult {
   details?: Record<string, unknown>
 }
 
-// Realistic spread thresholds for BTC/large-cap futures
-// BTC typically has spreads of 0.001% — 0.05% during normal trading
-// Anything above 0.5% is suspicious; above 1% is almost certainly bad data
-const MAX_SPREAD_PCT = 0.5
-const WARN_SPREAD_PCT = 0.1
+// ─── Symbol-aware spread thresholds ───
+interface SpreadThresholds {
+  warn: number    // above this → warn (dim display, show warning)
+  invalid: number // above this → reject book entirely
+}
+
+// Tier 1: Ultra-liquid (BTC, ETH)
+const TIER1_THRESHOLDS: SpreadThresholds = { warn: 0.02, invalid: 0.05 }
+// Tier 2: Liquid large caps (SOL, BNB, XRP, etc.)
+const TIER2_THRESHOLDS: SpreadThresholds = { warn: 0.05, invalid: 0.10 }
+// Tier 3: Smaller alts / memes
+const TIER3_THRESHOLDS: SpreadThresholds = { warn: 0.10, invalid: 0.30 }
+// Default fallback
+const DEFAULT_THRESHOLDS: SpreadThresholds = { warn: 0.05, invalid: 0.15 }
+
+// Symbol → tier mapping
+const TIER1_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT'])
+const TIER2_SYMBOLS = new Set([
+  'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT',
+  'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT', 'UNIUSDT',
+  'ATOMUSDT', 'LTCUSDT', 'NEARUSDT', 'ARBUSDT', 'OPUSDT',
+  'APTUSDT', 'SUIUSDT',
+])
+
+function getSpreadThresholds(symbol: string): SpreadThresholds {
+  const upper = symbol.toUpperCase()
+  if (TIER1_SYMBOLS.has(upper)) return TIER1_THRESHOLDS
+  if (TIER2_SYMBOLS.has(upper)) return TIER2_THRESHOLDS
+  // Check for common alt/meme patterns
+  if (upper.endsWith('USDT')) return TIER3_THRESHOLDS
+  return DEFAULT_THRESHOLDS
+}
+
+/**
+ * Get spread thresholds for a specific symbol.
+ * Exported for use in connectors.
+ */
+export function getSymbolSpreadThresholds(symbol: string): SpreadThresholds {
+  return getSpreadThresholds(symbol)
+}
 
 /**
  * Validate order book integrity for display purposes.
@@ -30,6 +69,7 @@ export function validateBookIntegrity({
   source,
   now,
   lastMessageTime,
+  symbol,
 }: {
   bids: OrderLevel[]
   asks: OrderLevel[]
@@ -37,6 +77,7 @@ export function validateBookIntegrity({
   source: string
   now: number
   lastMessageTime: number
+  symbol?: string
 }): BookIntegrityResult {
   // Must have both sides
   if (bids.length === 0 || asks.length === 0) {
@@ -79,12 +120,13 @@ export function validateBookIntegrity({
   const midPrice = (bestBid + bestAsk) / 2
   const spreadPct = (spread / bestBid) * 100
 
-  // Unrealistic spread check
-  if (spreadPct > MAX_SPREAD_PCT) {
+  // Symbol-aware spread check
+  const thresholds = symbol ? getSpreadThresholds(symbol) : DEFAULT_THRESHOLDS
+  if (spreadPct > thresholds.invalid) {
     return {
       valid: false,
-      reason: `unrealistic spread ${spreadPct.toFixed(3)}%`,
-      details: { bestBid, bestAsk, spread, spreadPct, midPrice },
+      reason: `spread ${spreadPct.toFixed(4)}% exceeds ${thresholds.invalid}% limit for ${symbol ?? 'unknown'}`,
+      details: { bestBid, bestAsk, spread, spreadPct, midPrice, threshold: thresholds.invalid, symbol },
     }
   }
 
@@ -118,30 +160,47 @@ export function validateBookIntegrity({
 /**
  * Quick sanity check for spread — lighter than full validation.
  * Used in hot paths (every depth20 update).
+ * Returns true if spread is acceptable, false if it should be rejected.
  */
-export function isSpreadSane(bestBid: number, bestAsk: number): boolean {
+export function isSpreadSane(bestBid: number, bestAsk: number, symbol?: string): boolean {
   if (bestBid <= 0 || bestAsk <= 0 || bestBid >= bestAsk) return false
   const spreadPct = ((bestAsk - bestBid) / bestBid) * 100
-  return spreadPct <= MAX_SPREAD_PCT
+  const thresholds = symbol ? getSpreadThresholds(symbol) : DEFAULT_THRESHOLDS
+  return spreadPct <= thresholds.invalid
 }
 
 /**
- * Get spread info for display.
+ * Check if spread is in warning range (valid but abnormal).
+ * Returns true if spread exceeds warning threshold.
  */
-export function getSpreadInfo(bids: OrderLevel[], asks: OrderLevel[]): {
+export function isSpreadWarning(bestBid: number, bestAsk: number, symbol?: string): boolean {
+  if (bestBid <= 0 || bestAsk <= 0 || bestBid >= bestAsk) return false
+  const spreadPct = ((bestAsk - bestBid) / bestBid) * 100
+  const thresholds = symbol ? getSpreadThresholds(symbol) : DEFAULT_THRESHOLDS
+  return spreadPct > thresholds.warn
+}
+
+/**
+ * Get spread info for display with symbol-aware thresholds.
+ */
+export function getSpreadInfo(bids: OrderLevel[], asks: OrderLevel[], symbol?: string): {
   spread: number
   spreadPct: number
   midPrice: number
   sane: boolean
+  warning: boolean
+  thresholds: SpreadThresholds
 } {
   if (bids.length === 0 || asks.length === 0) {
-    return { spread: 0, spreadPct: 0, midPrice: 0, sane: false }
+    return { spread: 0, spreadPct: 0, midPrice: 0, sane: false, warning: false, thresholds: DEFAULT_THRESHOLDS }
   }
   const bestBid = bids[0].price
   const bestAsk = asks[0].price
   const spread = bestAsk - bestBid
   const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0
   const midPrice = (bestBid + bestAsk) / 2
-  const sane = isSpreadSane(bestBid, bestAsk)
-  return { spread, spreadPct, midPrice, sane }
+  const thresholds = symbol ? getSpreadThresholds(symbol) : DEFAULT_THRESHOLDS
+  const sane = spreadPct <= thresholds.invalid
+  const warning = spreadPct > thresholds.warn
+  return { spread, spreadPct, midPrice, sane, warning, thresholds }
 }

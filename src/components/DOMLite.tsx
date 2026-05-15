@@ -5,6 +5,7 @@ import { getSpreadInfo } from '../utils/bookValidation'
 export default function DOMLite() {
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const symbol = useMarketStore(s => s.symbol)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const orderBookSource = useMarketStore(s => s.orderBookSource)
@@ -23,12 +24,15 @@ export default function DOMLite() {
   const hasData = bids.length > 0 || asks.length > 0
   const showDimmed = (!isUsable && !isTransitional) || depthStale
 
-  // Spread validation
-  const spreadInfo = getSpreadInfo(bids, asks)
-  const { spread, spreadPct, midPrice, sane: spreadSane } = spreadInfo
+  // Symbol-aware spread validation
+  const spreadInfo = getSpreadInfo(bids, asks, symbol)
+  const { spread, spreadPct, midPrice, sane: spreadSane, warning: spreadWarning, thresholds } = spreadInfo
 
-  // Full book integrity check
-  const bookValid = hasData && spreadSane
+  // Full book integrity check — must be sane AND not in warning range for normal display
+  const bookValid = hasData && spreadSane && !spreadWarning
+
+  // Book exists but has warning-level spread — show degraded state
+  const bookWarning = hasData && spreadSane && spreadWarning
 
   const maxQty = Math.max(
     1,
@@ -52,7 +56,7 @@ export default function DOMLite() {
   const healthBadge =
     orderBookHealth === 'STALE' ? ' ⚠STALE' :
     orderBookHealth === 'ERROR' ? ' ❌ERROR' :
-    '' // HEALTHY, TOP20, DEGRADED, transitional → no badge
+    ''
 
   return (
     <div className="dom-lite" style={showDimmed ? { opacity: 0.6 } : undefined}>
@@ -62,16 +66,23 @@ export default function DOMLite() {
       </div>
 
       {/* Source label — subtle, not alarming */}
-      {sourceLabel && hasData && (
+      {sourceLabel && hasData && !spreadWarning && (
         <div style={{ padding: '2px 8px', fontSize: 9, color: orderBookSource === 'strict' ? '#2dd4a0' : '#4fc3f7', textAlign: 'center', fontFamily: 'monospace' }}>
           {sourceLabel}
         </div>
       )}
 
-      {/* Spread warning — only when genuinely invalid */}
+      {/* Spread warning — symbol-aware */}
       {hasData && !spreadSane && (
-        <div style={{ padding: '2px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
-          Book integrity check failed — spread {spreadPct.toFixed(3)}%
+        <div style={{ padding: '4px 8px', fontSize: 9, color: '#ef6461', textAlign: 'center', fontFamily: 'monospace' }}>
+          Book integrity failed — spread {spreadPct.toFixed(4)}% (limit: {thresholds.invalid}%)
+        </div>
+      )}
+
+      {/* Spread abnormal but not invalid — show degraded state */}
+      {bookWarning && (
+        <div style={{ padding: '4px 8px', fontSize: 9, color: '#e4a73b', textAlign: 'center', fontFamily: 'monospace' }}>
+          Spread {spreadPct.toFixed(4)}% — abnormal for {symbol} (warn: {thresholds.warn}%)
         </div>
       )}
 
@@ -88,28 +99,30 @@ export default function DOMLite() {
         </div>
       )}
 
-      {/* Show data if available */}
-      {hasData && bookValid && (
+      {/* Show data if available and valid */}
+      {hasData && (bookValid || bookWarning) && (
         <>
           <div className="dom-asks">
             {asks.slice(0, 10).reverse().map((a, i) => (
               <div key={i} className="dom-row ask">
                 <span className="dom-qty">{fmtQty(a.qty)}</span>
-                <div className="dom-bar ask" style={{ width: `${(a.qty / maxQty) * 100}%` }} />
+                <div className="dom-bar ask" style={{ width: `${(a.qty / maxQty) * 100}%`, opacity: bookWarning ? 0.5 : 1 }} />
                 <span className="dom-price">{fmtPrice(a.price)}</span>
               </div>
             ))}
           </div>
 
           <div className="dom-spread">
-            <span>Spread: {fmtPrice(spread)} ({spreadPct.toFixed(3)}%)</span>
+            <span style={spreadWarning ? { color: '#e4a73b' } : undefined}>
+              Spread: {fmtPrice(spread)} ({spreadPct.toFixed(4)}%)
+            </span>
           </div>
 
           <div className="dom-bids">
             {bids.slice(0, 10).map((b, i) => (
               <div key={i} className="dom-row bid">
                 <span className="dom-price">{fmtPrice(b.price)}</span>
-                <div className="dom-bar bid" style={{ width: `${(b.qty / maxQty) * 100}%` }} />
+                <div className="dom-bar bid" style={{ width: `${(b.qty / maxQty) * 100}%`, opacity: bookWarning ? 0.5 : 1 }} />
                 <span className="dom-qty">{fmtQty(b.qty)}</span>
               </div>
             ))}
