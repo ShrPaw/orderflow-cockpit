@@ -7,7 +7,6 @@
 
 import type { Trade, OrderLevel, Ticker24h } from '../types/market'
 import type { OrderBookHealth, OrderBookSource } from '../types/market'
-import { getSpreadInfo } from './bookValidation'
 
 // ─── Constants ───
 const FLOW_WINDOW_MS = 60_000       // 60s rolling window for flow metrics
@@ -98,7 +97,10 @@ export function computeMarketSnapshot({
   }
 
   // ── Book context ──
-  const spreadInfo = getSpreadInfo(bids, asks)
+  const bestBid = bids[0]?.price ?? 0
+  const bestAsk = asks[0]?.price ?? 0
+  const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : 0
+  const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0
   const bidTotal = bids.reduce((s, b) => s + b.qty, 0)
   const askTotal = asks.reduce((s, a) => s + a.qty, 0)
   const imbalance = bidTotal + askTotal > 0
@@ -155,8 +157,8 @@ export function computeMarketSnapshot({
     rangePosition,
     bookSource: orderBookHealth,
     bookSourceLabel,
-    spread: spreadInfo.spread,
-    spreadPct: spreadInfo.spreadPct,
+    spread: spread,
+    spreadPct: spreadPct,
     bidAskImbalance: imbalance,
     topBidQty: bids[0]?.qty ?? 0,
     topAskQty: asks[0]?.qty ?? 0,

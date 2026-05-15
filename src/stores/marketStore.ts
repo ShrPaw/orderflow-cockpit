@@ -16,6 +16,31 @@ import { deriveFlowEvents } from '../utils/flowEvents'
 import type { AlertRule } from '../utils/alerts'
 import { loadAlertRules, saveAlertRules, getDefaultRules, evaluateAlerts } from '../utils/alerts'
 
+// ─── Overlay settings persistence ───
+const OVERLAY_STORAGE_KEY = 'orderflow.overlaySettings.v1'
+
+function loadOverlaySetting(key: string, defaultValue: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(OVERLAY_STORAGE_KEY)
+    if (!raw) return defaultValue
+    const parsed = JSON.parse(raw)
+    return typeof parsed[key] === 'boolean' ? parsed[key] : defaultValue
+  } catch {
+    return defaultValue
+  }
+}
+
+function saveOverlaySetting(key: string, value: boolean): void {
+  try {
+    const raw = localStorage.getItem(OVERLAY_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    parsed[key] = value
+    localStorage.setItem(OVERLAY_STORAGE_KEY, JSON.stringify(parsed))
+  } catch {
+    // Storage unavailable
+  }
+}
+
 interface MarketState {
   mode: AppMode
   symbol: string
@@ -72,6 +97,11 @@ interface MarketState {
   // ─── Alert Rules ───
   alertRules: AlertRule[]
 
+  // ─── Overlay Settings ───
+  showVWAP: boolean
+  showLiquidityLabels: boolean
+  showVolumeProfile: boolean
+
   // ─── Depth health ───
   depthStale: boolean
   depthLastMessageTime: number
@@ -125,6 +155,9 @@ interface MarketState {
   updateAlertRule: (ruleId: string, patch: Partial<AlertRule>) => void
   resetAlertRules: () => void
 
+  // Overlay Settings
+  toggleOverlay: (key: 'showVWAP' | 'showLiquidityLabels' | 'showVolumeProfile') => void
+
   reset: () => void
 }
 
@@ -174,6 +207,9 @@ function getInitialState() {
     clusters: [] as AuctionCluster[],
     flowEvents: [] as FlowEvent[],
     alertRules: loadAlertRules() as AlertRule[],
+    showVWAP: loadOverlaySetting('showVWAP', true),
+    showLiquidityLabels: loadOverlaySetting('showLiquidityLabels', true),
+    showVolumeProfile: loadOverlaySetting('showVolumeProfile', true),
     depthStale: false,
     depthLastMessageTime: 0,
     orderBookHealth: 'DISCONNECTED' as OrderBookHealth,
@@ -607,6 +643,14 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const defaults = getDefaultRules()
     saveAlertRules(defaults)
     set({ alertRules: defaults })
+  },
+
+  // ─── Overlay Settings ───
+  toggleOverlay: (key) => {
+    const current = get()[key]
+    const next = !current
+    saveOverlaySetting(key, next)
+    set({ [key]: next } as any)
   },
 
   reset: () => set(getInitialState()),

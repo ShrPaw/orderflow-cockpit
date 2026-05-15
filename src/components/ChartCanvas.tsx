@@ -29,6 +29,11 @@ export default function ChartCanvas() {
   const intervalRef = useRef('40s')
   const clustersRef = useRef<unknown[]>([])
   const orderBookHealthRef = useRef<string>('DISCONNECTED')
+  const overlaySettingsRef = useRef<{ showVWAP?: boolean; showLiquidityLabels?: boolean; showVolumeProfile?: boolean }>({
+    showVWAP: true,
+    showLiquidityLabels: true,
+    showVolumeProfile: true,
+  })
 
   // Subscribe to store and update refs
   const followLive = useMarketStore(s => s.followLive)
@@ -47,6 +52,11 @@ export default function ChartCanvas() {
       intervalRef.current = state.interval
       clustersRef.current = state.clusters
       orderBookHealthRef.current = state.orderBookHealth
+      overlaySettingsRef.current = {
+        showVWAP: state.showVWAP,
+        showLiquidityLabels: state.showLiquidityLabels,
+        showVolumeProfile: state.showVolumeProfile,
+      }
     })
     // Initialize refs from current state
     const s = useMarketStore.getState()
@@ -59,6 +69,11 @@ export default function ChartCanvas() {
     intervalRef.current = s.interval
     clustersRef.current = s.clusters
     orderBookHealthRef.current = s.orderBookHealth
+    overlaySettingsRef.current = {
+      showVWAP: s.showVWAP,
+      showLiquidityLabels: s.showLiquidityLabels,
+      showVolumeProfile: s.showVolumeProfile,
+    }
     return unsub
   }, [])
 
@@ -148,6 +163,7 @@ export default function ChartCanvas() {
 
         const intervalMs = INTERVAL_MS[interval as keyof typeof INTERVAL_MS] ?? 40_000
         const isBookHealthy = orderBookHealth === 'HEALTHY' || orderBookHealth === 'DEGRADED' || orderBookHealth === 'TOP20'
+        const overlaySettings = overlaySettingsRef.current
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
@@ -156,7 +172,8 @@ export default function ChartCanvas() {
           isBookHealthy ? bids : undefined,
           isBookHealthy ? asks : undefined,
           intervalMs,
-          clusters, 'CLUSTERED' // Smart Flow: always render, no user-facing mode switch
+          clusters, 'CLUSTERED', // Smart Flow: always render, no user-facing mode switch
+          overlaySettings
         )
         viewRef.current = result.view
       }

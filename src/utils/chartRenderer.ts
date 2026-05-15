@@ -3,6 +3,7 @@ import { getBubbleVisualStyle, getRenderableBubbles } from './bubbleMethodology'
 import { getAllLevels } from './levelMemory'
 import type { AuctionCluster } from './auctionClusters'
 import { getRenderableClusters, getClusterVisualStyle } from './auctionClusters'
+import { computeSessionVWAP, type VWAPPoint } from './vwap'
 
 // ─── Color System — Midnight Slate ───
 const COL = {
@@ -179,7 +180,8 @@ export function renderChart(
   asks?: OrderLevel[],
   intervalMs?: number,
   clusters?: AuctionCluster[],
-  displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID'
+  displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID',
+  overlaySettings?: { showVWAP?: boolean; showLiquidityLabels?: boolean; showVolumeProfile?: boolean }
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -225,13 +227,22 @@ export function renderChart(
   ctx.clip()
   drawGrid(ctx, c, view, width, height, fonts)
 
+  // ─── VWAP Overlay ───
+  if (overlaySettings?.showVWAP !== false) {
+    const vwapPoints = computeSessionVWAP(allCandles)
+    if (vwapPoints.length >= MIN_CANDLES) {
+      drawVWAPLine(ctx, c, vwapPoints, view, allCandles)
+    }
+  }
+
   // ─── Orderbook Liquidity Levels ───
-  if (livePrice && livePrice > 0 && bids && asks && bids.length > 0 && asks.length > 0) {
+  if (overlaySettings?.showLiquidityLabels !== false
+    && livePrice && livePrice > 0 && bids && asks && bids.length > 0 && asks.length > 0) {
     drawLiquidityLevels(ctx, c, livePrice, bids, asks)
   }
 
   // ─── Volume profile overlay ───
-  if (volumeProfile.length > 0) {
+  if (overlaySettings?.showVolumeProfile !== false && volumeProfile.length > 0) {
     const maxVol = Math.max(1, ...volumeProfile.map(l => l.total))
     const barMaxW = Math.min(80, c.chartW * 0.15)
     for (const level of volumeProfile) {
@@ -1067,7 +1078,81 @@ function drawGrid(
   }
 }
 
-// ─── Orderbook Liquidity Levels ───
+// ─── VWAP Line ───
+const MIN_CANDLES_VWAP = 5
+
+function drawVWAPLine(
+  ctx: CanvasRenderingContext2D,
+  c: ReturnType<typeof makeCoords>,
+  vwapPoints: VWAPPoint[],
+  view: ViewState,
+  allCandles: Candle[]
+) {
+  if (vwapPoints.length < MIN_CANDLES_VWAP) return
+
+  // Map VWAP points to screen coordinates
+  // Each VWAP point has a time matching a candle's openTime
+  const timeToIdx = new Map<number, number>()
+  for (let i = 0; i < allCandles.length; i++) {
+    timeToIdx.set(allCandles[i].openTime, i)
+  }
+
+  ctx.strokeStyle = 'rgba(156,143,216,0.6)'   // muted violet
+  ctx.lineWidth = 1.2
+  ctx.setLineDash([5, 3])
+  ctx.beginPath()
+
+  let started = false
+  let lastX = 0
+  let lastY = 0
+
+  for (const pt of vwapPoints) {
+    const idx = timeToIdx.get(pt.time)
+    if (idx === undefined) continue
+
+    const x = c.indexToX(idx) + c.bodyW / 2
+    const y = c.priceToY(pt.price)
+
+    if (!isFinite(y) || x < LEFT_MARGIN - 20 || x > c.priceScaleX + 20) continue
+
+    if (!started) {
+      ctx.moveTo(x, y)
+      started = true
+    } else {
+      ctx.lineTo(x, y)
+    }
+    lastX = x
+    lastY = y
+  }
+
+  if (started) {
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Right-edge label
+    if (lastY > 4 && lastY < c.chartH - 4) {
+      const lastPt = vwapPoints[vwapPoints.length - 1]
+      const label = `VWAP ${fmtPriceLabel(lastPt.price)}`
+
+      ctx.font = '9px "SF Mono", monospace'
+      const textW = ctx.measureText(label).width
+      const labelX = c.priceScaleX - textW - 8
+      const labelY = lastY
+
+      // Label background
+      ctx.fillStyle = 'rgba(12,16,25,0.85)'
+      ctx.fillRect(labelX - 3, labelY - 9, textW + 6, 13)
+
+      ctx.fillStyle = 'rgba(156,143,216,0.85)'
+      ctx.textAlign = 'left'
+      ctx.fillText(label, labelX, labelY + 1)
+    }
+  }
+
+  ctx.setLineDash([])
+}
+
+// ─── Liquidity Levels (upgraded with clear qty labels) ───
 function drawLiquidityLevels(
   ctx: CanvasRenderingContext2D,
   c: ReturnType<typeof makeCoords>,
@@ -1081,58 +1166,113 @@ function drawLiquidityLevels(
   const visibleRange = Math.abs(topPrice - botPrice)
   const rangeThreshold = Math.min(livePrice * 0.02, visibleRange * 0.3)
 
-  // Top 3 strongest bid levels (below price)
+  // Top 5 strongest bid levels (below price)
   const nearbyBids = bids
     .filter(b => b.price < livePrice && (livePrice - b.price) < rangeThreshold)
     .sort((a, b) => b.qty - a.qty)
-    .slice(0, 3)
+    .slice(0, 5)
 
-  // Top 3 strongest ask levels (above price)
+  // Top 5 strongest ask levels (above price)
   const nearbyAsks = asks
     .filter(a => a.price > livePrice && (a.price - livePrice) < rangeThreshold)
     .sort((a, b) => b.qty - a.qty)
-    .slice(0, 3)
+    .slice(0, 5)
+
+  if (nearbyBids.length === 0 && nearbyAsks.length === 0) return
 
   const maxQty = Math.max(1, ...nearbyBids.map(b => b.qty), ...nearbyAsks.map(a => a.qty))
 
-  // Draw bid liquidity as subtle green/cyan bands
+  // Collect all label positions to avoid overlap
+  const labelPositions: { y: number; side: 'bid' | 'ask'; qty: number; price: number }[] = []
+
+  // Draw bid liquidity levels
   for (const bid of nearbyBids) {
     const y = c.priceToY(bid.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = bid.qty / maxQty
-    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
-    const alpha = 0.08 + strength * 0.18
+    const bandH = Math.max(1.5, Math.min(5, 1.5 + strength * 3.5))
+    const alpha = 0.06 + strength * 0.2
 
-    ctx.fillStyle = `rgba(45,212,160,${alpha})`
-    ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
+    // Horizontal line
+    ctx.strokeStyle = `rgba(45,212,160,${alpha + 0.1})`
+    ctx.lineWidth = bandH
+    ctx.setLineDash([])
+    ctx.beginPath()
+    ctx.moveTo(LEFT_MARGIN, y)
+    ctx.lineTo(c.priceScaleX, y)
+    ctx.stroke()
 
-    // Qty label — show when chart is wide enough
-    if (c.chartW > 180) {
-      const qtyLabel = fmtCompactQty(bid.qty)
-      ctx.fillStyle = `rgba(45,212,160,${Math.min(0.85, alpha + 0.3)})`
-      ctx.font = '10px "SF Mono", monospace'
-      ctx.textAlign = 'left'
-      ctx.fillText(`BID ${qtyLabel}`, LEFT_MARGIN + 6, y + 3)
-    }
+    // Subtle fill band
+    ctx.fillStyle = `rgba(45,212,160,${alpha * 0.4})`
+    ctx.fillRect(LEFT_MARGIN, y - bandH, c.chartW, bandH * 2)
+
+    labelPositions.push({ y, side: 'bid', qty: bid.qty, price: bid.price })
   }
 
-  // Draw ask liquidity as subtle red/amber bands
+  // Draw ask liquidity levels
   for (const ask of nearbyAsks) {
     const y = c.priceToY(ask.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = ask.qty / maxQty
-    const bandH = Math.max(2, Math.min(6, 2 + strength * 4))
-    const alpha = 0.08 + strength * 0.18
+    const bandH = Math.max(1.5, Math.min(5, 1.5 + strength * 3.5))
+    const alpha = 0.06 + strength * 0.2
 
-    ctx.fillStyle = `rgba(239,100,97,${alpha})`
-    ctx.fillRect(LEFT_MARGIN, y - bandH / 2, c.chartW, bandH)
+    ctx.strokeStyle = `rgba(239,100,97,${alpha + 0.1})`
+    ctx.lineWidth = bandH
+    ctx.setLineDash([])
+    ctx.beginPath()
+    ctx.moveTo(LEFT_MARGIN, y)
+    ctx.lineTo(c.priceScaleX, y)
+    ctx.stroke()
 
-    if (c.chartW > 180) {
-      const qtyLabel = fmtCompactQty(ask.qty)
-      ctx.fillStyle = `rgba(239,100,97,${Math.min(0.85, alpha + 0.3)})`
+    ctx.fillStyle = `rgba(239,100,97,${alpha * 0.4})`
+    ctx.fillRect(LEFT_MARGIN, y - bandH, c.chartW, bandH * 2)
+
+    labelPositions.push({ y, side: 'ask', qty: ask.qty, price: ask.price })
+  }
+
+  // Draw quantity labels — skip overlapping ones
+  if (c.chartW > 160) {
+    labelPositions.sort((a, b) => a.y - b.y)
+    let lastLabelY = -Infinity
+
+    for (const lp of labelPositions) {
+      // Skip if too close to last label (minimum 14px gap)
+      if (Math.abs(lp.y - lastLabelY) < 14) continue
+
+      const color = lp.side === 'bid' ? 'rgba(45,212,160,' : 'rgba(239,100,97,'
+      const prefix = lp.side === 'bid' ? 'BID' : 'ASK'
+      const qtyStr = fmtCompactQty(lp.qty)
+      const label = `${prefix} ${qtyStr}`
+
       ctx.font = '10px "SF Mono", monospace'
+      const textW = ctx.measureText(label).width
+
+      // Position: right side of chart, just left of price scale
+      const labelX = c.priceScaleX - textW - 10
+      const labelY = lp.y
+
+      // Background pill
+      const padX = 4
+      const padY = 2
+      ctx.fillStyle = lp.side === 'bid' ? 'rgba(6,9,15,0.88)' : 'rgba(6,9,15,0.88)'
+      roundRect(ctx, labelX - padX, labelY - 8 - padY, textW + padX * 2, 12 + padY * 2, 3)
+      ctx.fill()
+
+      // Border
+      ctx.strokeStyle = lp.side === 'bid' ? 'rgba(45,212,160,0.25)' : 'rgba(239,100,97,0.25)'
+      ctx.lineWidth = 0.5
+      roundRect(ctx, labelX - padX, labelY - 8 - padY, textW + padX * 2, 12 + padY * 2, 3)
+      ctx.stroke()
+
+      // Text
+      const strength = lp.qty / maxQty
+      const textAlpha = 0.5 + strength * 0.5
+      ctx.fillStyle = color + textAlpha + ')'
       ctx.textAlign = 'left'
-      ctx.fillText(`ASK ${qtyLabel}`, LEFT_MARGIN + 6, y + 3)
+      ctx.fillText(label, labelX, labelY + 1)
+
+      lastLabelY = lp.y
     }
   }
 }

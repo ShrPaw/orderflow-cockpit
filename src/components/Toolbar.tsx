@@ -25,6 +25,10 @@ export default function Toolbar() {
 
   const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
+  const showVWAP = useMarketStore(s => s.showVWAP)
+  const showLiquidityLabels = useMarketStore(s => s.showLiquidityLabels)
+  const showVolumeProfile = useMarketStore(s => s.showVolumeProfile)
+  const toggleOverlay = useMarketStore(s => s.toggleOverlay)
 
   const [showAssetSelector, setShowAssetSelector] = useState(false)
 
@@ -188,6 +192,24 @@ export default function Toolbar() {
               onClick={() => chartApi?.resetView()}
               title="Reset view (R / 0)"
             >↺ Reset</button>
+          </div>
+
+          <div className="overlay-toggles">
+            <button
+              className={`overlay-btn ${showVWAP ? 'active' : ''}`}
+              onClick={() => toggleOverlay('showVWAP')}
+              title="Toggle VWAP line"
+            >VWAP</button>
+            <button
+              className={`overlay-btn ${showLiquidityLabels ? 'active' : ''}`}
+              onClick={() => toggleOverlay('showLiquidityLabels')}
+              title="Toggle liquidity level labels"
+            >Liq</button>
+            <button
+              className={`overlay-btn ${showVolumeProfile ? 'active' : ''}`}
+              onClick={() => toggleOverlay('showVolumeProfile')}
+              title="Toggle volume profile"
+            >VP</button>
           </div>
         </div>
       </div>
