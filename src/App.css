@@ -718,6 +718,44 @@
   display: block;
 }
 
+/* ─── Volume Profile Summary ─── */
+.vp-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.vp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+  font-size: 11px;
+}
+.vp-label {
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.vp-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.vp-value.poc {
+  color: var(--accent);
+  font-size: 12px;
+}
+.vp-value.dim {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
 /* ─── Bottom Bar ─── */
 .bottom-bar {
   height: 174px;

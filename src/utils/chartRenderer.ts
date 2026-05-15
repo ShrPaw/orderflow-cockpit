@@ -4,6 +4,7 @@ import { getAllLevels } from './levelMemory'
 import type { AuctionCluster } from './auctionClusters'
 import { getRenderableClusters, getClusterVisualStyle } from './auctionClusters'
 import { computeSessionVWAP, type VWAPPoint } from './vwap'
+import { computeVisibleRangeVolumeProfile, type VPResult } from './volumeProfileRange'
 
 // ─── Color System — Midnight Slate ───
 const COL = {
@@ -241,16 +242,17 @@ export function renderChart(
     drawLiquidityLevels(ctx, c, livePrice, bids, asks)
   }
 
-  // ─── Volume profile overlay ───
-  if (overlaySettings?.showVolumeProfile !== false && volumeProfile.length > 0) {
-    const maxVol = Math.max(1, ...volumeProfile.map(l => l.total))
-    const barMaxW = Math.min(80, c.chartW * 0.15)
-    for (const level of volumeProfile) {
-      const y = c.priceToY(level.price)
-      if (y < -5 || y > c.chartH + 5) continue
-      const w = (level.total / maxVol) * barMaxW
-      ctx.fillStyle = level.delta >= 0 ? 'rgba(0,212,170,0.1)' : 'rgba(255,77,106,0.1)'
-      ctx.fillRect(LEFT_MARGIN, y - 1, w, 2)
+  // ─── Visible Range Volume Profile ───
+  if (overlaySettings?.showVolumeProfile !== false) {
+    const vpResult = computeVisibleRangeVolumeProfile({
+      candles,
+      currentCandle,
+      visibleFrom: c.firstVisibleIdx,
+      visibleTo: c.lastVisibleIdx,
+      rowCount: Math.min(96, Math.max(32, Math.floor(c.chartH / 8))),
+    })
+    if (vpResult && vpResult.levels.length > 0) {
+      drawVolumeProfile(ctx, c, vpResult, width, height, fonts)
     }
   }
 
@@ -1075,6 +1077,135 @@ function drawGrid(
     ctx.moveTo(LEFT_MARGIN, y)
     ctx.lineTo(c.priceScaleX, y)
     ctx.stroke()
+  }
+}
+
+// ─── Visible Range Volume Profile ───
+function drawVolumeProfile(
+  ctx: CanvasRenderingContext2D,
+  c: ReturnType<typeof makeCoords>,
+  vp: VPResult,
+  width: number,
+  height: number,
+  fonts: ReturnType<typeof getFontSizes>
+) {
+  const barMaxW = Math.min(120, c.chartW * 0.18)
+  const barH = vp.levels.length > 0
+    ? Math.max(2, Math.min(12, (c.chartH / vp.levels.length) * 0.85))
+    : 4
+
+  for (const level of vp.levels) {
+    const y = c.priceToY(level.price)
+    if (!isFinite(y) || y < -10 || y > c.chartH + 10) continue
+
+    const barW = (level.pctOfMax / 100) * barMaxW
+    if (barW < 1) continue
+
+    // Determine color based on value area and POC
+    const isPOC = level.price === vp.poc.price
+    const inVA = level.inValueArea
+
+    let fillColor: string
+    if (isPOC) {
+      fillColor = 'rgba(79,195,247,0.55)'   // bright cyan for POC
+    } else if (inVA) {
+      // Buy/sell split if available
+      if (level.buyVolume > 0 && level.sellVolume > 0) {
+        const buyRatio = level.volume > 0 ? level.buyVolume / level.volume : 0.5
+        const buyW = barW * buyRatio
+        const sellW = barW - buyW
+        ctx.fillStyle = `rgba(45,212,160,0.22)`
+        ctx.fillRect(c.priceScaleX - barW, y - barH / 2, buyW, barH)
+        ctx.fillStyle = `rgba(239,100,97,0.18)`
+        ctx.fillRect(c.priceScaleX - barW + buyW, y - barH / 2, sellW, barH)
+        continue // already drawn
+      }
+      fillColor = 'rgba(79,195,247,0.20)'   // muted cyan in value area
+    } else {
+      fillColor = 'rgba(79,195,247,0.08)'   // very subtle outside VA
+    }
+
+    ctx.fillStyle = fillColor
+    ctx.fillRect(c.priceScaleX - barW, y - barH / 2, barW, barH)
+  }
+
+  // POC line across chart
+  const pocY = c.priceToY(vp.poc.price)
+  if (isFinite(pocY) && pocY > 0 && pocY < c.chartH) {
+    ctx.strokeStyle = 'rgba(79,195,247,0.25)'
+    ctx.lineWidth = 0.5
+    ctx.setLineDash([3, 4])
+    ctx.beginPath()
+    ctx.moveTo(LEFT_MARGIN, pocY)
+    ctx.lineTo(c.priceScaleX, pocY)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // POC label at right edge
+    if (c.chartW > 200) {
+      const label = `POC ${fmtPriceLabel(vp.poc.price)}`
+      ctx.font = '9px "SF Mono", monospace'
+      const tw = ctx.measureText(label).width
+      const lx = c.priceScaleX - tw - 10
+      ctx.fillStyle = 'rgba(6,9,15,0.85)'
+      ctx.fillRect(lx - 3, pocY - 9, tw + 6, 13)
+      ctx.strokeStyle = 'rgba(79,195,247,0.3)'
+      ctx.lineWidth = 0.5
+      ctx.strokeRect(lx - 3, pocY - 9, tw + 6, 13)
+      ctx.fillStyle = 'rgba(79,195,247,0.9)'
+      ctx.textAlign = 'left'
+      ctx.fillText(label, lx, pocY + 1)
+    }
+  }
+
+  // VAH line
+  const vahY = c.priceToY(vp.valueArea.high)
+  if (isFinite(vahY) && vahY > 0 && vahY < c.chartH) {
+    ctx.strokeStyle = 'rgba(79,195,247,0.15)'
+    ctx.lineWidth = 0.5
+    ctx.setLineDash([2, 4])
+    ctx.beginPath()
+    ctx.moveTo(LEFT_MARGIN, vahY)
+    ctx.lineTo(c.priceScaleX, vahY)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    if (c.chartW > 200) {
+      const label = `VAH ${fmtPriceLabel(vp.valueArea.high)}`
+      ctx.font = '8px "SF Mono", monospace'
+      const tw = ctx.measureText(label).width
+      const lx = c.priceScaleX - tw - 10
+      ctx.fillStyle = 'rgba(6,9,15,0.75)'
+      ctx.fillRect(lx - 2, vahY - 8, tw + 4, 11)
+      ctx.fillStyle = 'rgba(79,195,247,0.55)'
+      ctx.textAlign = 'left'
+      ctx.fillText(label, lx, vahY)
+    }
+  }
+
+  // VAL line
+  const valY = c.priceToY(vp.valueArea.low)
+  if (isFinite(valY) && valY > 0 && valY < c.chartH) {
+    ctx.strokeStyle = 'rgba(79,195,247,0.15)'
+    ctx.lineWidth = 0.5
+    ctx.setLineDash([2, 4])
+    ctx.beginPath()
+    ctx.moveTo(LEFT_MARGIN, valY)
+    ctx.lineTo(c.priceScaleX, valY)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    if (c.chartW > 200) {
+      const label = `VAL ${fmtPriceLabel(vp.valueArea.low)}`
+      ctx.font = '8px "SF Mono", monospace'
+      const tw = ctx.measureText(label).width
+      const lx = c.priceScaleX - tw - 10
+      ctx.fillStyle = 'rgba(6,9,15,0.75)'
+      ctx.fillRect(lx - 2, valY - 8, tw + 4, 11)
+      ctx.fillStyle = 'rgba(79,195,247,0.55)'
+      ctx.textAlign = 'left'
+      ctx.fillText(label, lx, valY)
+    }
   }
 }
 

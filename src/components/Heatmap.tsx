@@ -1,25 +1,14 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { useMarketStore } from '../stores/marketStore'
-import { fmtQty, fmtPrice } from '../utils/formatters'
-import { getSpreadInfo } from '../utils/bookValidation'
-
-const BID_COLORS = [
-  'rgba(45,212,160,0.08)',
-  'rgba(45,212,160,0.18)',
-  'rgba(45,212,160,0.32)',
-  'rgba(45,212,160,0.55)',
-]
-const ASK_COLORS = [
-  'rgba(239,100,97,0.08)',
-  'rgba(239,100,97,0.18)',
-  'rgba(239,100,97,0.32)',
-  'rgba(239,100,97,0.55)',
-]
+import { computeVisibleRangeVolumeProfile, type VPResult } from '../utils/volumeProfileRange'
+import { fmtPrice, fmtNum } from '../utils/formatters'
 
 export default function Heatmap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bids = useMarketStore(s => s.bids)
   const asks = useMarketStore(s => s.asks)
+  const candles = useMarketStore(s => s.candles)
+  const currentCandle = useMarketStore(s => s.currentCandle)
   const livePrice = useMarketStore(s => s.livePrice)
   const depthStale = useMarketStore(s => s.depthStale)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
@@ -33,6 +22,27 @@ export default function Heatmap() {
   const hasData = bids.length > 0 || asks.length > 0
   const showDimmed = (!isUsable && !hasData) || depthStale
 
+  // Compute VPVR from all loaded candles (for side panel summary)
+  const [vpResult, setVpResult] = useState<VPResult | null>(null)
+
+  useEffect(() => {
+    const allCandles = currentCandle ? [...candles, currentCandle] : candles
+    if (allCandles.length < 5) {
+      setVpResult(null)
+      return
+    }
+    // Use all loaded candles for side panel (approximates visible range)
+    const result = computeVisibleRangeVolumeProfile({
+      candles,
+      currentCandle,
+      visibleFrom: Math.max(0, allCandles.length - 200),
+      visibleTo: allCandles.length - 1,
+      rowCount: 48,
+    })
+    setVpResult(result)
+  }, [candles, currentCandle])
+
+  // Draw the VPVR mini chart
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -51,153 +61,130 @@ export default function Heatmap() {
     ctx.fillStyle = showDimmed ? '#040609' : '#06090f'
     ctx.fillRect(0, 0, w, h)
 
-    // Build sorted ladder: asks on top (ascending), bids below (descending)
-    const sortedAsks = asks.slice(0, 10).sort((a, b) => a.price - b.price)
-    const sortedBids = bids.slice(0, 10).sort((a, b) => b.price - a.price)
-    const allLevels = [
-      ...sortedAsks.map(a => ({ ...a, side: 'ask' as const })),
-      ...sortedBids.map(b => ({ ...b, side: 'bid' as const })),
-    ]
-
-    if (allLevels.length === 0) {
+    if (!vpResult || vpResult.levels.length === 0) {
       ctx.fillStyle = '#3d4f68'
       ctx.font = '11px "SF Mono", monospace'
       ctx.textAlign = 'center'
-      const msg = orderBookHealth === 'CONNECTING' ? 'Connecting...'
-        : orderBookHealth === 'BUFFERING' ? 'Book buffering...'
-        : orderBookHealth === 'SNAPSHOT_LOADING' ? 'Strict sync loading...'
-        : orderBookHealth === 'SYNCING' ? 'Book syncing...'
-        : 'Waiting for depth data...'
-      ctx.fillText(msg, w / 2, h / 2)
+      ctx.fillText('Waiting for volume data...', w / 2, h / 2)
       return
     }
 
-    const prices = allLevels.map(l => l.price)
-    const minPrice = Math.min(...prices)
-    const maxPrice = Math.max(...prices)
-    const priceRange = maxPrice - minPrice || 1
-    const maxQty = Math.max(1, ...allLevels.map(l => l.qty))
-    const levelCount = allLevels.length
-    const barH = Math.max(12, Math.min(32, (h - 24) / levelCount))
-    const barAlpha = (isTop20 || isDegraded || showDimmed) ? 0.6 : 1.0
+    const levels = vpResult.levels
+    const maxVol = Math.max(1, ...levels.map(l => l.volume))
+    const barMaxW = w * 0.55
+    const barH = Math.max(3, Math.min(14, (h - 16) / levels.length))
+    const startY = 8
 
-    // Spread info
-    const spreadInfo = getSpreadInfo(bids, asks)
-    const spreadMid = h / 2
+    for (let i = 0; i < levels.length; i++) {
+      const level = levels[i]
+      const y = startY + i * barH
+      const barW = (level.pctOfMax / 100) * barMaxW
+      const isPOC = level.price === vpResult.poc.price
 
-    // Draw spread gap indicator
-    if (spreadInfo.sane && sortedBids.length > 0 && sortedAsks.length > 0) {
-      const bestBidY = h - ((sortedBids[0].price - minPrice) / priceRange) * (h - 24) - barH - 6
-      const bestAskY = h - ((sortedAsks[0].price - minPrice) / priceRange) * (h - 24) - barH - 6
-      const gapMid = (bestBidY + bestAskY + barH) / 2
+      // Bar
+      if (isPOC) {
+        ctx.fillStyle = 'rgba(79,195,247,0.45)'
+      } else if (level.inValueArea) {
+        if (level.buyVolume > 0 && level.sellVolume > 0) {
+          const buyRatio = level.volume > 0 ? level.buyVolume / level.volume : 0.5
+          const buyW = barW * buyRatio
+          ctx.fillStyle = 'rgba(45,212,160,0.25)'
+          ctx.fillRect(w - barW - 4, y, buyW, barH - 1)
+          ctx.fillStyle = 'rgba(239,100,97,0.20)'
+          ctx.fillRect(w - barW - 4 + buyW, y, barW - buyW, barH - 1)
+          continue
+        }
+        ctx.fillStyle = 'rgba(79,195,247,0.22)'
+      } else {
+        ctx.fillStyle = 'rgba(79,195,247,0.08)'
+      }
+      ctx.fillRect(w - barW - 4, y, barW, barH - 1)
 
-      // Spread line
-      ctx.strokeStyle = 'rgba(79,195,247,0.15)'
+      // Price label (left) — only POC and every few levels
+      if (isPOC || i === 0 || i === levels.length - 1) {
+        ctx.fillStyle = isPOC ? 'rgba(79,195,247,0.8)' : '#4a5e78'
+        ctx.font = `${isPOC ? 10 : 8}px "SF Mono", monospace`
+        ctx.textAlign = 'left'
+        const priceLabel = level.price >= 1000 ? level.price.toFixed(0) : level.price.toFixed(2)
+        ctx.fillText(isPOC ? `● ${priceLabel}` : priceLabel, 4, y + barH - 3)
+      }
+    }
+
+    // VAH/VAL markers
+    const vahIdx = levels.findIndex(l => l.price >= vpResult.valueArea.high)
+    const valIdx = levels.findIndex(l => l.price >= vpResult.valueArea.low)
+    if (vahIdx >= 0) {
+      const y = startY + vahIdx * barH
+      ctx.strokeStyle = 'rgba(79,195,247,0.25)'
       ctx.lineWidth = 1
-      ctx.setLineDash([3, 3])
+      ctx.setLineDash([2, 2])
       ctx.beginPath()
-      ctx.moveTo(0, gapMid)
-      ctx.lineTo(w, gapMid)
+      ctx.moveTo(0, y)
+      ctx.lineTo(w, y)
       ctx.stroke()
       ctx.setLineDash([])
-
-      // Spread label
-      ctx.fillStyle = 'rgba(79,195,247,0.5)'
-      ctx.font = '8px "SF Mono", monospace'
-      ctx.textAlign = 'center'
-      ctx.fillText(`Spread ${fmtPrice(spreadInfo.spread)} (${spreadInfo.spreadPct.toFixed(3)}%)`, w / 2, gapMid - 4)
     }
-
-    // Draw each level as a clear row
-    for (let i = 0; i < allLevels.length; i++) {
-      const level = allLevels[i]
-      const y = h - ((level.price - minPrice) / priceRange) * (h - 24) - barH - 6
-      const intensity = Math.min(1, level.qty / maxQty)
-      const colorIdx = Math.min(3, Math.floor(intensity * 4))
-
-      ctx.globalAlpha = barAlpha
-
-      // Background bar
-      ctx.fillStyle = level.side === 'bid' ? BID_COLORS[colorIdx] : ASK_COLORS[colorIdx]
-      ctx.fillRect(0, y, w, barH)
-
-      // Quantity bar (right-aligned)
-      const qtyBarW = Math.max(2, (intensity * 0.5) * w)
-      ctx.fillStyle = level.side === 'bid' ? 'rgba(45,212,160,0.10)' : 'rgba(239,100,97,0.10)'
-      ctx.fillRect(w - qtyBarW - 4, y + 2, qtyBarW, barH - 4)
-
-      // Row separator
-      ctx.strokeStyle = 'rgba(255,255,255,0.03)'
-      ctx.lineWidth = 0.5
+    if (valIdx >= 0) {
+      const y = startY + valIdx * barH
+      ctx.strokeStyle = 'rgba(79,195,247,0.25)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([2, 2])
       ctx.beginPath()
-      ctx.moveTo(0, y + barH)
-      ctx.lineTo(w, y + barH)
+      ctx.moveTo(0, y)
+      ctx.lineTo(w, y)
       ctx.stroke()
-
-      // Price label (left)
-      ctx.fillStyle = '#6b8098'
-      ctx.font = '10px "SF Mono", monospace'
-      ctx.textAlign = 'left'
-      ctx.fillText(fmtPrice(level.price), 6, y + barH - 5)
-
-      // Quantity label (right)
-      const sideColor = level.side === 'bid' ? 'rgba(45,212,160,0.8)' : 'rgba(239,100,97,0.8)'
-      ctx.fillStyle = sideColor
-      ctx.font = '11px "SF Mono", monospace'
-      ctx.textAlign = 'right'
-      ctx.fillText(fmtQty(level.qty), w - 6, y + barH - 5)
-
-      // Distance from live price
-      if (livePrice > 0) {
-        const distPct = ((level.price - livePrice) / livePrice) * 100
-        const distStr = distPct >= 0 ? `+${distPct.toFixed(2)}%` : `${distPct.toFixed(2)}%`
-        ctx.fillStyle = 'rgba(107,125,150,0.5)'
-        ctx.font = '8px "SF Mono", monospace'
-        ctx.textAlign = 'right'
-        ctx.fillText(distStr, w - 6, y + barH - 16)
-      }
-
-      ctx.globalAlpha = 1.0
+      ctx.setLineDash([])
     }
 
-    // Imbalance indicator
-    const bidTotal = sortedBids.reduce((s, b) => s + b.qty, 0)
-    const askTotal = sortedAsks.reduce((s, a) => s + a.qty, 0)
-    if (bidTotal + askTotal > 0) {
-      const imbalance = ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
-      const imbLabel = imbalance > 15 ? `Bid-heavy ${imbalance.toFixed(0)}%`
-        : imbalance < -15 ? `Ask-heavy ${Math.abs(imbalance).toFixed(0)}%`
-        : 'Balanced'
-      const imbColor = imbalance > 15 ? 'rgba(45,212,160,0.5)'
-        : imbalance < -15 ? 'rgba(239,100,97,0.5)'
-        : 'rgba(107,125,150,0.4)'
-      ctx.fillStyle = imbColor
-      ctx.font = '9px "SF Mono", monospace'
-      ctx.textAlign = 'center'
-      ctx.fillText(imbLabel, w / 2, h - 4)
-    }
-
-  }, [bids, asks, livePrice, showDimmed, isTop20, isDegraded, orderBookHealth])
+  }, [vpResult, showDimmed])
 
   const sourceLabel = orderBookSource === 'strict' ? ' STRICT'
     : orderBookSource === 'depth20' ? ' TOP-20'
     : ''
 
-  const healthBadge =
-    orderBookHealth === 'STALE' ? ' ⚠STALE' :
-    orderBookHealth === 'ERROR' ? ' ❌' :
-    ''
-
   return (
     <div className="heatmap-container" style={showDimmed ? { opacity: 0.6 } : undefined}>
       <div className="heatmap-header">
-        Liquidity Ladder{healthBadge}
-        {sourceLabel && (
+        Volume Profile{sourceLabel && (
           <span style={{ fontSize: 9, color: '#4fc3f7', marginLeft: 8, fontFamily: 'monospace' }}>
             {sourceLabel}
           </span>
         )}
       </div>
+
+      {/* VPVR Summary */}
+      {vpResult && (
+        <div className="vp-summary">
+          <div className="vp-row">
+            <span className="vp-label">POC</span>
+            <span className="vp-value poc">{fmtPrice(vpResult.poc.price)}</span>
+          </div>
+          <div className="vp-row">
+            <span className="vp-label">VAH</span>
+            <span className="vp-value">{fmtPrice(vpResult.valueArea.high)}</span>
+          </div>
+          <div className="vp-row">
+            <span className="vp-label">VAL</span>
+            <span className="vp-value">{fmtPrice(vpResult.valueArea.low)}</span>
+          </div>
+          <div className="vp-row">
+            <span className="vp-label">Volume</span>
+            <span className="vp-value">{fmtNum(vpResult.metadata.totalVolume)}</span>
+          </div>
+          <div className="vp-row">
+            <span className="vp-label">Range</span>
+            <span className="vp-value dim">{vpResult.metadata.candleCount} candles</span>
+          </div>
+          {vpResult.metadata.hasFootprint && (
+            <div className="vp-row">
+              <span className="vp-label">Source</span>
+              <span className="vp-value dim">Footprint</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* VPVR Mini Chart */}
       <div className="heatmap-canvas-wrap">
         <canvas ref={canvasRef} />
       </div>
