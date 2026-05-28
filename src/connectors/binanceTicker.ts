@@ -34,7 +34,7 @@ export async function fetchTicker24h(symbol: string): Promise<Ticker24h | null> 
 }
 
 // ─── Fetch all available USDT-M perpetual instruments ───
-const INSTRUMENT_CACHE_KEY = '__futures_instruments'
+const INSTRUMENT_CACHE_KEY = '__futures_instruments_v2'
 const INSTRUMENT_CACHE_TTL = 3600_000 // 1h
 
 interface BinanceExchangeInfo {
@@ -70,8 +70,10 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
   try {
     const cached = sessionStorage.getItem(INSTRUMENT_CACHE_KEY)
     if (cached) {
-      const { data, ts } = JSON.parse(cached)
-      if (Date.now() - ts < INSTRUMENT_CACHE_TTL) return data
+      const parsed = JSON.parse(cached)
+      if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0 && Date.now() - parsed.ts < INSTRUMENT_CACHE_TTL) {
+        return parsed.data
+      }
     }
   } catch { /* ignore */ }
 
@@ -107,7 +109,6 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
         }
       })
       .sort((a, b) => {
-        // Sort: majors first, then by symbol
         const catOrder = { major: 0, defi: 1, alt: 2, meme: 3 }
         const diff = catOrder[a.category] - catOrder[b.category]
         return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol)
@@ -130,7 +131,7 @@ export type PriceCallback = (price: number, change: number, changePct: number) =
 
 // ─── Exponential backoff with jitter ───
 const TICKER_BACKOFF_INITIAL = 1_000
-const TICKER_BACKOFF_MAX = 30_000
+const TICKER_BACKOFF_MAX = 60_000
 const TICKER_BACKOFF_FACTOR = 1.5
 
 function getTickerBackoffDelay(attempt: number): number {
@@ -195,8 +196,9 @@ export function connectMiniTicker(
         if (msg.e === '24hrMiniTicker') {
           const price = parseFloat(msg.c)
           const open = parseFloat(msg.o)
+          if (!isFinite(price) || !isFinite(open) || price <= 0 || open <= 0) return
           const change = price - open
-          const changePct = open > 0 ? (change / open) * 100 : 0
+          const changePct = (change / open) * 100
           onPrice(price, change, changePct)
         }
       } catch { /* ignore */ }

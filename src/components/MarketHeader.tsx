@@ -7,7 +7,6 @@ export default function MarketHeader() {
   const liveChange = useMarketStore(s => s.liveChange)
   const liveChangePct = useMarketStore(s => s.liveChangePct)
   const ticker = useMarketStore(s => s.ticker)
-  const mode = useMarketStore(s => s.mode)
   const connected = useMarketStore(s => s.connected)
   const depthConnected = useMarketStore(s => s.depthConnected)
   const tickerConnected = useMarketStore(s => s.tickerConnected)
@@ -15,8 +14,6 @@ export default function MarketHeader() {
   const tickerError = useMarketStore(s => s.tickerError)
   const orderBookHealth = useMarketStore(s => s.orderBookHealth)
   const orderBookSource = useMarketStore(s => s.orderBookSource)
-
-  if (mode === 'demo') return null
 
   const allConnected = connected && depthConnected && tickerConnected
   const isUp = liveChange >= 0
@@ -68,13 +65,13 @@ export default function MarketHeader() {
           <span className={`mh-stream-dot ${orderBookHealth === 'HEALTHY' || orderBookHealth === 'TOP20' || orderBookHealth === 'DEGRADED' ? 'ok' : orderBookHealth === 'STALE' || orderBookHealth === 'ERROR' ? 'fail' : 'warn'}`}
             title={`Book: ${orderBookHealth} (${orderBookSource})`} />
         </div>
-        {!allConnected && mode === 'live' && (
+        {!allConnected && (
           <div className="mh-conn-badge disconnected">
             <span className="mh-conn-dot" />
             Connecting...
           </div>
         )}
-        {allConnected && mode === 'live' && (
+        {allConnected && (
           <div className="mh-conn-badge connected">
             <span className="mh-conn-dot" />
             Connected

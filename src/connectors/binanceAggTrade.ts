@@ -29,7 +29,7 @@ export function getTradeDiagnostics(): TradeDiagnostics {
 
 // ─── Exponential backoff with jitter ───
 const BACKOFF_INITIAL = 1_000
-const BACKOFF_MAX = 30_000
+const BACKOFF_MAX = 60_000
 const BACKOFF_FACTOR = 1.5
 
 function getBackoffDelay(attempt: number): number {
@@ -100,14 +100,17 @@ export function connectBinanceAggTrade(
         if (msg.e === 'trade' || msg.e === 'aggTrade') {
           const price = parseFloat(msg.p)
           const qty = parseFloat(msg.q)
-          if (isNaN(price) || isNaN(qty) || price <= 0 || qty <= 0) return
+          if (!isFinite(price) || !isFinite(qty) || price <= 0 || qty <= 0) return
+
+          const time = Number(msg.T)
+          if (!isFinite(time) || time <= 0) return
 
           const trade: Trade = {
             id: msg.t ?? ++tradeIdCounter,
             price,
             qty,
             side: msg.m ? 'sell' : 'buy',
-            time: msg.T,
+            time,
             notional: price * qty,
           }
           tradeDiag.messageCount++

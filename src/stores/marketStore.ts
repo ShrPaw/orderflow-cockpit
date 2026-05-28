@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import type {
   Candle, Trade, OrderLevel, Bubble, VolumeLevel, HeatmapLevel,
-  Interval, AppMode, Ticker24h, Instrument, OrderBookHealth, OrderBookSource, DiffDepthEvent,
+  Interval, Ticker24h, Instrument, OrderBookHealth, OrderBookSource, DiffDepthEvent,
+  Alert, AlertCategory, Divergence,
 } from '../types/market'
 import { INTERVAL_MS } from '../types/market'
 import {
@@ -15,6 +16,7 @@ import type { FlowEvent } from '../utils/flowEvents'
 import { deriveFlowEvents } from '../utils/flowEvents'
 import type { AlertRule } from '../utils/alerts'
 import { loadAlertRules, saveAlertRules, getDefaultRules, evaluateAlerts } from '../utils/alerts'
+import { fmtPrice, fmtNum } from '../utils/formatters'
 
 // ─── Overlay settings persistence ───
 const OVERLAY_STORAGE_KEY = 'orderflow.overlaySettings.v1'
@@ -41,8 +43,28 @@ function saveOverlaySetting(key: string, value: boolean): void {
   }
 }
 
+// ─── Alert cooldown (per category) ───
+const ALERT_COOLDOWN_MS: Record<string, number> = {
+  LARGE_TRADE: 5_000,
+  BUBBLE_CLASSIFIED: 3_000,
+  PRESSURE_SHIFT: 15_000,
+  LEVEL_HIT: 30_000,
+  IMBALANCE: 20_000,
+  DELTA_DIVERGENCE: 30_000,
+}
+const lastAlertByKey = new Map<string, number>()
+
+function shouldFireAlert(category: AlertCategory, dedupeKey: string): boolean {
+  const key = `${category}:${dedupeKey}`
+  const now = Date.now()
+  const last = lastAlertByKey.get(key)
+  const cooldown = ALERT_COOLDOWN_MS[category] ?? 5_000
+  if (last && (now - last) < cooldown) return false
+  lastAlertByKey.set(key, now)
+  return true
+}
+
 interface MarketState {
-  mode: AppMode
   symbol: string
   interval: Interval
   connected: boolean
@@ -116,8 +138,16 @@ interface MarketState {
   orderBookError: string | null
   orderBookBufferedEvents: DiffDepthEvent[]
 
+  // ─── Persistent alerts ───
+  alerts: Alert[]
+  prevDeltaSign: number
+
+  // ─── Delta divergence tracking ───
+  divergences: Divergence[]
+  prevCandleClose: number
+  prevCandleDelta: number
+
   // Actions
-  setMode: (mode: AppMode) => void
   setSymbol: (symbol: string) => void
   setInterval: (interval: Interval) => void
   setConnected: (connected: boolean) => void
@@ -158,6 +188,11 @@ interface MarketState {
   // Overlay Settings
   toggleOverlay: (key: 'showVWAP' | 'showLiquidityLabels' | 'showVolumeProfile') => void
 
+  // Push / dismiss persistent alerts
+  pushAlert: (category: AlertCategory, side: 'buy' | 'sell' | 'neutral', title: string, detail: string, price: number) => void
+  dismissAlert: (id: string) => void
+  clearAlerts: () => void
+
   reset: () => void
 }
 
@@ -166,12 +201,12 @@ const MAX_RECENT_TRADES = 200
 const MAX_LARGE_TRADES = 100
 const MAX_HEATMAP = 3000
 const MAX_BUBBLES = 500
+const MAX_ALERTS = 50
 
 const STALE_THRESHOLD = 15_000
 
 function getInitialState() {
   return {
-    mode: 'live' as AppMode,
     symbol: 'BTCUSDT',
     interval: '40s' as Interval,
     connected: false,
@@ -220,6 +255,11 @@ function getInitialState() {
     orderBookReconnectAttempts: 0,
     orderBookError: null as string | null,
     orderBookBufferedEvents: [] as DiffDepthEvent[],
+    alerts: [] as Alert[],
+    prevDeltaSign: 0,
+    divergences: [] as Divergence[],
+    prevCandleClose: 0,
+    prevCandleDelta: 0,
   }
 }
 
@@ -265,20 +305,24 @@ function getDataResetFields() {
     orderBookReconnectAttempts: 0,
     orderBookError: null as string | null,
     orderBookBufferedEvents: [] as DiffDepthEvent[],
+    alerts: [] as Alert[],
+    prevDeltaSign: 0,
+    divergences: [] as Divergence[],
+    prevCandleClose: 0,
+    prevCandleDelta: 0,
   }
 }
 
 export const useMarketStore = create<MarketState>((set, get) => ({
   ...getInitialState(),
 
-  setMode: (mode) => set({ mode }),
   setSymbol: (symbol) => {
     // Clean reset of ALL data buffers — no stale state leakage
     resetLevels()
+    lastAlertByKey.clear()
     set({
       ...getDataResetFields(),
       symbol,
-      mode: get().mode,
       interval: get().interval,
       instruments: get().instruments,
       instrumentsLoading: get().instrumentsLoading,
@@ -305,6 +349,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const bucket = Math.floor(trade.time / intervalMs) * intervalMs
 
     let currentCandle = state.currentCandle
+    const pendingAlerts: Array<[AlertCategory, 'buy' | 'sell' | 'neutral', string, string, number]> = []
 
     if (!currentCandle || currentCandle.openTime !== bucket) {
       if (currentCandle) {
@@ -315,7 +360,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
         const candles = [...state.candles, closed].slice(-MAX_CANDLES)
         set({ candles })
       }
-      currentCandle = newCandle(bucket, trade.price)
+      currentCandle = newCandle(bucket, trade.price, intervalMs)
     }
 
     currentCandle = processTradeIntoCandle(currentCandle, trade)
@@ -339,15 +384,84 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const delta = state.delta + (trade.side === 'buy' ? trade.qty : -trade.qty)
     const cvd = state.cvd + (trade.side === 'buy' ? trade.qty : -trade.qty)
 
+    // ─── Alert: Large trade (throttled) ───
+    if (trade.notional > 5000 && shouldFireAlert('LARGE_TRADE', trade.side)) {
+      const tag = trade.notional > 50000 ? 'WHALE' : 'LARGE'
+      pendingAlerts.push([
+        'LARGE_TRADE',
+        trade.side,
+        `${tag} ${trade.side.toUpperCase()} ${fmtNum(trade.qty)} @ ${fmtPrice(trade.price)}`,
+        `$${fmtNum(trade.notional)} notional`,
+        trade.price,
+      ])
+    }
+
+    // ─── Alert: Pressure shift (delta sign flip, throttled) ───
+    const newSign = delta > 0 ? 1 : delta < 0 ? -1 : 0
+    if (state.prevDeltaSign !== 0 && newSign !== 0 && newSign !== state.prevDeltaSign && shouldFireAlert('PRESSURE_SHIFT', `${newSign}`)) {
+      const toSide = newSign > 0 ? 'buy' : 'sell'
+      const fromSide = newSign > 0 ? 'sell' : 'buy'
+      pendingAlerts.push([
+        'PRESSURE_SHIFT',
+        toSide,
+        `Pressure shifted ${fromSide.toUpperCase()} → ${toSide.toUpperCase()}`,
+        `Delta flipped to ${delta >= 0 ? '+' : ''}${fmtNum(delta)}`,
+        trade.price,
+      ])
+    }
+
+    // ─── Delta Divergence Detection ───
+    // Bearish: price new high but delta doesn't follow
+    // Bullish: price new low but delta doesn't follow
+    const lastCandle = state.candles.length > 0 ? state.candles[state.candles.length - 1] : null
+    if (lastCandle && lastCandle.tradeCount > 2) {
+      const prevCandle = state.candles.length > 1 ? state.candles[state.candles.length - 2] : null
+      if (prevCandle && prevCandle.tradeCount > 2) {
+        const newDivergences = [...state.divergences]
+
+        // Bearish divergence: higher close, lower delta
+        if (lastCandle.close > prevCandle.close && lastCandle.delta < prevCandle.delta) {
+          if (shouldFireAlert('DELTA_DIVERGENCE', 'bearish')) {
+            pendingAlerts.push([
+              'DELTA_DIVERGENCE',
+              'sell',
+              `Bearish divergence — higher price, weaker delta`,
+              `Close ${fmtPrice(lastCandle.close)} > ${fmtPrice(prevCandle.close)} but Δ ${fmtNum(lastCandle.delta)} < ${fmtNum(prevCandle.delta)}`,
+              lastCandle.close,
+            ])
+            newDivergences.push({ type: 'bearish', candleIndex: state.candles.length - 1, price: lastCandle.close, time: lastCandle.openTime })
+          }
+        }
+
+        // Bullish divergence: lower close, higher delta
+        if (lastCandle.close < prevCandle.close && lastCandle.delta > prevCandle.delta) {
+          if (shouldFireAlert('DELTA_DIVERGENCE', 'bullish')) {
+            pendingAlerts.push([
+              'DELTA_DIVERGENCE',
+              'buy',
+              `Bullish divergence — lower price, stronger delta`,
+              `Close ${fmtPrice(lastCandle.close)} < ${fmtPrice(prevCandle.close)} but Δ ${fmtNum(lastCandle.delta)} > ${fmtNum(prevCandle.delta)}`,
+              lastCandle.close,
+            ])
+            newDivergences.push({ type: 'bullish', candleIndex: state.candles.length - 1, price: lastCandle.close, time: lastCandle.openTime })
+          }
+        }
+
+        if (newDivergences.length !== state.divergences.length) {
+          set({ divergences: newDivergences.slice(-20) })
+        }
+      }
+    }
+
     // ─── Bubble state synchronization ───
     // BUGFIX: state.bubbles previously stored stale copies that never updated.
     // Now we ensure state.bubbles always contains the LATEST classified versions.
     //
     // currentCandle.bubbles has the freshest state (just classified above).
     // We build a lookup of current-candle bubbles by id, then:
-    //   - replace old entries with updated versions
-    //   - add truly new bubbles
-    //   - keep closed-candle bubbles that are still in the buffer
+    // - replace old entries with updated versions
+    // - add truly new bubbles
+    // - keep closed-candle bubbles that are still in the buffer
     const currentBubbleMap = new Map(currentCandle.bubbles.map(b => [b.id, b]))
     const mergedBubbles: Bubble[] = []
     for (const b of state.bubbles) {
@@ -367,7 +481,23 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     }
     const allBubbles = mergedBubbles.slice(-MAX_BUBBLES)
 
-    set({
+    // ─── Dispatch alerts using functional set (race-safe) ───
+    if (pendingAlerts.length > 0) {
+      const now = Date.now()
+      const newAlerts: Alert[] = pendingAlerts.map(([category, side, title, detail, price]) => ({
+        id: `a-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        category,
+        side,
+        title,
+        detail,
+        price,
+        time: now,
+        dismissed: false,
+      }))
+      set(s => ({ alerts: [...newAlerts, ...s.alerts].slice(0, MAX_ALERTS) }))
+    }
+
+    const updatePayload: Partial<MarketState> = {
       currentCandle,
       recentTrades,
       largeTrades,
@@ -379,10 +509,45 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       bubbles: allBubbles,
       livePrice: trade.price,
       lastTradeTime: trade.time,
-    })
+    }
+    if (newSign !== 0) (updatePayload as any).prevDeltaSign = newSign
+    set(updatePayload as any)
   },
 
-  setDepth: (bids, asks) => set({ bids, asks }),
+  setDepth: (bids, asks) => {
+    const state = get()
+    const bidTotal = bids.slice(0, 10).reduce((s, b) => s + b.qty, 0)
+    const askTotal = asks.slice(0, 10).reduce((s, a) => s + a.qty, 0)
+    const total = bidTotal + askTotal
+    const imbalancePct = total > 0 ? ((bidTotal - askTotal) / total) * 100 : 0
+
+    const pendingAlerts: Array<[AlertCategory, 'buy' | 'sell' | 'neutral', string, string, number]> = []
+
+    if (Math.abs(imbalancePct) > 30 && state.livePrice > 0) {
+      const side = imbalancePct > 0 ? 'buy' : 'sell'
+      const direction = imbalancePct > 0 ? 'BID' : 'ASK'
+      if (shouldFireAlert('IMBALANCE', direction)) {
+        pendingAlerts.push([
+          'IMBALANCE',
+          side,
+          `${direction} imbalance: ${Math.abs(imbalancePct).toFixed(0)}%`,
+          `Bid ${fmtNum(bidTotal)} vs Ask ${fmtNum(askTotal)}`,
+          state.livePrice,
+        ])
+      }
+    }
+
+    if (pendingAlerts.length > 0) {
+      const now = Date.now()
+      const newAlerts: Alert[] = pendingAlerts.map(([category, side, title, detail, price]) => ({
+        id: `a-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        category, side, title, detail, price, time: now, dismissed: false,
+      }))
+      set(s => ({ alerts: [...newAlerts, ...s.alerts].slice(0, MAX_ALERTS) }))
+    }
+
+    set({ bids, asks })
+  },
 
   setOrderBookSnapshot: (bids, asks, lastUpdateId) => {
     set({
@@ -487,7 +652,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     const state = get()
     if (!state.currentCandle) return
 
-    if (state.mode === 'live' && state.connected && state.lastTradeTime > 0) {
+    if (state.connected && state.lastTradeTime > 0) {
       // Use local time for stale detection to avoid Binance server clock skew
       const timeSinceLastTrade = Date.now() - state.lastTradeTime
       const isStale = timeSinceLastTrade > STALE_THRESHOLD
@@ -506,6 +671,35 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       classifyBubble(b, state.currentCandle!.close, state.currentCandle!.high, state.currentCandle!.low)
     )
 
+    // ─── Alert: Bubble state transitions ───
+    const bubbleAlerts: Array<[AlertCategory, 'buy' | 'sell' | 'neutral', string, string, number]> = []
+    const oldBubbleMap = new Map(state.bubbles.map(b => [b.id, b.state]))
+    for (const b of updatedCurrentBubbles) {
+      const prevState = oldBubbleMap.get(b.id)
+      if (!prevState || prevState === b.state) continue
+      if (prevState === 'PENDING' && (b.state === 'ACCEPTED' || b.state === 'REJECTED' || b.state === 'ABSORBED' || b.state === 'RESISTANCE')) {
+        if (!shouldFireAlert('BUBBLE_CLASSIFIED', `${b.state}:${fmtPrice(b.price)}`)) continue
+        const label = b.state === 'ACCEPTED' ? 'ACCEPTED' : b.state === 'REJECTED' ? 'REJECTED' : b.state === 'ABSORBED' ? 'ABSORBED' : 'RESISTANCE'
+        bubbleAlerts.push([
+          'BUBBLE_CLASSIFIED',
+          b.side,
+          `${label} — ${b.side.toUpperCase()} bubble @ ${fmtPrice(b.price)}`,
+          `$${fmtNum(b.notional)} | conf ${(b.confidence * 100).toFixed(0)}%`,
+          b.price,
+        ])
+      }
+      if (b.state === 'INVALIDATED' && prevState === 'ACCEPTED') {
+        if (!shouldFireAlert('BUBBLE_CLASSIFIED', `INV:${fmtPrice(b.price)}`)) continue
+        bubbleAlerts.push([
+          'BUBBLE_CLASSIFIED',
+          'neutral',
+          `INVALIDATED — prior ACCEPTED reversed @ ${fmtPrice(b.price)}`,
+          `Buyers lost conviction at this level`,
+          b.price,
+        ])
+      }
+    }
+
     // Propagate updated states to the global bubbles array
     const updatedMap = new Map(updatedCurrentBubbles.map(b => [b.id, b]))
     const updatedGlobalBubbles = state.bubbles.map(b => updatedMap.get(b.id) ?? b)
@@ -517,6 +711,45 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       state.asks,
       state.livePrice
     )
+
+    // ─── Alert: Level memory hits ───
+    const oldLevels = new Map(state.levelMemory.map(l => [l.price, l.touches]))
+    for (const l of levelMemory) {
+      const oldTouches = oldLevels.get(l.price) ?? 0
+      if (l.touches > oldTouches && l.touches >= 3 && shouldFireAlert('LEVEL_HIT', fmtPrice(l.price))) {
+        const tag = l.lastState === 'REJECTED_LEVEL' ? 'REJECTION'
+          : l.lastState === 'ABSORBED_LEVEL' ? 'ABSORPTION'
+          : l.lastState === 'FLIPPED_SUPPORT' ? 'SUPPORT FLIP'
+          : l.lastState === 'FLIPPED_RESISTANCE' ? 'RESISTANCE FLIP'
+          : 'HIT'
+        const side = l.lastState === 'FLIPPED_SUPPORT' ? 'buy'
+          : l.lastState === 'FLIPPED_RESISTANCE' ? 'sell'
+          : l.lastState === 'REJECTED_LEVEL' ? 'sell' : 'neutral'
+        bubbleAlerts.push([
+          'LEVEL_HIT',
+          side,
+          `${tag} level @ ${fmtPrice(l.price)}`,
+          `${l.touches} touches — structural level forming`,
+          l.price,
+        ])
+      }
+    }
+
+    // Dispatch alerts using functional set (race-safe)
+    if (bubbleAlerts.length > 0) {
+      const now = Date.now()
+      const newAlerts: Alert[] = bubbleAlerts.map(([category, side, title, detail, price]) => ({
+        id: `a-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        category,
+        side,
+        title,
+        detail,
+        price,
+        time: now,
+        dismissed: false,
+      }))
+      set(s => ({ alerts: [...newAlerts, ...s.alerts].slice(0, MAX_ALERTS) }))
+    }
 
     // Update auction clusters
     const clusters = formClusters(
@@ -652,6 +885,17 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     saveOverlaySetting(key, next)
     set({ [key]: next } as any)
   },
+
+  // ─── Push / dismiss persistent alerts ───
+  pushAlert: (category, side, title, detail, price) => {
+    const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const alert: Alert = { id, category, side, title, detail, price, time: Date.now(), dismissed: false }
+    set(s => ({ alerts: [alert, ...s.alerts].slice(0, MAX_ALERTS) }))
+  },
+  dismissAlert: (id) => {
+    set(s => ({ alerts: s.alerts.map(a => a.id === id ? { ...a, dismissed: true } : a) }))
+  },
+  clearAlerts: () => set({ alerts: [] }),
 
   reset: () => set(getInitialState()),
 }))

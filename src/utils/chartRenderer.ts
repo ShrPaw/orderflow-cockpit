@@ -1,4 +1,4 @@
-import type { Candle, VolumeLevel, OrderLevel, Bubble } from '../types/market'
+import type { Candle, VolumeLevel, OrderLevel, Bubble, Divergence } from '../types/market'
 import { getBubbleVisualStyle, getRenderableBubbles } from './bubbleMethodology'
 import { getAllLevels } from './levelMemory'
 import type { AuctionCluster } from './auctionClusters'
@@ -182,7 +182,8 @@ export function renderChart(
   intervalMs?: number,
   clusters?: AuctionCluster[],
   displayMode?: 'RAW' | 'CLUSTERED' | 'HYBRID',
-  overlaySettings?: { showVWAP?: boolean; showLiquidityLabels?: boolean; showVolumeProfile?: boolean }
+  overlaySettings?: { showVWAP?: boolean; showLiquidityLabels?: boolean; showVolumeProfile?: boolean },
+  divergences?: Divergence[]
 ) {
   ctx.save()
   ctx.scale(dpr, dpr)
@@ -333,7 +334,7 @@ export function renderChart(
     ? getRenderableClusters(clusters, now)
     : []
   // For HYBRID: set of all raw bubble IDs that are already clustered (not just renderable)
-  const allClusteredBubbleIds = mode === 'HYBRID' && clusters
+  const allClusteredBubbleId = mode === 'HYBRID' && clusters
     ? new Set(clusters.flatMap(cl => cl.rawBubbleIds))
     : new Set<string>()
 
@@ -535,7 +536,7 @@ export function renderChart(
         const now = Date.now()
         const intMs = intervalMs || 40_000
         const renderable = getRenderableBubbles(candle.bubbles, now, intMs)
-          .filter(b => !allClusteredBubbleIds.has(b.id) && (now - b.timestamp) < 10_000)
+          .filter(b => !allClusteredBubbleId.has(b.id) && (now - b.timestamp) < 10_000)
 
         for (const bubble of renderable) {
           const by = c.priceToY(bubble.price)
@@ -557,13 +558,21 @@ export function renderChart(
       ctx.globalAlpha = 1
     }
 
-    // Volume bar
+    // Volume bar - buy/sell split
     if (maxVolCandle > 0) {
       const volBarTop = c.chartH + 4
       const volBarMaxH = TIME_AXIS_H - 8
+      const totalVol = candle.volume || 1
       const volBarH = (candle.volume / maxVolCandle) * volBarMaxH
-      ctx.fillStyle = isUp ? COL.volumeUp : COL.volumeDown
-      ctx.fillRect(x, volBarTop + volBarMaxH - volBarH, c.bodyW, volBarH)
+      const buyH = (candle.buyVolume / totalVol) * volBarH
+      const sellH = volBarH - buyH
+      const barBottom = volBarTop + volBarMaxH
+      // Buy volume (bottom, green)
+      ctx.fillStyle = COL.volumeUp
+      ctx.fillRect(x, barBottom - buyH, c.bodyW, buyH)
+      // Sell volume (top, red)
+      ctx.fillStyle = COL.volumeDown
+      ctx.fillRect(x, barBottom - volBarH, c.bodyW, sellH)
     }
   }
 
@@ -586,6 +595,50 @@ export function renderChart(
       drawClusterBubble(ctx, clusterCx, clusterY, cluster, now, zoomAlphaScale, c.bodyW)
     }
     ctx.globalAlpha = 1
+  }
+
+  // ─── POC Ribbon (Point of Control tracking overlay) ───
+  // Collect POC points for all visible candles, then draw dots + connecting line
+  const pocPoints: { x: number; y: number }[] = []
+  for (let idx = c.firstVisibleIdx; idx <= c.lastVisibleIdx; idx++) {
+    if (idx < 0 || idx >= totalCandles) continue
+    const candle = allCandles[idx]
+    const entries = Object.entries(candle.priceMap)
+    if (entries.length === 0) continue
+    let pocPrice = 0
+    let pocTotal = -1
+    for (const [priceStr, level] of entries) {
+      if (level.total > pocTotal) {
+        pocTotal = level.total
+        pocPrice = parseFloat(priceStr)
+      }
+    }
+    if (!isFinite(pocPrice) || pocTotal <= 0) continue
+    const x = c.indexToX(idx)
+    const cx = x + c.bodyW / 2
+    const y = c.priceToY(pocPrice)
+    if (!isFinite(y) || y < -10 || y > c.chartH + 10) continue
+    pocPoints.push({ x: cx, y })
+  }
+
+  // Draw connecting line first (behind dots)
+  if (pocPoints.length > 1) {
+    ctx.strokeStyle = 'rgba(228,167,59,0.30)'
+    ctx.lineWidth = 0.8
+    ctx.beginPath()
+    ctx.moveTo(pocPoints[0].x, pocPoints[0].y)
+    for (let i = 1; i < pocPoints.length; i++) {
+      ctx.lineTo(pocPoints[i].x, pocPoints[i].y)
+    }
+    ctx.stroke()
+  }
+
+  // Draw POC dots on top
+  for (const pt of pocPoints) {
+    ctx.fillStyle = COL.poc
+    ctx.beginPath()
+    ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2)
+    ctx.fill()
   }
 
   // ─── Live Price Line (clipped to plot area) ───
@@ -646,6 +699,70 @@ export function renderChart(
       ctx.font = `${fonts.crosshairTime}px "SF Mono", monospace`
       ctx.textAlign = 'center'
       ctx.fillText(timeStr, mousePos.x, c.chartH + 15)
+
+      // ─── OHLCV Tooltip ───
+      const tc = hoverCandle
+      const tipW = 130
+      const tipH = 98
+      const tipX = mousePos.x + 16 > c.priceScaleX - tipW ? mousePos.x - tipW - 16 : mousePos.x + 16
+      const tipY = Math.min(mousePos.y - tipH / 2, c.chartH - tipH - 4)
+
+      // Tooltip background
+      ctx.fillStyle = 'rgba(12,16,25,0.92)'
+      roundRect(ctx, tipX, tipY, tipW, tipH, 4)
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(79,195,247,0.20)'
+      ctx.lineWidth = 1
+      roundRect(ctx, tipX, tipY, tipW, tipH, 4)
+      ctx.stroke()
+
+      ctx.textAlign = 'left'
+      const lx = tipX + 8
+      const rx = tipX + tipW - 8
+      let ly = tipY + 14
+
+      // Time header
+      ctx.fillStyle = COL.textDim
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.fillText(timeStr, lx, ly)
+
+      const rows = [
+        ['O', fmtPriceLabel(tc.open)],
+        ['H', fmtPriceLabel(tc.high)],
+        ['L', fmtPriceLabel(tc.low)],
+        ['C', fmtPriceLabel(tc.close)],
+      ]
+      ly += 14
+      for (const [label, val] of rows) {
+        ctx.fillStyle = COL.textDim
+        ctx.font = '9px "SF Mono", monospace'
+        ctx.fillText(label, lx, ly)
+        const isClose = label === 'C'
+        ctx.fillStyle = isClose ? (tc.close >= tc.open ? COL.candleUp : COL.candleDown) : COL.textBright
+        ctx.font = '10px "SF Mono", monospace'
+        ctx.textAlign = 'right'
+        ctx.fillText(val, rx, ly)
+        ctx.textAlign = 'left'
+        ly += 12
+      }
+
+      // Volume + Delta
+      ctx.fillStyle = COL.textDim
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.fillText('Vol', lx, ly)
+      ctx.fillStyle = COL.textBright
+      ctx.font = '9px "SF Mono", monospace'
+      ctx.textAlign = 'right'
+      ctx.fillText(tc.volume.toFixed(2), rx, ly)
+      ctx.textAlign = 'left'
+      ly += 12
+
+      ctx.fillStyle = COL.textDim
+      ctx.fillText('D', lx, ly)
+      ctx.fillStyle = tc.delta >= 0 ? COL.candleUp : COL.candleDown
+      ctx.textAlign = 'right'
+      ctx.fillText((tc.delta >= 0 ? '+' : '') + tc.delta.toFixed(2), rx, ly)
+      ctx.textAlign = 'left'
     }
   }
 
@@ -719,6 +836,39 @@ export function renderChart(
           }
         }
       }
+    }
+  }
+
+  // ─── Divergence overlays ───
+  if (divergences && divergences.length > 0) {
+    for (const div of divergences) {
+      const divX = c.indexToX(div.candleIndex) + c.bodyW / 2
+      const divY = c.priceToY(div.price)
+
+      if (!isFinite(divY) || divY < -20 || divY > c.chartH + 20) continue
+
+      const isBullish = div.type === 'bullish'
+
+      // Divergence marker dot
+      ctx.fillStyle = isBullish ? COL.candleUp : COL.candleDown
+      ctx.globalAlpha = 0.7
+      ctx.beginPath()
+      ctx.arc(divX, divY, 5, 0, Math.PI * 2)
+      ctx.fill()
+
+      // Divergence label
+      if (c.chartW > 200 && c.bodyW > 8) {
+        const label = isBullish ? 'BULL DIV' : 'BEAR DIV'
+        ctx.font = 'bold 8px "SF Mono", monospace'
+        const tw = ctx.measureText(label).width
+        ctx.fillStyle = 'rgba(6,9,15,0.85)'
+        ctx.fillRect(divX - tw / 2 - 3, divY - 18, tw + 6, 13)
+        ctx.fillStyle = isBullish ? COL.candleUp : COL.candleDown
+        ctx.textAlign = 'center'
+        ctx.fillText(label, divX, divY - 9)
+        ctx.textAlign = 'left'
+      }
+      ctx.globalAlpha = 1
     }
   }
 
@@ -862,7 +1012,7 @@ function drawTimeAxis(
   fonts: ReturnType<typeof getFontSizes>,
   totalCandles: number,
   mousePos: { x: number; y: number } | null,
-  allCandles?: Candle[]
+  allCandles?: { openTime: number }[]
 ) {
   const isHovered = mousePos && mousePos.y >= c.chartH
 
@@ -987,7 +1137,7 @@ function drawClusterBubble(
       ctx.stroke()
     }
 
-    if (cluster.state === 'RESISTANCE') {
+    if (cluster.state === 'REJECTED') {
       ctx.globalAlpha = 0.25
       ctx.strokeStyle = '#a855f7'
       ctx.lineWidth = 3
@@ -996,7 +1146,7 @@ function drawClusterBubble(
       ctx.stroke()
       // Origin accent
       ctx.globalAlpha = 0.4
-      ctx.strokeStyle = cluster.resistanceOrigin === 'sell' ? '#ef6461' : '#22c55e'
+      ctx.strokeStyle = cluster.originSide === 'sell' ? '#ef6461' : '#22c55e'
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.arc(cx, cy, style.radius + 5, 0, Math.PI * 2)
@@ -1107,7 +1257,7 @@ function drawVolumeProfile(
 
     let fillColor: string
     if (isPOC) {
-      fillColor = 'rgba(79,195,247,0.55)'   // bright cyan for POC
+      fillColor = 'rgba(79,195,247,0.55)' // bright cyan for POC
     } else if (inVA) {
       // Buy/sell split if available
       if (level.buyVolume > 0 && level.sellVolume > 0) {
@@ -1120,9 +1270,9 @@ function drawVolumeProfile(
         ctx.fillRect(c.priceScaleX - barW + buyW, y - barH / 2, sellW, barH)
         continue // already drawn
       }
-      fillColor = 'rgba(79,195,247,0.20)'   // muted cyan in value area
+      fillColor = 'rgba(79,195,247,0.20)' // muted cyan in value area
     } else {
-      fillColor = 'rgba(79,195,247,0.08)'   // very subtle outside VA
+      fillColor = 'rgba(79,195,247,0.08)' // very subtle outside VA
     }
 
     ctx.fillStyle = fillColor
@@ -1228,7 +1378,7 @@ function drawVWAPLine(
     timeToIdx.set(allCandles[i].openTime, i)
   }
 
-  ctx.strokeStyle = 'rgba(156,143,216,0.6)'   // muted violet
+  ctx.strokeStyle = 'rgba(156,143,216,0.6)' // muted violet
   ctx.lineWidth = 1.2
   ctx.setLineDash([5, 3])
   ctx.beginPath()
@@ -1283,7 +1433,7 @@ function drawVWAPLine(
   ctx.setLineDash([])
 }
 
-// ─── Liquidity Levels (upgraded with clear qty labels) ───
+// ─── Liquidity Levels (upgraded with imbalance detection + clear qty labels) ───
 function drawLiquidityLevels(
   ctx: CanvasRenderingContext2D,
   c: ReturnType<typeof makeCoords>,
@@ -1313,16 +1463,58 @@ function drawLiquidityLevels(
 
   const maxQty = Math.max(1, ...nearbyBids.map(b => b.qty), ...nearbyAsks.map(a => a.qty))
 
+  // ─── Imbalance detection ───
+  const bidTotal = bids.slice(0, 10).reduce((s, b) => s + b.qty, 0)
+  const askTotal = asks.slice(0, 10).reduce((s, a) => s + a.qty, 0)
+  const totalDepth = bidTotal + askTotal
+  const imbalancePct = totalDepth > 0 ? ((bidTotal - askTotal) / totalDepth) * 100 : 0
+  const isExtreme = Math.abs(imbalancePct) > 30
+
+  // Draw imbalance zone highlight when extreme
+  if (isExtreme) {
+    const pulseAlpha = 0.02 + Math.sin(Date.now() / 500) * 0.01
+    const zoneColor = imbalancePct > 0
+      ? `rgba(45,212,160,${pulseAlpha})`
+      : `rgba(239,100,97,${pulseAlpha})`
+    const priceY = c.priceToY(livePrice)
+
+    if (imbalancePct > 0) {
+      // Bid heavy — highlight below price
+      ctx.fillStyle = zoneColor
+      ctx.fillRect(LEFT_MARGIN, priceY, c.chartW, c.chartH - priceY)
+    } else {
+      // Ask heavy — highlight above price
+      ctx.fillStyle = zoneColor
+      ctx.fillRect(LEFT_MARGIN, 0, c.chartW, priceY)
+    }
+
+    // Imbalance badge
+    if (c.chartW > 200) {
+      const badgeY = imbalancePct > 0
+        ? Math.min(priceY + 20, c.chartH - 20)
+        : Math.max(priceY - 30, 10)
+      ctx.fillStyle = imbalancePct > 0 ? 'rgba(45,212,160,0.85)' : 'rgba(239,100,97,0.85)'
+      ctx.font = 'bold 9px "SF Mono", monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText(
+        `${imbalancePct > 0 ? '▲' : '▼'} ${Math.abs(imbalancePct).toFixed(0)}% IMBALANCE`,
+        LEFT_MARGIN + 4,
+        badgeY
+      )
+    }
+  }
+
   // Collect all label positions to avoid overlap
   const labelPositions: { y: number; side: 'bid' | 'ask'; qty: number; price: number }[] = []
 
-  // Draw bid liquidity levels
+  // Draw bid liquidity as subtle green/cyan bands
   for (const bid of nearbyBids) {
     const y = c.priceToY(bid.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = bid.qty / maxQty
-    const bandH = Math.max(1.5, Math.min(5, 1.5 + strength * 3.5))
-    const alpha = 0.06 + strength * 0.2
+    const bandH = Math.max(1, Math.min(isExtreme ? 4 : 3, 1 + strength * 2))
+    const alphaBoost = isExtreme && imbalancePct > 0 ? 0.08 : 0
+    const alpha = 0.06 + strength * 0.12 + alphaBoost
 
     // Horizontal line
     ctx.strokeStyle = `rgba(45,212,160,${alpha + 0.1})`
@@ -1345,8 +1537,9 @@ function drawLiquidityLevels(
     const y = c.priceToY(ask.price)
     if (!isFinite(y) || y < 0 || y > c.chartH) continue
     const strength = ask.qty / maxQty
-    const bandH = Math.max(1.5, Math.min(5, 1.5 + strength * 3.5))
-    const alpha = 0.06 + strength * 0.2
+    const bandH = Math.max(1, Math.min(isExtreme ? 4 : 3, 1 + strength * 2))
+    const alphaBoost = isExtreme && imbalancePct < 0 ? 0.08 : 0
+    const alpha = 0.06 + strength * 0.12 + alphaBoost
 
     ctx.strokeStyle = `rgba(239,100,97,${alpha + 0.1})`
     ctx.lineWidth = bandH

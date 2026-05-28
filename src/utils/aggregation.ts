@@ -1,13 +1,13 @@
-import type { Candle, Trade, PriceLevel, Bubble, BubbleState, LevelInteraction } from '../types/market'
+import type { Candle, Trade, PriceLevel, Bubble, BubbleState } from '../types/market'
 import { priceBin } from './formatters'
 import { getLevelAtPrice, checkLevelInteraction, getAllLevels } from './levelMemory'
 
 let bubbleCounter = 0
 
-export function newCandle(openTime: number, price: number): Candle {
+export function newCandle(openTime: number, price: number, intervalMs: number = 60_000): Candle {
   return {
     openTime,
-    closeTime: openTime + 60_000,
+    closeTime: openTime + intervalMs,
     open: price,
     high: price,
     low: price,
@@ -23,6 +23,23 @@ export function newCandle(openTime: number, price: number): Candle {
     priceMap: {},
     bubbles: [],
   }
+}
+
+/**
+ * Canonicalize a binned price to a string key, avoiding floating-point drift.
+ * Floating-point multiplication (Math.round(p/bin)*bin) can produce
+ * 67890.00000000001 or 67889.99999999999 for prices near bin boundaries.
+ * Using toFixed(8) and parseFloat produces a canonical number, and
+ * toKey() produces a canonical string for use as object keys.
+ */
+function binPrice(price: number): number {
+  const bin = priceBin(price)
+  const raw = Math.round(price / bin) * bin
+  return parseFloat(raw.toFixed(8))
+}
+
+function toKey(price: number): string {
+  return binPrice(price).toString()
 }
 
 export function processTradeIntoCandle(candle: Candle, trade: Trade): Candle {
@@ -46,11 +63,11 @@ export function processTradeIntoCandle(candle: Candle, trade: Trade): Candle {
 
   if (notional > 10000) updated.largeTradeCount++
 
-  // Footprint price level
-  const bin = priceBin(price)
-  const rounded = Math.round(price / bin) * bin
+  // Footprint price level — use canonical string keys to avoid float drift
+  const rounded = binPrice(price)
+  const key = toKey(price)
   const levels = { ...updated.priceMap }
-  const existing = levels[rounded] || { buy: 0, sell: 0, total: 0, delta: 0, maxPrint: 0, trades: 0 }
+  const existing = levels[key] || { buy: 0, sell: 0, total: 0, delta: 0, maxPrint: 0, trades: 0 }
   const level: PriceLevel = { ...existing }
   if (side === 'buy') {
     level.buy += qty
@@ -62,12 +79,13 @@ export function processTradeIntoCandle(candle: Candle, trade: Trade): Candle {
   level.total += qty
   level.trades++
   level.maxPrint = Math.max(level.maxPrint, qty)
-  levels[rounded] = level
+  // Store with canonical string key only
+  levels[key] = level
   updated.priceMap = levels
 
   // Bubble detection
   const threshold = bubbleThreshold(price)
-  if (notional > threshold || qty > 0.1) {
+  if (notional > threshold) {
     const bubble: Bubble = {
       id: `b-${++bubbleCounter}-${trade.time}`,
       timestamp: trade.time,
@@ -99,9 +117,6 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
   const now = Date.now()
   const age = now - bubble.timestamp
 
-  // ─── INVALIDATED detection ───
-  // If bubble was ACCEPTED and price has returned to event price ± 0.2%
-  // Only check after 15s+ to allow reaction to form
   if (bubble.state === 'ACCEPTED' && age >= 15_000) {
     const returnDist = Math.abs(currentPrice - bubble.price) / bubble.price
     if (returnDist < 0.002) {
@@ -112,7 +127,6 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
         invalidatedAt: now,
         invalidationReason: 'Price returned to event level after acceptance',
       }
-      // Check level interaction
       const levels = getAllLevels()
       const interaction = checkLevelInteraction(updated, levels, currentPrice)
       if (interaction) updated.levelInteraction = interaction
@@ -121,7 +135,6 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
   }
 
   if (bubble.state !== 'PENDING') {
-    // Already classified — just update level interaction
     const updated = { ...bubble }
     const levels = getAllLevels()
     const interaction = checkLevelInteraction(updated, levels, currentPrice)
@@ -162,7 +175,6 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
   const mid = (candleHigh + candleLow) / 2
   const rangeRatio = mid > 0 ? range / mid : 0
 
-  // Classification logic
   if (age >= 3000) {
     if (!aligned && Math.abs(priceChangePct) < 0.001 && bubble.notional > 20000) {
       updated.state = 'ABSORBED'
@@ -197,15 +209,10 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
     updated.confidence = 0.4
   }
 
-  // Check level interaction after classification
   const levels = getAllLevels()
   const interaction = checkLevelInteraction(updated, levels, currentPrice)
   if (interaction) updated.levelInteraction = interaction
 
-  // ─── RESISTANCE detection ───
-  // If a level near this bubble has 3+ rejections, mark as RESISTANCE
-  // This means the event area has become structural resistance context
-  // Origin side is preserved so viewer knows if it's buy-origin or sell-origin resistance
   if (updated.state === 'REJECTED' || updated.state === 'ABSORBED') {
     const tolerance = currentPrice > 0 ? currentPrice * 0.002 : 0.02
     for (const level of levels) {
@@ -224,25 +231,26 @@ export function classifyBubble(bubble: Bubble, currentPrice: number, candleHigh:
 }
 
 export function computeVolumeProfile(candles: Candle[]): Array<{ price: number; buy: number; sell: number; total: number; delta: number }> {
-  const map = new Map<number, { buy: number; sell: number; total: number; delta: number }>()
+  const map = new Map<string, { price: number; buy: number; sell: number; total: number; delta: number }>()
 
   for (const candle of candles) {
     for (const [priceStr, level] of Object.entries(candle.priceMap)) {
       const price = parseFloat(priceStr)
-      const bin = priceBin(price)
-      const rounded = Math.round(price / bin) * bin
-      const existing = map.get(rounded) || { buy: 0, sell: 0, total: 0, delta: 0 }
+      if (!isFinite(price)) continue
+      const binned = binPrice(price)
+      const key = binned.toString()
+      const existing = map.get(key) || { price: binned, buy: 0, sell: 0, total: 0, delta: 0 }
       existing.buy += level.buy
       existing.sell += level.sell
       existing.total += level.total
       existing.delta += level.delta
-      map.set(rounded, existing)
+      map.set(key, existing)
     }
   }
 
   const result: Array<{ price: number; buy: number; sell: number; total: number; delta: number }> = []
-  for (const [price, data] of map) {
-    result.push({ price, ...data })
+  for (const data of map.values()) {
+    result.push(data)
   }
   result.sort((a, b) => a.price - b.price)
   return result

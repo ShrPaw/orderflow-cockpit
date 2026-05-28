@@ -22,7 +22,7 @@ export interface Candle {
   maxTradeSize: number
   largeTradeCount: number
   bubbleCount: number
-  priceMap: Record<number, PriceLevel>
+  priceMap: Record<string, PriceLevel>
   bubbles: Bubble[]
 }
 
@@ -160,7 +160,25 @@ export interface HeatmapLevel {
 }
 
 export type Interval = '10s' | '20s' | '40s' | '1m' | '3m' | '5m'
-export type AppMode = 'demo' | 'live'
+export type AlertCategory = 'LARGE_TRADE' | 'BUBBLE_CLASSIFIED' | 'PRESSURE_SHIFT' | 'LEVEL_HIT' | 'IMBALANCE' | 'DELTA_DIVERGENCE'
+
+export interface Divergence {
+  type: 'bullish' | 'bearish'
+  candleIndex: number
+  price: number
+  time: number
+}
+
+export interface Alert {
+  id: string
+  category: AlertCategory
+  side: 'buy' | 'sell' | 'neutral'
+  title: string
+  detail: string
+  price: number
+  time: number
+  dismissed: boolean
+}
 
 export const INTERVAL_MS: Record<Interval, number> = {
   '10s': 10_000,

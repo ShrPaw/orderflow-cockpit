@@ -55,7 +55,7 @@ export default function Heatmap() {
     canvas.height = h * dpr
     canvas.style.width = w + 'px'
     canvas.style.height = h + 'px'
-    ctx.scale(dpr, dpr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     ctx.fillStyle = showDimmed ? '#040609' : '#06090f'
     ctx.fillRect(0, 0, w, h)

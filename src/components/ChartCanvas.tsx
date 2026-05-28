@@ -15,6 +15,8 @@ export default function ChartCanvas() {
   const viewRef = useRef<ViewState>(createViewState())
   const mouseRef = useRef<{ x: number; y: number } | null>(null)
   const rafRef = useRef<number>(0)
+  const dirtyRef = useRef(true)
+  const lastSizeRef = useRef({ width: 0, height: 0 })
   const [size, setSize] = useState({ width: 800, height: 600 })
 
   // ─── Store refs for render loop (avoid effect restart on every tick) ───
@@ -27,13 +29,7 @@ export default function ChartCanvas() {
   const bidsRef = useRef<unknown[]>([])
   const asksRef = useRef<unknown[]>([])
   const intervalRef = useRef('40s')
-  const clustersRef = useRef<unknown[]>([])
   const orderBookHealthRef = useRef<string>('DISCONNECTED')
-  const overlaySettingsRef = useRef<{ showVWAP?: boolean; showLiquidityLabels?: boolean; showVolumeProfile?: boolean }>({
-    showVWAP: true,
-    showLiquidityLabels: true,
-    showVolumeProfile: true,
-  })
 
   // Subscribe to store and update refs
   const followLive = useMarketStore(s => s.followLive)
@@ -50,13 +46,7 @@ export default function ChartCanvas() {
       bidsRef.current = state.bids
       asksRef.current = state.asks
       intervalRef.current = state.interval
-      clustersRef.current = state.clusters
       orderBookHealthRef.current = state.orderBookHealth
-      overlaySettingsRef.current = {
-        showVWAP: state.showVWAP,
-        showLiquidityLabels: state.showLiquidityLabels,
-        showVolumeProfile: state.showVolumeProfile,
-      }
     })
     // Initialize refs from current state
     const s = useMarketStore.getState()
@@ -67,13 +57,7 @@ export default function ChartCanvas() {
     bidsRef.current = s.bids
     asksRef.current = s.asks
     intervalRef.current = s.interval
-    clustersRef.current = s.clusters
     orderBookHealthRef.current = s.orderBookHealth
-    overlaySettingsRef.current = {
-      showVWAP: s.showVWAP,
-      showLiquidityLabels: s.showLiquidityLabels,
-      showVolumeProfile: s.showVolumeProfile,
-    }
     return unsub
   }, [])
 
@@ -143,11 +127,26 @@ export default function ChartCanvas() {
       if (!running) return
       const canvas = canvasRef.current
       if (!canvas) return
+
+      // Only resize canvas when dimensions actually changed
       const dpr = window.devicePixelRatio || 1
-      canvas.width = size.width * dpr
-      canvas.height = size.height * dpr
-      canvas.style.width = size.width + 'px'
-      canvas.style.height = size.height + 'px'
+      const cw = size.width * dpr
+      const ch = size.height * dpr
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw
+        canvas.height = ch
+        canvas.style.width = size.width + 'px'
+        canvas.style.height = size.height + 'px'
+        dirtyRef.current = true
+      }
+
+      // Skip redraw when nothing changed and no drag/hover
+      const isInteracting = viewRef.current._dragging || mouseRef.current
+      if (!dirtyRef.current && !isInteracting) {
+        rafRef.current = requestAnimationFrame(frame)
+        return
+      }
+
       const ctx = canvas.getContext('2d')
       if (ctx) {
         // Read current data from refs — never stale because subscription runs synchronously
@@ -158,12 +157,10 @@ export default function ChartCanvas() {
         const bids = bidsRef.current as any[]
         const asks = asksRef.current as any[]
         const interval = intervalRef.current as string
-        const clusters = clustersRef.current as any[]
         const orderBookHealth = orderBookHealthRef.current as string
 
         const intervalMs = INTERVAL_MS[interval as keyof typeof INTERVAL_MS] ?? 40_000
         const isBookHealthy = orderBookHealth === 'HEALTHY' || orderBookHealth === 'DEGRADED' || orderBookHealth === 'TOP20'
-        const overlaySettings = overlaySettingsRef.current
         const result = renderChart(
           ctx, size.width, size.height, dpr,
           candles, currentCandle, viewRef.current,
@@ -171,14 +168,14 @@ export default function ChartCanvas() {
           livePrice,
           isBookHealthy ? bids : undefined,
           isBookHealthy ? asks : undefined,
-          intervalMs,
-          clusters, 'CLUSTERED', // Smart Flow: always render, no user-facing mode switch
-          overlaySettings
+          intervalMs
         )
         viewRef.current = result.view
+        dirtyRef.current = false
       }
       rafRef.current = requestAnimationFrame(frame)
     }
+    dirtyRef.current = true
     rafRef.current = requestAnimationFrame(frame)
     return () => {
       running = false
@@ -226,27 +223,7 @@ export default function ChartCanvas() {
     setFollowLive(true)
   }, [setFollowLive])
 
-  // Click handler for GO LIVE pill hitbox
-  const onClick = useCallback((e: React.MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const pill = viewRef.current._goLivePillRect
-    if (pill && x >= pill.x && x <= pill.x + pill.w && y >= pill.y && y <= pill.y + pill.h) {
-      viewRef.current = goLive(viewRef.current)
-      setFollowLive(true)
-    }
-  }, [setFollowLive])
-
-  // Dynamic cursor based on zone — also check GO LIVE pill hover
-  const isOverGoLive = (() => {
-    const pill = viewRef.current._goLivePillRect
-    if (!pill || !mouseRef.current) return false
-    const m = mouseRef.current
-    return m.x >= pill.x && m.x <= pill.x + pill.w && m.y >= pill.y && m.y <= pill.y + pill.h
-  })()
-  const cursor = isOverGoLive ? 'pointer' : getHoverCursor(mouseRef.current, size.width, size.height, !!viewRef.current._dragging)
+  const cursor = getHoverCursor(mouseRef.current, size.width, size.height, !!viewRef.current._dragging)
 
   return (
     <div ref={containerRef} className="chart-container">
@@ -259,7 +236,6 @@ export default function ChartCanvas() {
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseLeave}
         onDoubleClick={onDoubleClick}
-        onClick={onClick}
       />
     </div>
   )

@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import SessionStats from './SessionStats'
 import { useMarketStore } from '../stores/marketStore'
 import { fmtNum, fmtPrice } from '../utils/formatters'
 import type { LevelRecord } from '../utils/levelMemory'
@@ -145,7 +146,10 @@ export default function SidePanel() {
         </div>
       </div>
 
-      {/* 10. Top Footprint Levels */}
+      {/* 10. Session Statistics */}
+      <SessionStats />
+
+      {/* 11. Top Footprint Levels */}
       <div className="panel-section">
         <div className="panel-title">Top Footprint</div>
         {footprintEntries.map(l => (
@@ -167,10 +171,10 @@ export default function SidePanel() {
         {footprintEntries.length === 0 && <div className="empty">No footprint data</div>}
       </div>
 
-      {/* 11. Level Memory */}
+      {/* 12. Level Memory */}
       {levelMemory.length > 0 && <LevelMemory levels={levelMemory} />}
 
-      {/* 12. Debug / Health — subtle, only shown when relevant */}
+      {/* 13. Debug / Health — subtle, only shown when relevant */}
       {showDebug && (
         <div className="panel-section debug-section">
           <div className="panel-title" style={{ color: '#4a5e78', fontSize: 8 }}>Diagnostics</div>

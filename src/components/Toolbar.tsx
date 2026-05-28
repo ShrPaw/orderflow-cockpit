@@ -9,7 +9,6 @@ import '../brand.css'
 const INTERVALS: Interval[] = ['10s', '20s', '40s', '1m', '3m', '5m']
 
 export default function Toolbar() {
-  const mode = useMarketStore(s => s.mode)
   const symbol = useMarketStore(s => s.symbol)
   const interval = useMarketStore(s => s.interval)
   const connected = useMarketStore(s => s.connected)
@@ -23,7 +22,6 @@ export default function Toolbar() {
   const tickerError = useMarketStore(s => s.tickerError)
   const instruments = useMarketStore(s => s.instruments)
 
-  const setMode = useMarketStore(s => s.setMode)
   const setInterval = useMarketStore(s => s.setInterval)
   const showVWAP = useMarketStore(s => s.showVWAP)
   const showLiquidityLabels = useMarketStore(s => s.showLiquidityLabels)
@@ -32,7 +30,7 @@ export default function Toolbar() {
 
   const [showAssetSelector, setShowAssetSelector] = useState(false)
 
-  // Current instrument info — check dynamic list first, then static fallback
+  // Current instrument info
   const allInstruments = instruments.length > 0 ? instruments : INSTRUMENTS
   const instrument = allInstruments.find(i => i.symbol === symbol)
   const baseName = instrument?.base ?? symbol.replace('USDT', '')
@@ -100,15 +98,6 @@ export default function Toolbar() {
             <span className="brand-text">ORDERFLOW</span>
           </div>
 
-          <button
-            className={`mode-toggle ${mode}`}
-            onClick={() => setMode(mode === 'demo' ? 'live' : 'demo')}
-            title={mode === 'live' ? 'Switch to Demo' : 'Switch to Live'}
-          >
-            <span className="mode-dot" />
-            {mode === 'live' ? 'LIVE' : 'DEMO'}
-          </button>
-
           <div className="symbol-block" onClick={() => setShowAssetSelector(true)}>
             <span className="symbol-name">{baseName}</span>
             <span className="symbol-quote">/USDT</span>
@@ -159,7 +148,7 @@ export default function Toolbar() {
           </div>
         </div>
 
-        {/* Right: Interval + Nav */}
+        {/* Right: Interval + Nav + Overlays */}
         <div className="toolbar-right">
           <select
             className="interval-select"

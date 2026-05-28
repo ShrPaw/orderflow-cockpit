@@ -1,6 +1,7 @@
 import { useMarketStore } from '../stores/marketStore'
-import { fmtPrice, fmtQty } from '../utils/formatters'
+import { fmtPrice, fmtQty, fmtNum } from '../utils/formatters'
 import { getBookDisplayState } from '../utils/bookValidation'
+import DepthRatioSparkline from './DepthRatioSparkline'
 
 export default function DOMLite() {
   const bids = useMarketStore(s => s.bids)
@@ -39,6 +40,9 @@ export default function DOMLite() {
   const imbalance = bidTotal + askTotal > 0
     ? ((bidTotal - askTotal) / (bidTotal + askTotal)) * 100
     : 0
+
+  const isExtreme = Math.abs(imbalance) > 30
+  const isSignificant = Math.abs(imbalance) > 15
 
   return (
     <div className="dom-lite" style={showDimmed ? { opacity: 0.6 } : undefined}>
@@ -114,12 +118,28 @@ export default function DOMLite() {
           </div>
 
           <div className="dom-imbalance">
-            <span className={imbalance > 0 ? 'green' : imbalance < 0 ? 'red' : ''}>
-              {imbalance > 0 ? '▲' : imbalance < 0 ? '▼' : '—'} {Math.abs(imbalance).toFixed(1)}%
+            <div className="dom-imbalance-meter">
+              <div className="dom-meter-track">
+                <div
+                  className={`dom-meter-fill ${imbalance >= 0 ? 'bid' : 'ask'}`}
+                  style={{
+                    width: `${Math.min(50, Math.abs(imbalance) / 2)}%`,
+                    left: imbalance >= 0 ? `${50 - Math.min(50, Math.abs(imbalance) / 2)}%` : '50%',
+                  }}
+                />
+                <div className="dom-meter-center" />
+              </div>
+              <span className={`dom-meter-label ${isExtreme ? 'extreme' : isSignificant ? 'significant' : ''}`}>
+                {imbalance > 0 ? '+' : ''}{imbalance.toFixed(0)}%
+              </span>
+            </div>
+            <span className={`dom-side-hint ${isExtreme ? 'extreme' : ''}`}>
+              {imbalance > 30 ? 'BID HEAVY' : imbalance < -30 ? 'ASK HEAVY' : imbalance > 15 ? 'Bid lean' : imbalance < -15 ? 'Ask lean' : 'Balanced'}
             </span>
-            <span className="dom-side-hint">
-              {imbalance > 15 ? 'Bid heavy' : imbalance < -15 ? 'Ask heavy' : 'Balanced'}
-            </span>
+          </div>
+
+          <div className="dom-sparkline-wrap">
+            <DepthRatioSparkline />
           </div>
         </>
       )}
