@@ -140,12 +140,19 @@ export default function App() {
       },
     })
 
-    // Wire store's resyncOrderBook to engine
-    const origResync = useMarketStore.getState().resyncOrderBook
-    useMarketStore.setState({ resyncOrderBook: () => {
-      origResync()
-      cleanupDepth.current?.resync()
-    }})
+  // Wire store resyncOrderBook to also trigger engine resync
+  useMarketStore.setState({ resyncOrderBook: () => {
+    const store = useMarketStore.getState()
+    // Set RESYNCING state flags directly (mirrors store resyncOrderBook logic)
+    useMarketStore.setState({
+      orderBookHealth: "RESYNCING",
+      orderBookError: "Resyncing order book…",
+      orderBookReconnectAttempts: store.orderBookReconnectAttempts + 1,
+      depthStale: true,
+      orderBookBufferedEvents: [],
+    })
+    cleanupDepth.current?.resync()
+  }})
 
     // Periodic diagnostic log
     diagInterval.current = setInterval(() => {

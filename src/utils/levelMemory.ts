@@ -117,10 +117,8 @@ function copyLevel(l: LevelRecord): LevelRecord {
     lastState: l.lastState,
     flippedSupport: l.flippedSupport,
     flippedResistance: l.flippedResistance,
-    // Sets are shared — they're append-only and never read externally.
-    // This is safe because external code never mutates them.
-    countedBubbleIds: l.countedBubbleIds,
-    countedStateTransitions: l.countedStateTransitions,
+  countedBubbleIds: new Set(l.countedBubbleIds),
+  countedStateTransitions: new Set(l.countedStateTransitions),
   }
 }
 

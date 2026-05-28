@@ -7,6 +7,7 @@ import type {
 import { INTERVAL_MS } from '../types/market'
 import {
   newCandle, processTradeIntoCandle, classifyBubble, computeVolumeProfile,
+  resetBubbleCounter,
 } from '../utils/aggregation'
 import { updateLevelsFromBubbles, resetLevels, type LevelRecord } from '../utils/levelMemory'
 import {
@@ -52,11 +53,18 @@ const ALERT_COOLDOWN_MS: Record<string, number> = {
   IMBALANCE: 20_000,
   DELTA_DIVERGENCE: 30_000,
 }
+const MAX_ALERT_COOLDOWN = 300_000 // 5 minutes — max cooldown across all categories
 const lastAlertByKey = new Map<string, number>()
 
 function shouldFireAlert(category: AlertCategory, dedupeKey: string): boolean {
   const key = `${category}:${dedupeKey}`
   const now = Date.now()
+  // Prune stale entries older than the max cooldown
+  if (lastAlertByKey.size > 0) {
+    for (const [k, ts] of lastAlertByKey) {
+      if (now - ts > MAX_ALERT_COOLDOWN) lastAlertByKey.delete(k)
+    }
+  }
   const last = lastAlertByKey.get(key)
   const cooldown = ALERT_COOLDOWN_MS[category] ?? 5_000
   if (last && (now - last) < cooldown) return false
@@ -319,6 +327,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   setSymbol: (symbol) => {
     // Clean reset of ALL data buffers — no stale state leakage
     resetLevels()
+    resetBubbleCounter()
     lastAlertByKey.clear()
     set({
       ...getDataResetFields(),
@@ -351,14 +360,17 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     let currentCandle = state.currentCandle
     const pendingAlerts: Array<[AlertCategory, 'buy' | 'sell' | 'neutral', string, string, number]> = []
 
+    // Accumulate deferred state updates for a single set() at the end
+    let closedCandles: Candle[] | null = null
+    let updatedDivergences: Divergence[] | null = null
+
     if (!currentCandle || currentCandle.openTime !== bucket) {
       if (currentCandle) {
         const closedBubbles = currentCandle.bubbles.map(b =>
           b.state === 'PENDING' ? { ...b, state: 'EXHAUSTED' as const, confidence: 0.4 } : b
         )
         const closed = { ...currentCandle, bubbles: closedBubbles }
-        const candles = [...state.candles, closed].slice(-MAX_CANDLES)
-        set({ candles })
+        closedCandles = [...state.candles, closed].slice(-MAX_CANDLES)
       }
       currentCandle = newCandle(bucket, trade.price, intervalMs)
     }
@@ -448,7 +460,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
         }
 
         if (newDivergences.length !== state.divergences.length) {
-          set({ divergences: newDivergences.slice(-20) })
+          updatedDivergences = newDivergences.slice(-20)
         }
       }
     }
@@ -481,10 +493,11 @@ export const useMarketStore = create<MarketState>((set, get) => ({
     }
     const allBubbles = mergedBubbles.slice(-MAX_BUBBLES)
 
-    // ─── Dispatch alerts using functional set (race-safe) ───
+    // ─── Single set() call: merge alerts + trade state to avoid race condition ───
+    let newAlerts: Alert[] = []
     if (pendingAlerts.length > 0) {
       const now = Date.now()
-      const newAlerts: Alert[] = pendingAlerts.map(([category, side, title, detail, price]) => ({
+      newAlerts = pendingAlerts.map(([category, side, title, detail, price]) => ({
         id: `a-${now}-${Math.random().toString(36).slice(2, 6)}`,
         category,
         side,
@@ -494,7 +507,6 @@ export const useMarketStore = create<MarketState>((set, get) => ({
         time: now,
         dismissed: false,
       }))
-      set(s => ({ alerts: [...newAlerts, ...s.alerts].slice(0, MAX_ALERTS) }))
     }
 
     const updatePayload: Partial<MarketState> = {
@@ -510,8 +522,18 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       livePrice: trade.price,
       lastTradeTime: trade.time,
     }
+    if (closedCandles) (updatePayload as any).candles = closedCandles
+    if (updatedDivergences) (updatePayload as any).divergences = updatedDivergences
     if (newSign !== 0) (updatePayload as any).prevDeltaSign = newSign
-    set(updatePayload as any)
+
+    if (newAlerts.length > 0) {
+      set(s => ({
+        ...updatePayload,
+        alerts: [...newAlerts, ...s.alerts].slice(0, MAX_ALERTS),
+      } as any))
+    } else {
+      set(updatePayload as any)
+    }
   },
 
   setDepth: (bids, asks) => {

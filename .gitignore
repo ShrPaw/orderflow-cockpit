@@ -2,5 +2,33 @@ node_modules/
 dist/
 .vite/
 *.log
+
+# Environment
 .env
 .env.local
+.env.development
+.env.production
+.env.staging
+
+# Certificates and keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# OS artifacts
+.DS_Store
+thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+
+# Deprecated archive code
+archive/

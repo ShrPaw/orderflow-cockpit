@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import type { Candle } from '../types/market'
 
@@ -19,11 +19,30 @@ export default function DeltaHistogram() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const rafRef = useRef<number>(0)
-  const [size, setSize] = useState({ width: 800, height: 50 })
+  const sizeRef = useRef({ width: 800, height: 50 })
+  const [, forceUpdate] = useState(0)
 
-  const candles = useMarketStore(s => s.candles)
-  const currentCandle = useMarketStore(s => s.currentCandle)
-  const symbol = useMarketStore(s => s.symbol)
+  // Read data via refs — no React rerenders per tick
+  const candlesRef = useRef<Candle[]>([])
+  const currentCandleRef = useRef<Candle | null>(null)
+  const symbolRef = useRef('')
+
+  // Subscribe to store changes and write to refs (doesn't trigger rerender)
+  useEffect(() => {
+    return useMarketStore.subscribe((state) => {
+      candlesRef.current = state.candles
+      currentCandleRef.current = state.currentCandle
+      symbolRef.current = state.symbol
+    })
+  }, [])
+
+  // Initialize refs from current state
+  useEffect(() => {
+    const s = useMarketStore.getState()
+    candlesRef.current = s.candles
+    currentCandleRef.current = s.currentCandle
+    symbolRef.current = s.symbol
+  }, [])
 
   // ResizeObserver for responsive sizing
   useEffect(() => {
@@ -32,14 +51,15 @@ export default function DeltaHistogram() {
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
-        setSize({ width: Math.floor(width), height: Math.floor(height) })
+        sizeRef.current = { width: Math.floor(width), height: Math.floor(height) }
+        forceUpdate(n => n + 1)
       }
     })
     observer.observe(container)
     return () => observer.disconnect()
   }, [])
 
-  // Render loop
+  // Single long-lived RAF render loop — reads from refs, no dependency on data
   useEffect(() => {
     let running = true
 
@@ -48,6 +68,7 @@ export default function DeltaHistogram() {
       const canvas = canvasRef.current
       if (!canvas) { rafRef.current = requestAnimationFrame(draw); return }
 
+      const size = sizeRef.current
       const dpr = window.devicePixelRatio || 1
       const cw = size.width * dpr
       const ch = size.height * dpr
@@ -65,43 +86,39 @@ export default function DeltaHistogram() {
       ctx.scale(dpr, dpr)
       ctx.clearRect(0, 0, size.width, size.height)
 
-      // Background
       ctx.fillStyle = COL.bg
       ctx.fillRect(0, 0, size.width, size.height)
 
-      // Build the allCandles array (closed + current)
-      const allCandles: Candle[] = [...candles]
-      if (currentCandle) allCandles.push(currentCandle)
+      const allCandles: Candle[] = [...candlesRef.current]
+      if (currentCandleRef.current) allCandles.push(currentCandleRef.current)
 
       if (allCandles.length === 0) {
+        ctx.fillStyle = COL.text
+        ctx.font = '9px Inter, system-ui, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText('Waiting for delta data...', size.width / 2, size.height / 2)
         ctx.restore()
         rafRef.current = requestAnimationFrame(draw)
         return
       }
 
-      // Take only the last VISIBLE_COUNT candles
       const visible = allCandles.slice(-VISIBLE_COUNT)
       const count = visible.length
-
-      // Compute deltas and max absolute delta for scaling
       const deltas = visible.map(c => c.delta)
       const maxAbs = Math.max(1, ...deltas.map(d => Math.abs(d)))
 
-      // Calculate bar dimensions
       const barGap = 1
       const barWidth = Math.max(1, (size.width - barGap * (count - 1)) / count)
-      const midY = size.height / 2  // zero line
+      const midY = size.height / 2
 
-      // Draw subtle grid lines
       ctx.strokeStyle = COL.grid
       ctx.lineWidth = 0.5
-      // Horizontal center (zero) line
       ctx.beginPath()
       ctx.moveTo(0, midY)
       ctx.lineTo(size.width, midY)
       ctx.stroke()
 
-      // Subtle quarter lines
       ctx.globalAlpha = 0.3
       const quarterTop = midY - (midY * 0.5)
       const quarterBottom = midY + (midY * 0.5)
@@ -113,24 +130,20 @@ export default function DeltaHistogram() {
       ctx.stroke()
       ctx.globalAlpha = 1.0
 
-      // Draw delta bars
       for (let i = 0; i < count; i++) {
         const delta = deltas[i]
         const x = i * (barWidth + barGap)
         const halfH = (Math.abs(delta) / maxAbs) * (midY - 1)
 
         if (delta >= 0) {
-          // Green bar above zero line
           ctx.fillStyle = COL.green
           ctx.fillRect(x, midY - halfH, barWidth, halfH)
         } else {
-          // Red bar below zero line
           ctx.fillStyle = COL.red
           ctx.fillRect(x, midY, barWidth, halfH)
         }
       }
 
-      // Compute moving average of delta (last MA_PERIOD candles)
       const maPoints: { x: number; y: number }[] = []
       for (let i = 0; i < count; i++) {
         const start = Math.max(0, i - MA_PERIOD + 1)
@@ -144,7 +157,6 @@ export default function DeltaHistogram() {
         maPoints.push({ x, y })
       }
 
-      // Draw MA line
       if (maPoints.length > 1) {
         ctx.strokeStyle = COL.purple
         ctx.lineWidth = 1.5
@@ -158,7 +170,6 @@ export default function DeltaHistogram() {
         ctx.stroke()
       }
 
-      // Zero line over bars for crispness
       ctx.strokeStyle = COL.border
       ctx.lineWidth = 1
       ctx.beginPath()
@@ -166,7 +177,6 @@ export default function DeltaHistogram() {
       ctx.lineTo(size.width, midY)
       ctx.stroke()
 
-      // Label: "DELTA" in top-left corner
       ctx.fillStyle = COL.text
       ctx.font = '9px Inter, system-ui, sans-serif'
       ctx.textAlign = 'left'
@@ -182,7 +192,7 @@ export default function DeltaHistogram() {
       running = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [candles, currentCandle, size, symbol])
+  }, [sizeRef.current.width, sizeRef.current.height])
 
   return (
     <div ref={containerRef} className="delta-histogram-wrap">

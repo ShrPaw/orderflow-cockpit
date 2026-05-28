@@ -3,6 +3,19 @@ import { registryAdd, registryRemove } from './connectionRegistry'
 
 const CACHE = new Map<string, { data: Ticker24h; ts: number }>()
 const CACHE_TTL = 5_000
+const CACHE_MAX = 50
+
+function pruneCache() {
+  if (CACHE.size <= CACHE_MAX) return
+  const now = Date.now()
+  for (const [key, val] of CACHE) {
+    if (now - val.ts > CACHE_TTL * 2) CACHE.delete(key)
+  }
+  if (CACHE.size > CACHE_MAX * 2) {
+    const keys = [...CACHE.keys()]
+    for (let i = 0; i < keys.length - CACHE_MAX; i++) CACHE.delete(keys[i])
+  }
+}
 
 export async function fetchTicker24h(symbol: string): Promise<Ticker24h | null> {
   const cached = CACHE.get(symbol)
@@ -26,6 +39,7 @@ export async function fetchTicker24h(symbol: string): Promise<Ticker24h | null> 
     }
 
     CACHE.set(symbol, { data: ticker, ts: Date.now() })
+    pruneCache()
     return ticker
   } catch (err) {
     console.warn(`[Ticker24h] Failed for ${symbol}:`, err)
@@ -82,7 +96,7 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const info: BinanceExchangeInfo = await res.json()
 
-    const instruments: Instrument[] = info.symbols
+    const instruments = info.symbols
       .filter(s =>
         s.contractType === 'PERPETUAL' &&
         s.quoteAsset === 'USDT' &&
@@ -91,8 +105,9 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
       .map(s => {
         const tickFilter = s.filters.find(f => f.filterType === 'PRICE_FILTER')
         const lotFilter = s.filters.find(f => f.filterType === 'LOT_SIZE')
-        const tickSize = tickFilter ? parseFloat(tickFilter.tickSize!) : 0.01
-        const stepSize = lotFilter ? parseFloat(lotFilter.stepSize!) : 0.001
+        const tickSize = tickFilter?.tickSize ? parseFloat(tickFilter.tickSize) : 0.01
+        const stepSize = lotFilter?.stepSize ? parseFloat(lotFilter.stepSize) : 0.001
+        if (!isFinite(tickSize) || tickSize <= 0 || !isFinite(stepSize) || stepSize <= 0) return undefined
 
         // Compute qty precision from stepSize
         const stepStr = stepSize.toString()
@@ -108,12 +123,12 @@ export async function fetchFuturesInstruments(): Promise<Instrument[]> {
           qtyPrecision,
         }
       })
+      .filter((x): x is Instrument => x !== undefined)
       .sort((a, b) => {
         const catOrder = { major: 0, defi: 1, alt: 2, meme: 3 }
         const diff = catOrder[a.category] - catOrder[b.category]
         return diff !== 0 ? diff : a.symbol.localeCompare(b.symbol)
       })
-
     // Cache in sessionStorage
     try {
       sessionStorage.setItem(INSTRUMENT_CACHE_KEY, JSON.stringify({ data: instruments, ts: Date.now() }))

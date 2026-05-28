@@ -4,6 +4,8 @@ import { getLevelAtPrice, checkLevelInteraction, getAllLevels } from './levelMem
 
 let bubbleCounter = 0
 
+export function resetBubbleCounter() { bubbleCounter = 0 }
+
 export function newCandle(openTime: number, price: number, intervalMs: number = 60_000): Candle {
   return {
     openTime,

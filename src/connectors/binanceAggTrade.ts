@@ -53,7 +53,7 @@ export function connectBinanceAggTrade(
   let generation = 0
   let reconnectAttempt = 0
 
-  tradeDiag = { url, symbol, opened: false, messageCount: 0, lastMessageTime: 0, parseErrors: 0, closeCount: 0, lastError: null }
+  Object.assign(tradeDiag, { url, symbol, opened: false, messageCount: 0, lastMessageTime: 0, parseErrors: 0, closeCount: 0, lastError: null })
 
   function cancelReconnectTimer() {
     if (reconnectTimer !== null) {

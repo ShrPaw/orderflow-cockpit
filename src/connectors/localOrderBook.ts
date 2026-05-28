@@ -390,8 +390,8 @@ export function createLocalOrderBook(
 
     // Quick sanity check on spread before accepting
     if (parsedBids.length > 0 && parsedAsks.length > 0) {
-      const bestBid = parsedBids[0][1]
-      const bestAsk = parsedAsks[0][1]
+ const bestBid = parseFloat(parsedBids[0][0])
+ const bestAsk = parseFloat(parsedAsks[0][0])
       if (!isSpreadSane(bestBid, bestAsk, symbol)) {
         debugBookEmit({
           type: 'depth20_rejected',

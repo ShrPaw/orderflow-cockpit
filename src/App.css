@@ -1330,24 +1330,6 @@
   justify-content: center;
 }
 
-/* ─── Delta Histogram Strip ─── */
-.delta-strip {
-  display: flex;
-  align-items: stretch;
-  height: 36px;
-  background: var(--bg-primary);
-  border-bottom: 1px solid var(--border);
-}
-.delta-histogram-wrap {
-  flex: 1;
-  position: relative;
-}
-.delta-histogram-wrap canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
 /* ─── Session Stats ─── */
 .session-stats {
   padding: 6px 10px;
@@ -1407,99 +1389,377 @@
   color: var(--accent);
 }
 
-/* ─── Depth Ratio Sparkline ─── */
-.dom-sparkline-wrap {
-  padding: 4px 8px;
-  border-top: 1px solid var(--border);
+/* ─── Missing Keyframes (Audit Fix P0-5) ─── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
-.dom-sparkline-wrap canvas {
-  display: block;
-  width: 100%;
-  height: 32px;
-}
-
-/* ─── Footprint Chart Panel ─── */
-.footprint-chart-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-primary);
-}
-.footprint-chart-wrap canvas {
-  flex: 1;
-  width: 100%;
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
-/* ─── Alert Feed Panel ─── */
-.alert-feed {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-.alert-feed-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-}
-.alert-feed-title {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.alert-feed-clear {
+/* ─── Missing Component CSS (Audit Fix P0-6) ─── */
+
+/* ConnectionStatus — detail text in connection bar */
+.conn-bar-detail {
   font-size: 9px;
   color: var(--text-dim);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 2px 6px;
-  cursor: pointer;
-  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
 }
-.alert-feed-clear:hover { background: var(--bg-hover); }
-.alert-feed-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 6px;
-}
-.alert-row {
+
+/* MarketHeader — stream status dots */
+.mh-stream-status {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 5px 6px;
-  border-radius: 3px;
-  border-left: 2px solid var(--text-dim);
-  margin-bottom: 3px;
-  background: rgba(12,16,25,0.5);
-  font-size: 10px;
-  line-height: 1.3;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
 }
-.alert-row.buy { border-left-color: var(--green); }
-.alert-row.sell { border-left-color: var(--red); }
-.alert-row.neutral { border-left-color: var(--accent); }
-.alert-icon { font-size: 10px; flex-shrink: 0; }
-.alert-body { flex: 1; min-width: 0; }
-.alert-title { font-weight: 600; color: var(--text-primary); }
-.alert-detail { color: var(--text-dim); font-size: 9px; margin-top: 1px; }
-.alert-time { font-size: 8px; color: var(--text-muted); font-family: 'SF Mono', monospace; flex-shrink: 0; }
-.alert-dismiss {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: none;
+.mh-stream-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: all 0.3s;
+}
+.mh-stream-dot.ok {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(45,212,160,0.4);
+}
+.mh-stream-dot.fail {
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(239,100,97,0.3);
+}
+.mh-stream-dot.warn {
+  background: var(--yellow);
+  box-shadow: 0 0 6px rgba(228,167,59,0.3);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Toolbar — overlay toggle buttons */
+.overlay-toggles {
+  display: flex;
+  gap: 1px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 2px;
+}
+.overlay-btn {
+  background: transparent;
   border: none;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
   cursor: pointer;
-  padding: 0 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.overlay-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.overlay-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* AlertRulesPanel — watch conditions builder */
+.alert-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.alert-rule-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.alert-rule-row:last-child {
+  border-bottom: none;
+}
+.alert-rule-row.enabled {
+  opacity: 1;
+}
+.alert-rule-row.disabled {
   opacity: 0.5;
 }
-.alert-dismiss:hover { opacity: 1; color: var(--red); }
-.alert-area-large_trade { background: rgba(228,167,59,0.05); }
-.alert-area-bubble_classified { background: rgba(168,85,247,0.05); }
-.alert-area-pressure_shift { background: rgba(79,195,247,0.05); }
-.alert-area-level_hit { background: rgba(100,130,170,0.05); }
-.alert-area-imbalance { background: rgba(239,100,97,0.05); }
-.alert-area-delta_divergence { background: rgba(79,195,247,0.08); }
+.alert-rule-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-toggle {
+  background: none;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.alert-toggle.on {
+  color: var(--green);
+}
+.alert-toggle.off {
+  color: var(--text-dim);
+}
+.alert-rule-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.alert-rule-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 0 22px;
+}
+.alert-threshold-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.alert-threshold-input {
+  width: 72px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  outline: none;
+  transition: border-color 0.15s;
+  font-variant-numeric: tabular-nums;
+}
+.alert-threshold-input:focus {
+  border-color: var(--accent);
+}
+.alert-threshold-unit {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.alert-reset-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: 8px;
+  font-family: var(--font);
+}
+.alert-reset-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-light);
+  color: var(--text-secondary);
+}
+
+/* FlowEventsPanel — recent flow events */
+.flow-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.flow-event-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.flow-event-time {
+  width: 58px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.flow-event-body {
+  flex: 1;
+  min-width: 0;
+}
+.flow-event-title {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.flow-event-desc {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  line-height: 1.3;
+}
+
+/* LiquidityLevelsPanel — liquidity concentration levels */
+.liq-levels-section {
+  margin-bottom: 6px;
+}
+.liq-side-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  padding-bottom: 2px;
+}
+.liq-side-label.ask {
+  color: var(--red);
+  border-bottom: 1px solid rgba(239,100,97,0.15);
+}
+.liq-side-label.bid {
+  color: var(--green);
+  border-bottom: 1px solid rgba(45,212,160,0.15);
+}
+.liq-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.liq-row.ask {
+  color: var(--red);
+}
+.liq-row.bid {
+  color: var(--green);
+}
+.liq-price {
+  width: 64px;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: right;
+}
+.liq-bar-wrap {
+  flex: 1;
+  height: 6px;
+  display: flex;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+}
+.liq-bar {
+  height: 100%;
+  border-radius: 1px;
+  min-width: 1px;
+  transition: width 0.3s ease;
+}
+.liq-bar.ask {
+  background: rgba(239,100,97,0.25);
+}
+.liq-bar.bid {
+  background: rgba(45,212,160,0.25);
+}
+.liq-qty {
+  width: 48px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.liq-distance {
+  width: 44px;
+  text-align: right;
+  color: var(--text-dim);
+  font-size: 9px;
+}
+.liq-badge {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.liq-badge.near {
+  background: rgba(228,167,59,0.12);
+  color: var(--yellow);
+  border: 1px solid rgba(228,167,59,0.2);
+}
+.liq-badge.large {
+  background: rgba(79,195,247,0.08);
+  color: var(--accent);
+  border: 1px solid rgba(79,195,247,0.15);
+}
+
+/* MarketSnapshotPanel — snapshot section dividers & health dots */
+.snapshot-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+.snapshot-health {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+.health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transition: all 0.3s;
+}
+.health-dot.ok {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(45,212,160,0.4);
+}
+.health-dot.fail {
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(239,100,97,0.3);
+}
+
+/* Heatmap — volume profile summary rows */
+.vp-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.vp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.vp-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+.vp-value {
+  color: var(--text-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.vp-value.poc {
+  color: var(--accent);
+}
+.vp-value.dim {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+/* SidePanel — missing dot.purple color */
+.bubble-legend .dot.purple {
+  background: var(--purple);
+}
