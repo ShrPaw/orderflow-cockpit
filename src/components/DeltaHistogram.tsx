@@ -26,6 +26,7 @@ export default function DeltaHistogram() {
   const candlesRef = useRef<Candle[]>([])
   const currentCandleRef = useRef<Candle | null>(null)
   const symbolRef = useRef('')
+  const connectedRef = useRef(true)
 
   // Subscribe to store changes and write to refs (doesn't trigger rerender)
   useEffect(() => {
@@ -33,6 +34,7 @@ export default function DeltaHistogram() {
       candlesRef.current = state.candles
       currentCandleRef.current = state.currentCandle
       symbolRef.current = state.symbol
+      connectedRef.current = state.connected
     })
   }, [])
 
@@ -42,6 +44,7 @@ export default function DeltaHistogram() {
     candlesRef.current = s.candles
     currentCandleRef.current = s.currentCandle
     symbolRef.current = s.symbol
+    connectedRef.current = s.connected
   }, [])
 
   // ResizeObserver for responsive sizing
@@ -183,6 +186,18 @@ export default function DeltaHistogram() {
       ctx.textBaseline = 'top'
       ctx.fillText('DELTA', 4, 3)
 
+    // Stale/disconnected indicator
+    if (!connectedRef.current) {
+      ctx.globalAlpha = 0.6
+      ctx.fillStyle = COL.bg
+      ctx.fillRect(size.width - 82, 0, 82, 14)
+      ctx.globalAlpha = 1
+      ctx.fillStyle = "#e4a73b"
+      ctx.font = "bold 8px Inter, system-ui, sans-serif"
+      ctx.textAlign = "right"
+      ctx.textBaseline = "top"
+      ctx.fillText("DISCONNECTED", size.width - 4, 3)
+    }
       ctx.restore()
       rafRef.current = requestAnimationFrame(draw)
     }

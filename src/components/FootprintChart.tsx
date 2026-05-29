@@ -40,6 +40,8 @@ export default function FootprintChart() {
   const candles = useMarketStore(s => s.candles)
   const currentCandle = useMarketStore(s => s.currentCandle)
   const symbol = useMarketStore(s => s.symbol)
+  const connected = useMarketStore(s => s.connected)
+  const depthStale = useMarketStore(s => s.depthStale)
 
   const allCandles = currentCandle ? [...candles, currentCandle] : candles
   // Show last N candles (based on width)
@@ -343,8 +345,10 @@ export default function FootprintChart() {
     window.addEventListener('mouseup', onUp)
   }, [])
 
+  const showDimmed = !connected || depthStale
+
   return (
-    <div ref={containerRef} className="footprint-chart-wrap">
+    <div ref={containerRef} className="footprint-chart-wrap" style={showDimmed ? { opacity: 0.65 } : undefined}>
       <canvas
         ref={canvasRef}
         onWheel={onWheel}
